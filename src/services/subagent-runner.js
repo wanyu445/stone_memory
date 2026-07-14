@@ -160,15 +160,23 @@ function runSubagent(prompt, opts = {}) {
   const fullCmd = `${cmd} < "${tmpFile}"`;
 
   const shell = process.platform === "win32" ? "cmd.exe" : "/bin/bash";
-  const out = execSync(fullCmd, {
-    encoding: "utf8",
-    timeout,
-    maxBuffer: 10 * 1024 * 1024,
-    shell,
-    windowsHide: true,
-  });
-  try { fs.unlinkSync(tmpFile); } catch {}
-  return out.trim();
+  try {
+    const out = execSync(fullCmd, {
+      encoding: "utf8",
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+      shell,
+      windowsHide: true,
+    });
+    if (!out || !out.trim()) {
+      const err = new Error("subagent returned empty output");
+      err.code = "OUTPUT_EMPTY";
+      throw err;
+    }
+    return out.trim();
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch {}
+  }
 }
 
 module.exports = { runSubagent, buildCommand, getRuntimeConfig, resolvePlaceholders };

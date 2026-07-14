@@ -8,5 +8,11 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  }
 }

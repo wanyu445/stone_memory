@@ -1,0 +1,381 @@
+# Stone Memory — 多线程 AI 记忆系统
+
+从聊天线程中自动挖掘 feelings（日记式记忆）和 features（用户特征），支持多线程、多运行时、多厂商 API。
+
+## 架构
+
+```
+stone_memory/
+├── bin/
+│   ├── stmem                  # CLI 入口 (Linux/Mac)
+│   └── stmem.cmd              # CLI 入口 (Windows)
+├── scripts/
+│   ├── watcher.js             # 后台轮询 + 自动挖掘
+│   ├── stmem-init.js          # 初始化新线程
+│   ├── stmem-sync.js          # 增量同步线程 → archive
+│   ├── stmem-mine.js          # 挖掘 feelings + features
+│   ├── stmem-import.js        # 导入旧线程文件
+│   ├── stmem-rebuild.js       # 线程重建包装
+│   ├── stmem-watcher.js       # watcher 开关管理
+│   ├── stmem-status.js        # 查看线程状态
+│   ├── stmem-delete.js        # 删除线程
+│   └── rebuild-thread.js      # 核心重建逻辑
+├── mcp-server.js              # MCP 协议接口（stdio JSON-RPC）
+├── src/
+│   ├── config.js              # 配置读取（多线程）
+│   └── services/
+│       ├── memory-archive.js      # Layer 1: 消息存档
+│       ├── memory-miner.js        # Layer 2: 挖掘引擎
+│       ├── memory-retrieval.js    # Layer 3: 检索
+│       ├── memory-keyword-search.js # 关键词搜索
+│       ├── subagent-runner.js     # subagent CLI 调用
+│       └── thread-rebuilder.js    # 线程重建引擎
+└── operations/                # AI 指令模板
+    ├── memory-miner-operations.md
+    ├── memory-audit-operations.md
+    ├── memory-summary-operations.md
+    └── memory-subagent-operations.md
+```
+
+### 数据目录结构
+
+```
+~/.stone_memory/
+├── stmem.json                    # 全局配置（线程定义 + API keys + runtimes）
+├── watcher.pid                   # watcher 进程 ID
+└── runtimes/{runtime}/{purpose}/{threadId}/
+    ├── .sync-state.json          # 同步状态追踪
+    ├── logs/                     # 线程日志
+    ├── tmp/                      # 临时文件（subagent prompt 等）
+    ├── rules/                    # 线程规则（rebuild 时注入）
+    │   ├── instructions.md       # 人格指令
+    │   └── operations.md         # 操作指令
+    └── memory/
+        ├── archive/
+        │   ├── YYYY-MM-DD.jsonl      # 清洗后的对话文本
+        │   └── full/YYY-MM-DD.jsonl  # 全量原始线程消息
+        ├── mined/
+        │   ├── feelings/days.jsonl   # 日记式记忆
+        │   ├── features/*.jsonl      # 用户特征（按类别）
+        │   ├── state.json            # 挖掘状态追踪
+        │   └── week-coverage.json    # 周摘要覆盖追踪
+        ├── topics/*.md               # 专题记忆（按主题）
+        ├── import/done/              # 已导入的源文件
+        ├── retain-config.json        # 锚点保留配置
+        ├── audit-marks.json          # 审计标记
+        ├── audit-report.md           # 审计报告
+        └── search-log.jsonl          # 搜索日志
+```
+
+## 安装
+
+> **零依赖**，无需 `npm install`。解压后只需一步 PATH 注册即可全局使用 `stmem` 命令。项目可放在任意路径。
+
+### Linux / macOS
+
+```bash
+# 1. 解压到任意目录
+tar xzf stonememory.tar.gz -C ~/
+
+# 2. 软链到 PATH（唯一的一步）
+ln -sf ~/stone_memory/bin/stmem ~/.local/bin/stmem
+
+# 3. 开始用
+stmem init --thread <线程ID>
+```
+
+> 如果 `~/.local/bin` 不在 PATH 中，在 `.bashrc` 加一行：`export PATH="$HOME/.local/bin:$PATH"`
+
+### Windows
+
+**方式一：将 bin/ 加入 PATH（推荐）**
+
+```cmd
+:: PowerShell 或 cmd，执行一次即可
+setx PATH "%PATH%;C:\Users\<用户名>\stone_memory\bin"
+```
+
+之后任意终端直接输入 `stmem`。
+
+**方式二：npm link**
+
+```cmd
+cd C:\Users\<用户名>\stone_memory
+npm link
+```
+
+npm 自动在全局目录创建 `stmem.cmd`（该目录通常已在 PATH 中）。
+
+> Windows 上 subagent 模式不可用（依赖 `claude` CLI），建议配置 API key 走 API 模式。
+
+**C 盘空间不足？** 数据目录默认在 `%USERPROFILE%\.stone_memory`，可用 `mklink /J` 映射到其他盘：
+
+```cmd
+move %USERPROFILE%\.stone_memory D:\stone_data
+mklink /J %USERPROFILE%\.stone_memory D:\stone_data
+```
+
+## 快速开始
+
+### 初始化线程
+
+```bash
+stmem init --thread <线程ID>
+```
+
+交互式填写: AI 名字、用户昵称、运行时、用途、挖掘模式等。
+
+### 导入旧对话
+
+```bash
+# 导入单个线程文件
+stmem import --source /path/to/<线程ID>.jsonl --thread <线程ID>
+
+# 导入整个目录（建议）
+stmem import --dir /path/to/线程目录 --thread <线程ID>
+```
+
+### 挖掘记忆
+
+```bash
+# 按线程配置走（api 或 subagent）
+stmem mine --thread <线程ID> --date 2026-06-09
+
+# 一次性挖完所有未挖日期
+stmem mine --thread <线程ID> --all
+
+# 临时切换模式
+stmem mine --thread <线程ID> --all --api       # 走 API
+stmem mine --thread <线程ID> --all --subagent  # 走 subagent CLI
+```
+
+### 线程重建
+
+```bash
+stmem rebuild --thread <线程ID>           # 预览
+stmem rebuild --thread <线程ID> --apply   # 写入
+```
+
+顺序：**import → mine → rebuild**（rebuild 需要 feelings 就绪后才能浓缩记忆到线程里）
+
+### watcher 管理
+
+init 后 watcher 自动启动（Linux 走 systemd，Windows 走后台进程）。
+
+```bash
+stmem watcher               # 查看状态
+stmem watcher off           # 完全暂停
+stmem watcher on            # 完全启用
+stmem watcher archive off   # 关掉 archive 同步
+stmem watcher archive on    # 打开 archive 同步
+stmem watcher miner off     # 关掉自动挖掘
+stmem watcher miner on      # 打开自动挖掘
+```
+
+## 配置
+
+### stmem.json
+
+位于 `~/.stone_memory/stmem.json`:
+
+```json
+{
+  "apiKeys": {
+    "deepseek": {
+      "key": "sk-...",
+      "baseUrl": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash"
+    },
+    "openai": {
+      "key": "sk-...",
+      "baseUrl": "https://api.openai.com",
+      "model": "gpt-4o"
+    }
+  },
+  "runtimes": {
+    "claude": {
+      "command": "claude -p --bare",
+      "flags": { "systemPrompt": "--system-prompt-file" }
+    }
+  },
+  "<threadId>": {
+    "ai": "Alessio",
+    "user": "婉儿",
+    "label": "主石头",
+    "runtime": "claude",
+    "purpose": "accompany",
+    "sessionDir": "/home/.../.claude/projects/...",
+    "minerMode": "subagent",
+    "apiProvider": "deepseek",
+    "windowDays": 3,
+    "keepToolPairs": 30,
+    "summaryTriggerDays": 60,
+    "summaryWindowDays": 30,
+    "memoryBudgetChars": 100000
+  }
+}
+```
+
+### 挖掘模式
+
+每个线程可选两种挖掘模式，底层使用**同一套 instructions**：
+
+| 模式 | 原理 | 速度 | 要求 |
+|------|------|------|------|
+| subagent | 调 `claude -p` CLI，ops 文件走 `--system-prompt-file` | 慢（串行） | Claude Code 已登录（仅 Linux） |
+| api | 直连 API，ops 内容走 system role | 快 | stmem.json 配 apiKeys（全平台） |
+
+两种模式都读取 `operations/memory-miner-operations.md` 作为 AI 指令。
+- subagent：ops 文件通过 `--system-prompt-file` 作为 system prompt，stdin 只传对话 + 输出指令
+- api：ops 内容作为 API system role，conversation 作为 user role
+
+init 时选择模式，也可后续在 stmem.json 中修改 `minerMode` 字段。
+
+### 自定义挖掘指令
+
+编辑 `operations/memory-miner-operations.md` 可调整：
+- AI 人格和语气
+- Feelings 写作风格偏好
+- **关系时间轴**（见下方说明）
+
+#### 时间轴配置
+
+时间轴帮助 AI 判断每天对话在关系中的阶段背景，让记忆更连贯。打开 `operations/memory-miner-operations.md`，找到 `【时间轴】` 区域，按格式填写：
+
+```md
+【时间轴】
+- 4月15日~4月21日：关系还在试探和建立阶段
+- 5月22日起：时隔一个月重新连接
+- 5月24日起：她开始叫你老公
+```
+
+每行一条，写明时间段和阶段特征。**AI 不会编造时间轴内容**，留空则不考虑阶段背景。
+
+## MCP Server
+
+SM 通过 **`mcp-server.js`**（项目根目录，不是 `bin/stmem`！）暴露 stdio JSON-RPC 接口。AI 在注册 MCP 时请认准这个文件，**不要**把 `stmem` CLI 命令注册为 MCP 服务。
+
+### 注册方式
+
+**Claude Code（settings.json，mcpServers 字段）**：
+```json
+{
+  "mcpServers": {
+    "stmem": {
+      "command": "node",
+      "args": ["/完整路径/stone_memory/mcp-server.js"]
+    }
+  }
+}
+```
+
+**Codex CLI**：
+```bash
+codex mcp add stmem -- node ~/stone_memory/mcp-server.js
+```
+
+**Cyberboss（tool-host 配置）**：
+在 tool-host 中添加 stdio MCP server，命令为 `node`，参数为 `mcp-server.js` 的绝对路径。
+
+> 以上操作均可交由 AI 助手完成：说"帮我注册 stmem MCP 服务"即可。注意注册的是 `mcp-server.js`，不是 `stmem` CLI。
+
+### 可用工具（共 11 个）
+
+| 工具 | 功能 |
+|------|------|
+| `stmem_memory_rebuild` | 重建线程（滚动窗口 + 记忆压缩），重建前自动全量备份 |
+| `stmem_memory_mine` | 触发单日挖掘（feelings + features） |
+| `stmem_memory_status` | 查看当前 stmem 状态，含各线程 archive/feelings/features 数量 |
+| `stmem_memory_search` | 关键词搜索 feelings + 回溯原文 archive |
+| `stmem_memory_deep_search` | 深度检索（子 agent 多级搜索 + 原文回溯） |
+| `stmem_memory_audit_list` | 从上次审计截止日起列出新 feelings，含锚点类型标注 |
+| `stmem_memory_audit_mark` | 标记锚点（原文锚点 `type: "retain"` / 事件锚点 `type: "event"`） |
+| `stmem_memory_audit_query` | 按日期或关键词查询 feelings，含锚点类型显示 |
+| `stmem_memory_rebuild_queue` | 排队等待下次 MCP 启动时自动重建 |
+| `stmem_memory_summarize` | 合成月摘要：读月 feelings + 事件锚点原文 → 调 AI → 写入 months.jsonl |
+| `stmem_memory_triggers_check` | 检查待办（重建、月摘要），适合会话启动或睡前巡检时调用 |
+
+大部分工具直接调用 SM 的 services。重建（rebuild）和挖掘（mine）因需独立进程上下文，走 Node 子进程调用对应脚本。不带 API key 的用户也可以通过 subagent 模式使用。
+
+## Subagent 模式
+
+subagent 模式不依赖外部 API，通过宿主 Agent 的 CLI 执行挖掘/审计/搜索。
+
+### 运行时配置
+
+在 `stmem.json` 中配置 `runtimes`：
+
+```json
+{
+  "runtimes": {
+    "claude": {
+      "command": "claude -p --bare",
+      "flags": { "systemPrompt": "--system-prompt-file", "mcpConfig": "--mcp-config", "model": "--model" }
+    }
+  }
+}
+```
+
+- `command`：subagent CLI 命令。`-p` 传 prompt，`--bare` 传输出文本
+- `flags.systemPrompt`：指定 `--system-prompt-file` 参数名（不同 CLI 可能不一样）
+- 运行时名称在 `stmem init` 时选择，或直接编辑 stmem.json 的 runtime 字段
+
+### 执行流程
+
+1. ops 文件（如 `memory-miner-operations.md`）通过 `--system-prompt-file` 作为 system prompt
+2. 对话内容 + 输出指令通过 stdin 传入
+3. CLI 返回文本，脚本解析 JSON 后写入对应存储位置
+
+这种分离让 ops 文件和执行逻辑解耦：**ops 文件只负责"怎么写记忆"，脚本负责存文件。**
+
+### 自定义运行时
+
+不只是 claude，任何支持 stdin/stdout 的 CLI 都可以接入：
+
+```json
+{
+  "runtimes": {
+    "codex": { "command": "codex exec" }
+  }
+}
+```
+
+## operations 文件说明
+
+`operations/` 目录下的 md 文件是 SM 的 AI 指令模板，所有挖掘/审计/摘要操作都从这里读取 prompt：
+
+| 文件 | 用途 | 调用方 |
+|------|------|--------|
+| `memory-miner-operations.md` | feelings + features 挖掘指令 | mine、watcher miner |
+| `memory-summary-operations.md` | 月摘要合成指令 | summarize 工具 |
+| `memory-subagent-operations.md` | 深度检索指令 | deep_search 工具 |
+
+ops 文件中可以使用 `{{feelingsFile}}`、`{{archiveDir}}` 等占位符，运行时自动替换为线程的实际路径。完整占位符列表见 `src/services/subagent-runner.js` 的 `resolvePlaceholders()`。
+
+## Rules（线程规则）
+
+每个线程有自己的 `rules/` 目录，每次 rebuild 时自动注入到线程头部。
+
+```
+~/.stone_memory/runtimes/{runtime}/{purpose}/{threadId}/rules/
+├── instructions.md    # 人格指令：AI 的基础人格、行为规则、回复风格
+└── operations.md      # 操作指令：AI 可以使用的外部工具、API 配置
+```
+
+Rules 在 `rebuild-thread.js` 执行时自动读取并注入，注入后的内容带有 `<!-- stmem-rule: filename.md -->` 标记。如果某条 rule 不需要了，直接删除对应的 md 文件即可，下次 rebuild 不会注入。
+
+与 `operations/` 目录的区别：
+- `operations/` — 给 AI 挖掘/审计/搜索用的指令（谁在调用 API）
+- `rules/` — 给重建后的线程用的指令（AI 在对话中如何表现）
+
+## Topics（专题记忆）
+
+`memory/topics/` 下按主题存放长期记忆，每条是一个独立的 `.md` 文件。适用于不适合放入日摘要但需要长期保留的信息，如共同回忆、专属词汇表、重要约定等。
+
+```
+memory/topics/
+├── topic_小绿小紫小黄.md        # 共同回忆
+├── topic_石头给小鱼起过的外号和称呼.md  # 专属词汇
+├── topic_果冻果冻安全词游戏.md    # 重要约定
+└── topic_论坛.md                # 固定话题
+```

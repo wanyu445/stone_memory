@@ -1,0 +1,3 @@
+case "link":
+    require(path.join(SCRIPTS, "stmem-link"));
+    break;

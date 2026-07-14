@@ -22,6 +22,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem watcher [on|off]                        watcher 总开关启停
   stmem watcher archive [on|off]                watcher 自动挖掘对话开关
   stmem watcher miner [on|off]                  watcher 自动挖掘摘要+特征开关
+  stmem db [status|migrate] [--thread <id>]     检查数据库或迁移旧 JSONL
 
 所有 --thread 可省略，默认取第一个已配置线程。
 
@@ -62,6 +63,9 @@ switch (cmd) {
     break;
   case "watcher":
     require(path.join(SCRIPTS, "stmem-watcher"));
+    break;
+  case "db":
+    require(path.join(SCRIPTS, "stmem-db"));
     break;
   default:
     console.log("未知命令: " + cmd + "\n运行 stmem --help 查看可用命令");

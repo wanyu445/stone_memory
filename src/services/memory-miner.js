@@ -4,7 +4,16 @@ const os = require("os");
 const crypto = require("crypto");
 const { execSync } = require("child_process");
 const { runSubagent } = require("./subagent-runner");
-const { parseJsonArray } = require("../lib/json-parse");
+const { parseJsonArray, parseJsonObject } = require("../lib/json-parse");
+
+class MiningError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = "MiningError";
+    this.code = code;
+    this.details = details;
+  }
+}
 
 function subagentSafe(prompt, opts = {}) {
   try {
@@ -179,9 +188,18 @@ class MemoryMiner {
   }
 
   /** 执行一轮挖掘 — 有 API key 走直连(快), 无 key 走 claude -p */
-  async mine(dateStr = "") {
-    if (this.running) return;
+  async mine(dateStr = "", { force = false } = {}) {
+    const startedAt = Date.now();
     const targetDate = dateStr || this._yesterday();
+    if (this.running) return { date: targetDate, status: "locked", errorCode: "MINER_BUSY" };
+
+    const initialState = this._readState();
+    if (force && initialState[`mined:${targetDate}`]) {
+      throw new MiningError("REVIEW_REQUIRED", "已完成日期不能直接覆盖；请通过重挖候选流程生成并确认替换");
+    }
+    if (!force && initialState[`mined:${targetDate}`]) {
+      return { date: targetDate, status: "already_completed", feelingCount: 0, featureCount: 0, durationMs: 0 };
+    }
 
     // 按日期锁：不同日期不互斥，同日期跨进程不重复挖
     const lockDir = path.join(this.memoryDir, `.mining-lock-${targetDate}`);
@@ -195,23 +213,23 @@ class MemoryMiner {
           console.log(`[memory-miner] ${targetDate}: stale lock removed, retrying`);
         } else {
           console.log(`[memory-miner] ${targetDate}: locked (another process mining)`);
-          return;
+          return { date: targetDate, status: "locked", errorCode: "MINING_LOCKED" };
         }
       } catch {
         console.log(`[memory-miner] ${targetDate}: locked (another process mining)`);
-        return;
+        return { date: targetDate, status: "locked", errorCode: "MINING_LOCKED" };
       }
     }
 
     this.running = true;
     try {
-      const state = this._readState();
+      const state = force ? {} : this._readState();
 
       const messages = this.archive.readDay(targetDate);
       if (messages.length < 5) {
         console.log(`[memory-miner] ${targetDate}: only ${messages.length} messages, skip`);
-        this._saveState({ [`mined:${targetDate}`]: Date.now() });
-        return;
+        this._saveState({ [`skipped:${targetDate}`]: Date.now(), [`mined:${targetDate}`]: Date.now() });
+        return { date: targetDate, status: "skipped", skippedReason: "insufficient_messages", feelingCount: 0, featureCount: 0, durationMs: Date.now() - startedAt };
       }
 
       // 加载 ops 提示词（所有模式共用）
@@ -247,12 +265,18 @@ class MemoryMiner {
       const updated = this._readState();
       if (updated[`feeling:${targetDate}`] && updated[`feature:${targetDate}`]) {
         this._saveState({ [`mined:${targetDate}`]: Date.now() });
+      } else {
+        const missing = [!updated[`feeling:${targetDate}`] && "feelings", !updated[`feature:${targetDate}`] && "features"].filter(Boolean);
+        throw new MiningError("PARTIAL_RESULT", `${targetDate} missing ${missing.join(" and ")}`, { missing });
       }
 
       // 清洗特征库（去重、去一次性事件）
       this._cleanupFeatures();
+      return { date: targetDate, status: "completed", feelingCount: null, featureCount: null, durationMs: Date.now() - startedAt };
     } catch (err) {
       console.error(`[memory-miner] error: ${err.message}`);
+      if (err instanceof MiningError) throw err;
+      throw new MiningError(err.code || "MINING_FAILED", err.message, { cause: err });
     } finally {
       this.running = false;
       try { fs.rmdirSync(lockDir); } catch {}
@@ -307,19 +331,12 @@ class MemoryMiner {
       : subagentSafe(prompt, { threadId: this.threadId });
 
     // 解析 feelings + features
-    let feelings = [], features = [];
-    try {
-      const parsed = JSON.parse(reply.trim());
-      feelings = parsed.feelings || [];
-      features = parsed.features || [];
-    } catch {
-      // fallback: 各搜 JSON 数组
-      const feelMatch = reply.match(/"feelings"\s*:\s*(\[[\s\S]*?\])/);
-      const featMatch = reply.match(/"features"\s*:\s*(\[[\s\S]*?\])/);
-      if (feelMatch) feelings = parseJsonArray(feelMatch[1]);
-      if (featMatch) features = parseJsonArray(featMatch[1]);
-      if (!feelings.length) feelings = parseJsonArray(reply);
+    const parsed = parseJsonObject(reply);
+    if (!parsed || !Array.isArray(parsed.feelings) || !Array.isArray(parsed.features)) {
+      throw new MiningError("OUTPUT_INVALID", `${targetDate}: subagent output is not a feelings/features JSON object`);
     }
+    const feelings = parsed.feelings;
+    const features = parsed.features;
 
     // 写入 feelings
     if (feelings.length > 0 && !state[`feeling:${targetDate}`]) {
@@ -329,6 +346,8 @@ class MemoryMiner {
     if (features.length > 0 && !state[`feature:${targetDate}`]) {
       await this._saveEntries(features, { targetDate, outputFile: null, stateKey: `feature:${targetDate}`, label: "features", isFeature: true });
     }
+    if (!feelings.length && !state[`feeling:${targetDate}`]) this._saveState({ [`feeling:${targetDate}`]: Date.now() });
+    if (!features.length && !state[`feature:${targetDate}`]) this._saveState({ [`feature:${targetDate}`]: Date.now() });
   }
 
   /** 保存条目（去重 + 写文件） */
@@ -372,6 +391,8 @@ class MemoryMiner {
     const entries = deduped.map((m, i) => ({
       id: `mem_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
       seq: isFeature ? undefined : nextSeq + i,
+      sourceDate: targetDate,
+      eventTime: m.eventTime || null,
       content: m.content,
       category: m.category || (isFeature ? "misc" : ""),
       type: isFeature ? "feature" : "feeling",
@@ -435,6 +456,8 @@ class MemoryMiner {
     const entries = deduped.map((m, i) => ({
       id: `mem_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
       seq: isFeature ? undefined : nextSeq + i,  // 只有 feeling 有 seq
+      sourceDate: targetDate,
+      eventTime: m.eventTime || null,
       content: m.content,
       category: m.category || (isFeature ? "misc" : ""),
       type: isFeature ? "feature" : "feeling",
@@ -491,8 +514,7 @@ class MemoryMiner {
 
   _appendFile(filePath, entries) {
     const lines = entries.map((e) => JSON.stringify(e) + "\n").join("");
-    try { fs.appendFileSync(filePath, lines, "utf8"); }
-    catch (err) { console.error(`[memory-miner] append error: ${err.message}`); }
+    fs.appendFileSync(filePath, lines, "utf8");
   }
 
   _yesterday() {
@@ -519,8 +541,13 @@ class MemoryMiner {
           });
           if (!response.ok) { const errText = await response.text().catch(() => ""); throw new Error(`API ${response.status}: ${errText.slice(0, 200)}`); }
           const data = await response.json();
-          const reply = data?.choices?.[0]?.message?.content || "[]";
-          return parseJsonArray(reply);
+          const reply = data?.choices?.[0]?.message?.content;
+          if (!reply || !reply.trim()) throw new MiningError("OUTPUT_EMPTY", "API returned empty content");
+          const parsed = parseJsonArray(reply);
+          if (!Array.isArray(parsed) || (parsed.length === 0 && !/^\s*(?:```(?:json)?\s*)?\[\s*\]/i.test(reply))) {
+            throw new MiningError("OUTPUT_INVALID", "API output is not a JSON array");
+          }
+          return parsed;
         } catch (err) {
           lastErr = err;
           if (attempt < 2) {
@@ -545,8 +572,8 @@ class MemoryMiner {
   }
 
   _saveState(state) {
-    try { fs.writeFileSync(this.stateFile, JSON.stringify({ ...this._readState(), ...state }), "utf8"); } catch {}
+    fs.writeFileSync(this.stateFile, JSON.stringify({ ...this._readState(), ...state }), "utf8");
   }
 }
 
-module.exports = { MemoryMiner };
+module.exports = { MemoryMiner, MiningError };

@@ -16,6 +16,13 @@ const path = require("path");
 const { MemoryArchive } = require("../src/services/memory-archive");
 const { MemoryMiner } = require("../src/services/memory-miner");
 const { getCfg, getThreadDir, listThreadIds, loadConfig } = require("../src/config");
+const { MemoryStore } = require("../src/storage/memory-store");
+
+function syncDatabase(memoryDir, tid) {
+  const store = new MemoryStore({ memoryDir, threadId: tid });
+  try { return store.migrateLegacy(); }
+  finally { store.close(); }
+}
 
 function resolveApiConfig(tid, forceApi, forceSub) {
   if (forceSub) return {};  // 强制 subagent
@@ -46,6 +53,7 @@ async function main() {
   const allMode = args.includes("--all");
   const forceApi = args.includes("--api");
   const forceSub = args.includes("--subagent");
+  const force = args.includes("--force");
   const threadIdx = args.indexOf("--thread");
   const tid = threadIdx >= 0 ? args[threadIdx + 1] : listThreadIds()[0];
   if (!tid) throw new Error("未指定线程，请用 --thread <id> 或先 stmem init");
@@ -101,18 +109,24 @@ async function main() {
     for (const d of pending) {
       try {
         console.log(`\n[stmem] --- ${d} ---`);
-        await miner.mine(d);
-        ok++;
+        const result = await miner.mine(d, { force });
+        if (result.status === "locked") throw new Error(`${result.errorCode}: date is locked`);
+        if (["completed", "skipped", "already_completed"].includes(result.status)) ok++;
+        else throw new Error(`unexpected status: ${result.status}`);
       } catch (e) {
         console.error(`[stmem] ${d} 失败: ${e.message}`);
         fail++;
       }
     }
     console.log(`\n[stmem] 完成: ${ok} 成功, ${fail} 失败`);
+    syncDatabase(memoryDir, tid);
+    if (fail) process.exitCode = 1;
   } else {
     console.log(`[stmem] mining ${targetDate || "昨天"} (${modeLabel})...`);
-    await miner.mine(targetDate);
-    console.log("[stmem] done.");
+    const result = await miner.mine(targetDate, { force });
+    if (result.status === "locked") throw new Error(`${result.errorCode}: date is locked`);
+    syncDatabase(memoryDir, tid);
+    console.log(`[stmem] ${result.status}.`);
   }
 }
 

@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { ensureDateFile, resolveDateFile, listDates, listJsonlRecursive, migrateFlatFiles } = require("../src/lib/archive-paths");
-const { MemoryArchive } = require("../src/services/memory-archive");
+const { MemoryArchive, FullArchive } = require("../src/services/memory-archive");
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-archive-"));
@@ -31,14 +31,20 @@ test("legacy flat files migrate without changing their content", t => {
   assert.equal(fs.existsSync(legacy), false);
 });
 
-test("MemoryArchive writes and reads archive and full recursively", t => {
+test("MemoryArchive stores normalized messages in SQLite", t => {
   const memoryDir = tempDir(t);
-  const archive = new MemoryArchive(memoryDir);
+  const archive = new MemoryArchive(memoryDir, { threadId: "thread-test" });
   const msg = { timestamp: "2026-05-12T10:00:00+08:00", type: "user", text: "hello" };
   archive.archiveMessage(msg);
-  archive.archiveFull(msg);
-  assert.deepEqual(archive.readDay("2026-05-12"), [msg]);
-  assert.equal(fs.existsSync(path.join(memoryDir, "archive", "2026", "05", "2026-05-12.jsonl")), true);
+  assert.deepEqual(archive.readDay("2026-05-12").map(row => row.text), ["hello"]);
+  archive.close();
+  assert.equal(fs.existsSync(path.join(memoryDir, "archive", "2026", "05", "2026-05-12.jsonl")), false);
+});
+
+test("FullArchive writes only recursive raw backup", t => {
+  const memoryDir = tempDir(t);
+  const archive = new FullArchive(memoryDir);
+  archive.archiveFull({ timestamp: "2026-05-12T10:00:00+08:00", extra: [1, 2] });
   assert.equal(fs.existsSync(path.join(memoryDir, "archive", "full", "2026", "05", "2026-05-12.jsonl")), true);
 });
 

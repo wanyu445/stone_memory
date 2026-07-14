@@ -13,17 +13,10 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { MemoryArchive } = require("../src/services/memory-archive");
 const { MemoryMiner } = require("../src/services/memory-miner");
 const { getCfg, getThreadDir, listThreadIds, loadConfig } = require("../src/config");
 const { MemoryStore } = require("../src/storage/memory-store");
-const { listDates } = require("../src/lib/archive-paths");
-
-function syncDatabase(memoryDir, tid) {
-  const store = new MemoryStore({ memoryDir, threadId: tid });
-  try { return store.migrateLegacy(); }
-  finally { store.close(); }
-}
+const { shouldAttempt } = require("../src/services/mining-state");
 
 function resolveApiConfig(tid, forceApi, forceSub) {
   if (forceSub) return {};  // 强制 subagent
@@ -63,11 +56,9 @@ async function main() {
   const deepseekConfig = resolveApiConfig(tid, forceApi, forceSub);
   const modeLabel = deepseekConfig.apiKey ? `api (${deepseekConfig.baseUrl})` : "subagent";
 
-  const archive = new MemoryArchive(memoryDir);
   const miner = new MemoryMiner({
     memoryDir,
     threadId: tid,
-    archive,
     deepseekConfig,
     personaConfig: {
       aiName: getCfg("ai", tid),
@@ -78,52 +69,39 @@ async function main() {
   });
 
   if (allMode) {
-    const archiveDir = path.join(memoryDir, "archive");
-    let allDates = [];
-    try {
-      allDates = listDates(archiveDir);
-    } catch {}
-    if (!allDates.length) { console.log("[stmem] archive 目录无数据"); process.exit(0); }
-
-    const stateFile = path.join(memoryDir, "mined", "state.json");
-    let minedDates = new Set();
-    try {
-      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-      for (const key of Object.keys(state)) {
-        if (key.startsWith("mined:")) minedDates.add(key.slice(6));
-      }
-    } catch {}
+    const allDates = miner.store.listMessageDates();
+    if (!allDates.length) { console.log("[stmem] SQLite messages 无数据"); process.exit(0); }
+    const miningState = miner._readState();
 
     const bjToday = (() => {
       const bj = new Date(Date.now() + 8 * 3600 * 1000);
       return bj.toISOString().slice(0, 10);
     })();
 
-    const pending = allDates.filter(d => d < bjToday && !minedDates.has(d));
+    const pending = allDates.filter(d => d < bjToday && shouldAttempt(miningState, d, miner.store.listMessages({ date: d })));
     if (!pending.length) { console.log("[stmem] 所有日期已挖掘完毕"); process.exit(0); }
 
     console.log(`[stmem] 待挖掘: ${pending.length} 天 (${pending[0]} ~ ${pending[pending.length-1]}) (${modeLabel})`);
-    let ok = 0, fail = 0;
+    let ok = 0, empty = 0, fail = 0;
     for (const d of pending) {
       try {
         console.log(`\n[stmem] --- ${d} ---`);
         const result = await miner.mine(d, { force });
         if (result.status === "locked") throw new Error(`${result.errorCode}: date is locked`);
-        if (["completed", "skipped", "already_completed"].includes(result.status)) ok++;
+        if (["completed", "already_completed"].includes(result.status)) ok++;
+        else if (result.status === "completed_empty") empty++;
         else throw new Error(`unexpected status: ${result.status}`);
       } catch (e) {
         console.error(`[stmem] ${d} 失败: ${e.message}`);
         fail++;
       }
     }
-    console.log(`\n[stmem] 完成: ${ok} 成功, ${fail} 失败`);
-    syncDatabase(memoryDir, tid);
+    console.log(`\n[stmem] 完成: ${ok} 有结果, ${empty} 无需记录, ${fail} 失败`);
     if (fail) process.exitCode = 1;
   } else {
     console.log(`[stmem] mining ${targetDate || "昨天"} (${modeLabel})...`);
     const result = await miner.mine(targetDate, { force });
     if (result.status === "locked") throw new Error(`${result.errorCode}: date is locked`);
-    syncDatabase(memoryDir, tid);
     console.log(`[stmem] ${result.status}.`);
   }
 }

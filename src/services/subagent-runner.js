@@ -53,14 +53,9 @@ function getRuntimeConfig(runtimeName) {
 function resolvePlaceholders(threadId) {
   const dir = getThreadDir(threadId);
   const memDir = path.join(dir, "memory");
-  const feelDir = path.join(memDir, "mined", "feelings");
   return {
     "{{retainConfig}}":    path.join(memDir, "retain-config.json"),
     "{{archiveDir}}":      path.join(memDir, "archive"),
-    "{{feelingsFile}}":    path.join(feelDir, "days.jsonl"),
-    "{{weeksFile}}":       path.join(feelDir, "weeks.jsonl"),
-    "{{monthsFile}}":      path.join(feelDir, "months.jsonl"),
-    "{{featuresDir}}":     path.join(memDir, "mined", "features"),
     "{{searchLog}}":       path.join(memDir, "search-log.jsonl"),
     "{{auditReport}}":     path.join(memDir, "audit-report.md"),
     "{{auditState}}":      path.join(memDir, "audit-state.json"),

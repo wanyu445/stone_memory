@@ -5,6 +5,8 @@ const crypto = require("crypto");
 const { execSync } = require("child_process");
 const { runSubagent } = require("./subagent-runner");
 const { parseJsonArray, parseJsonObject } = require("../lib/json-parse");
+const { archiveFingerprint, getDayState, isCompleted, retryDelayMs } = require("./mining-state");
+const { MemoryStore } = require("../storage/memory-store");
 
 class MiningError extends Error {
   constructor(code, message, details = {}) {
@@ -147,17 +149,16 @@ class MemoryMiner {
     this.purpose = personaConfig?.purpose || "accompany";
     this.memoryDir = memoryDir;
     this.minedDir = path.join(memoryDir, "mined");
-    this.feelingFile = path.join(this.minedDir, "feelings", "days.jsonl");
-    this.featuresDir = path.join(this.minedDir, FEATURES_DIR);
-    this.stateFile = path.join(this.minedDir, "state.json");
     this.archive = archive;
     this.deepseekConfig = deepseekConfig;
     this.timer = null;
     this.running = false;
 
-    fs.mkdirSync(path.dirname(this.feelingFile), { recursive: true });
-    fs.mkdirSync(this.featuresDir, { recursive: true });
     fs.mkdirSync(path.join(memoryDir, "archive"), { recursive: true });
+    this.store = new MemoryStore({ memoryDir, threadId });
+    this.channelState = new Set();
+    this.pendingFeelings = [];
+    this.pendingFeatures = [];
   }
 
   start(dailyAtHour = 3) {
@@ -194,10 +195,7 @@ class MemoryMiner {
     if (this.running) return { date: targetDate, status: "locked", errorCode: "MINER_BUSY" };
 
     const initialState = this._readState();
-    if (force && initialState[`mined:${targetDate}`]) {
-      throw new MiningError("REVIEW_REQUIRED", "已完成日期不能直接覆盖；请通过重挖候选流程生成并确认替换");
-    }
-    if (!force && initialState[`mined:${targetDate}`]) {
+    if (!force && isCompleted(initialState, targetDate)) {
       return { date: targetDate, status: "already_completed", feelingCount: 0, featureCount: 0, durationMs: 0 };
     }
 
@@ -222,27 +220,36 @@ class MemoryMiner {
     }
 
     this.running = true;
+    let attempt = 1;
+    let messages = [];
+    let fingerprint = "";
     try {
+      this.pendingFeelings = [];
+      this.pendingFeatures = [];
+      if (force) this._deleteStateKeys([`feeling:${targetDate}`, `feature:${targetDate}`]);
       const state = force ? {} : this._readState();
 
-      const messages = this.archive.readDay(targetDate);
-      if (messages.length < 5) {
-        console.log(`[memory-miner] ${targetDate}: only ${messages.length} messages, skip`);
-        this._saveState({ [`skipped:${targetDate}`]: Date.now(), [`mined:${targetDate}`]: Date.now() });
-        return { date: targetDate, status: "skipped", skippedReason: "insufficient_messages", feelingCount: 0, featureCount: 0, durationMs: Date.now() - startedAt };
-      }
-
+      messages = this.store.listMessages({ date: targetDate });
+      fingerprint = archiveFingerprint(messages);
+      attempt = (getDayState(state, targetDate)?.attempt || 0) + 1;
+      if (!force) this._saveState({ [`day:${targetDate}`]: {
+        status: "running", messageCount: messages.length, archiveFingerprint: fingerprint,
+        attempt, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }});
       // 加载 ops 提示词（所有模式共用）
       const opsFile = path.join(__dirname, "..", "..", "operations", "memory-miner-operations.md");
       let opsPrompt = "";
       try { opsPrompt = fs.readFileSync(opsFile, "utf8"); } catch {}
 
-      if (this.deepseekConfig?.apiKey) {
+      if (messages.length === 0) {
+        // 空 archive 不调用模型，但双通道均视为成功检查过。
+        this._saveState({ [`feeling:${targetDate}`]: Date.now(), [`feature:${targetDate}`]: Date.now() });
+      } else if (this.deepseekConfig?.apiKey) {
         if (opsPrompt && this.purpose === "accompany") {
           // 有 ops：分通道提取，尾部追加约束避免输出混合格式
           if (!state[`feeling:${targetDate}`]) {
             const prompt = `${opsPrompt}\n\n只输出 feelings 数组，不要 features。\n\n格式：[{"content": "...", "importance": 1-5}]`;
-            await this._mineChannel({ targetDate, messages, prompt, outputFile: this.feelingFile, stateKey: `feeling:${targetDate}`, label: "feelings" });
+            await this._mineChannel({ targetDate, messages, prompt, stateKey: `feeling:${targetDate}`, label: "feelings" });
           }
           if (!state[`feature:${targetDate}`]) {
             const prompt = `${opsPrompt}\n\n只输出 features 数组，不要 feelings。\n\n格式：[{"content": "...", "category": "...", "importance": 1-5}]`;
@@ -251,7 +258,7 @@ class MemoryMiner {
         } else {
           // 无 ops：用内联提示词
           if (!state[`feeling:${targetDate}`]) {
-            await this._mineChannel({ targetDate, messages, prompt: buildFeelingPrompt(this.aiName, this.userName, this.purpose), outputFile: this.feelingFile, stateKey: `feeling:${targetDate}`, label: "feelings" });
+            await this._mineChannel({ targetDate, messages, prompt: buildFeelingPrompt(this.aiName, this.userName, this.purpose), stateKey: `feeling:${targetDate}`, label: "feelings" });
           }
           if (!state[`feature:${targetDate}`]) {
             await this._mineChannel({ targetDate, messages, prompt: buildFeaturePrompt(this.userName, this.purpose), outputFile: null, stateKey: `feature:${targetDate}`, label: "features", isFeature: true });
@@ -264,35 +271,54 @@ class MemoryMiner {
 
       const updated = this._readState();
       if (updated[`feeling:${targetDate}`] && updated[`feature:${targetDate}`]) {
-        this._saveState({ [`mined:${targetDate}`]: Date.now() });
+        const completedAt = new Date().toISOString();
+        const source = force ? "remine" : "auto";
+        const feelingCount = this.pendingFeelings.length;
+        const featureCount = this.pendingFeatures.length;
+        const completionStatus = feelingCount === 0 && featureCount === 0 ? "completed_empty" : "completed";
+        this.store.replaceDay(targetDate, { feelings: this.pendingFeelings, features: this.pendingFeatures, source, dayState: {
+          status: completionStatus, messageCount: messages.length, archiveFingerprint: fingerprint,
+          feelingCount, featureCount,
+          attempt, completedAt, errorCode: null, errorMessage: null, failedAt: null, nextRetryAt: null, updatedAt: completedAt,
+        }});
+        this._deleteStateKeys([`skipped:${targetDate}`]);
       } else {
         const missing = [!updated[`feeling:${targetDate}`] && "feelings", !updated[`feature:${targetDate}`] && "features"].filter(Boolean);
         throw new MiningError("PARTIAL_RESULT", `${targetDate} missing ${missing.join(" and ")}`, { missing });
       }
 
-      // 清洗特征库（去重、去一次性事件）
-      this._cleanupFeatures();
-      return { date: targetDate, status: "completed", feelingCount: null, featureCount: null, durationMs: Date.now() - startedAt };
+      const completedDay = getDayState(this._readState(), targetDate);
+      return { date: targetDate, status: completedDay.status, feelingCount: completedDay.feelingCount, featureCount: completedDay.featureCount, durationMs: Date.now() - startedAt };
     } catch (err) {
       console.error(`[memory-miner] error: ${err.message}`);
+      const failedAt = new Date();
+      if (force) {
+        this._appendNotification({
+          type: "remine_failed", threadId: this.threadId, date: targetDate,
+          errorCode: err.code || "MINING_FAILED", errorMessage: err.message,
+          createdAt: failedAt.toISOString(), read: false,
+        });
+        if (err instanceof MiningError) throw err;
+        throw new MiningError(err.code || "MINING_FAILED", err.message, { cause: err });
+      }
+      const blocked = attempt >= 3;
+      this._saveState({ [`day:${targetDate}`]: {
+        status: blocked ? "blocked" : "failed", messageCount: messages.length, archiveFingerprint: fingerprint,
+        attempt, errorCode: err.code || "MINING_FAILED", errorMessage: err.message,
+        failedAt: failedAt.toISOString(),
+        ...(blocked ? { nextRetryAt: null } : { nextRetryAt: new Date(failedAt.getTime() + retryDelayMs(attempt)).toISOString() }),
+        updatedAt: failedAt.toISOString(),
+      }});
+      if (blocked) this._appendNotification({
+        type: "mining_blocked", threadId: this.threadId, date: targetDate,
+        attempt, errorCode: err.code || "MINING_FAILED", errorMessage: err.message,
+        createdAt: failedAt.toISOString(), read: false,
+      });
       if (err instanceof MiningError) throw err;
       throw new MiningError(err.code || "MINING_FAILED", err.message, { cause: err });
     } finally {
       this.running = false;
       try { fs.rmdirSync(lockDir); } catch {}
-    }
-  }
-
-  _cleanupFeatures() {
-    try {
-      const { execSync } = require("child_process");
-      const scriptPath = path.join(__dirname, "..", "..", "scripts", "cleanup-features.js");
-      if (fs.existsSync(scriptPath)) {
-        const tidArg = this.threadId ? ` --thread ${this.threadId}` : "";
-        execSync(`node "${scriptPath}"${tidArg}`, { timeout: 30000, stdio: "pipe", windowsHide: true });
-      }
-    } catch (err) {
-      console.error(`[memory-miner] cleanup failed: ${err.message}`);
     }
   }
 
@@ -340,7 +366,7 @@ class MemoryMiner {
 
     // 写入 feelings
     if (feelings.length > 0 && !state[`feeling:${targetDate}`]) {
-      await this._saveEntries(feelings, { targetDate, outputFile: this.feelingFile, stateKey: `feeling:${targetDate}`, label: "feelings", isFeature: false });
+      await this._saveEntries(feelings, { targetDate, stateKey: `feeling:${targetDate}`, label: "feelings", isFeature: false });
     }
     // 写入 features
     if (features.length > 0 && !state[`feature:${targetDate}`]) {
@@ -353,7 +379,7 @@ class MemoryMiner {
   /** 保存条目（去重 + 写文件） */
   async _saveEntries(raw, { targetDate, outputFile, stateKey, label, isFeature }) {
     console.log(`[memory-miner] ${targetDate}: ${label} — ${raw.length} entries, saving...`);
-    const existing = isFeature ? this._loadAllFeatures() : this._loadFile(outputFile);
+    const existing = isFeature ? this.pendingFeatures : this.pendingFeelings;
     const existingSet = new Set(existing.map(e => e.content));
     const deduped = raw.filter(m => !existingSet.has(m.content));
     if (!deduped.length) {
@@ -380,17 +406,9 @@ class MemoryMiner {
       if (fixed > 0) console.log(`  Date fix: ${fixed} entry/ies corrected to ${expectedPrefix}`);
     }
 
-    let nextSeq = 1;
-    if (!isFeature && fs.existsSync(this.feelingFile)) {
-      for (const line of fs.readFileSync(this.feelingFile, "utf8").split("\n").filter(Boolean)) {
-        try { const obj = JSON.parse(line); if (obj.type === "feeling" && typeof obj.seq === "number" && obj.seq >= nextSeq) nextSeq = obj.seq + 1; } catch {}
-      }
-    }
-
     const now = new Date().toISOString();
     const entries = deduped.map((m, i) => ({
       id: `mem_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
-      seq: isFeature ? undefined : nextSeq + i,
       sourceDate: targetDate,
       eventTime: m.eventTime || null,
       content: m.content,
@@ -400,23 +418,15 @@ class MemoryMiner {
       createdAt: now, accessedAt: now, accessCount: 0,
     }));
 
-    if (isFeature) {
-      for (const e of entries) {
-        const catDir = path.join(this.featuresDir);
-        fs.mkdirSync(catDir, { recursive: true });
-        const catFile = path.join(catDir, `${e.category || "misc"}.jsonl`);
-        fs.appendFileSync(catFile, JSON.stringify(e) + "\n", "utf8");
-      }
-    } else {
-      for (const e of entries) fs.appendFileSync(outputFile, JSON.stringify(e) + "\n", "utf8");
-    }
+    if (isFeature) this.pendingFeatures.push(...entries);
+    else this.pendingFeelings.push(...entries);
 
     this._saveState({ [stateKey]: Date.now() });
     console.log(`[memory-miner] ${targetDate}: ${label} — saved ${entries.length} entries`);
   }
 
   /** 单通道挖掘 (API key 模式) */
-  async _mineChannel({ targetDate, messages, prompt, outputFile, stateKey, label, isFeature = false }) {
+  async _mineChannel({ targetDate, messages, prompt, stateKey, label, isFeature = false }) {
     const [y, m, d] = targetDate.split("-");
     const dateLabel = `${parseInt(m)}月${parseInt(d)}日`;
     const datedPrompt = `${prompt}\n\n以下是 ${dateLabel} 的对话记录。你只能记录这一天实际发生的对话。即使对话中提到之前的事，你也只记录今天的对话。每条 feelings 必须以 "${dateLabel}，" 开头，禁止使用其他日期。`;
@@ -428,93 +438,7 @@ class MemoryMiner {
       return;
     }
 
-    // 去重
-    const existing = isFeature ? this._loadAllFeatures() : this._loadFile(outputFile);
-    const existingSet = new Set(existing.map((e) => e.content));
-    const deduped = raw.filter((m) => !existingSet.has(m.content));
-    if (!deduped.length) {
-      console.log(`[memory-miner] ${targetDate}: ${label} — all ${raw.length} already exist`);
-      this._saveState({ [stateKey]: Date.now() });
-      return;
-    }
-
-    // 自增序号 — 从已有 feelings 中找最大 seq + 1
-    let nextSeq = 1;
-    if (!isFeature && fs.existsSync(this.feelingFile)) {
-      const existing = fs.readFileSync(this.feelingFile, "utf8").split("\n").filter(Boolean);
-      for (const line of existing) {
-        try {
-          const obj = JSON.parse(line);
-          if (obj.type === "feeling" && typeof obj.seq === "number" && obj.seq >= nextSeq) {
-            nextSeq = obj.seq + 1;
-          }
-        } catch {}
-      }
-    }
-
-    const now = new Date().toISOString();
-    const entries = deduped.map((m, i) => ({
-      id: `mem_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
-      seq: isFeature ? undefined : nextSeq + i,  // 只有 feeling 有 seq
-      sourceDate: targetDate,
-      eventTime: m.eventTime || null,
-      content: m.content,
-      category: m.category || (isFeature ? "misc" : ""),
-      type: isFeature ? "feature" : "feeling",
-      importance: Math.min(5, Math.max(1, Math.floor(m.importance || 3))),
-      createdAt: now,
-      accessedAt: now,
-      accessCount: 0,
-    }));
-
-    if (isFeature) {
-      this._appendFeatures(entries);
-    } else {
-      this._appendFile(outputFile, entries);
-    }
-
-    this._saveState({ [stateKey]: Date.now() });
-    console.log(`[memory-miner] ${targetDate}: ${label} — saved ${entries.length} entries`);
-    for (const e of entries) {
-      const tag = isFeature ? `[${e.category}] ` : "";
-      console.log(`  - ${tag}${e.content.slice(0, 100)}...`);
-    }
-  }
-
-  /** 特征按类别分文件写入 */
-  _appendFeatures(entries) {
-    const byCategory = {};
-    for (const e of entries) {
-      const cat = FEATURE_CATEGORIES.includes(e.category) ? e.category : "misc";
-      if (!byCategory[cat]) byCategory[cat] = [];
-      byCategory[cat].push(e);
-    }
-    for (const [cat, batch] of Object.entries(byCategory)) {
-      this._appendFile(path.join(this.featuresDir, `${cat}.jsonl`), batch);
-    }
-  }
-
-  /** 加载所有特征文件 */
-  _loadAllFeatures() {
-    const all = [];
-    for (const cat of FEATURE_CATEGORIES) {
-      all.push(...this._loadFile(path.join(this.featuresDir, `${cat}.jsonl`)));
-    }
-    return all;
-  }
-
-  _loadFile(filePath) {
-    try {
-      const raw = fs.readFileSync(filePath, "utf8");
-      return raw.split("\n").filter(Boolean).map((line) => {
-        try { return JSON.parse(line); } catch { return null; }
-      }).filter(Boolean);
-    } catch { return []; }
-  }
-
-  _appendFile(filePath, entries) {
-    const lines = entries.map((e) => JSON.stringify(e) + "\n").join("");
-    fs.appendFileSync(filePath, lines, "utf8");
+    await this._saveEntries(raw, { targetDate, stateKey, label, isFeature });
   }
 
   _yesterday() {
@@ -568,11 +492,38 @@ class MemoryMiner {
   }
 
   _readState() {
-    try { return JSON.parse(fs.readFileSync(this.stateFile, "utf8")); } catch { return {}; }
+    const state = {};
+    for (const row of this.store.listDayStates()) {
+      state[`day:${row.source_date}`] = {
+        status: row.status, messageCount: row.message_count, feelingCount: row.feeling_count,
+        featureCount: row.feature_count, attempt: row.attempt, errorCode: row.error_code,
+        errorMessage: row.error_message, archiveFingerprint: row.archive_fingerprint,
+        startedAt: row.started_at, completedAt: row.completed_at, failedAt: row.failed_at,
+        nextRetryAt: row.next_retry_at, updatedAt: row.updated_at,
+      };
+      if (["completed", "completed_empty"].includes(row.status)) state[`mined:${row.source_date}`] = row.completed_at || row.updated_at;
+    }
+    for (const key of this.channelState) state[key] = true;
+    return state;
   }
 
   _saveState(state) {
-    fs.writeFileSync(this.stateFile, JSON.stringify({ ...this._readState(), ...state }), "utf8");
+    for (const [key, value] of Object.entries(state)) {
+      if (key.startsWith("day:")) this.store.setDayState(key.slice(4), value);
+      else if (key.startsWith("feeling:") || key.startsWith("feature:")) this.channelState.add(key);
+    }
+  }
+
+  _deleteStateKeys(keys) {
+    for (const key of keys) {
+      if (key.startsWith("day:")) this.store.clearDayState(key.slice(4));
+      else this.channelState.delete(key);
+    }
+  }
+
+  _appendNotification(notification) {
+    this.store.addNotification({ type: notification.type, date: notification.date,
+      errorCode: notification.errorCode, errorMessage: notification.errorMessage, attempt: notification.attempt });
   }
 }
 

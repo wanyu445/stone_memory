@@ -11,7 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { parseJsonlFile } = require("../lib/jsonl");
+const { readFeelings } = require("../storage/memory-reader");
 
 // 文件路径由调用方传入，不再硬编码
 
@@ -79,65 +79,18 @@ function loadRetainConfig(retainConfigPath) {
   catch { return { retain: {} }; }
 }
 
-function loadTieredFeelings(daysFile, weeksFile, monthsFile, memoryBudgetChars = 100000) {
-  const monthsRaw = parseJsonlFile(monthsFile);
-  const weeksRaw = parseJsonlFile(weeksFile);
-  const daysRaw = parseJsonlFile(daysFile).filter(r => r.type === "feeling");
-
-  // 解析日 feelings
-  const dayFeelings = [];
-  const coveredDates = new Set();
-  for (const r of daysRaw) {
-    const content = (r.content || "").trim();
-    if (!content) continue;
-    const time = parseFeelingTime(content);
-    if (!time?.date) continue;
-    dayFeelings.push({ id: r.id, content, date: time.date, hour: time.hour, minute: time.minute, utcTime: feelingToUtc(time), retainOriginal: false });
-  }
-
-  // 月摘要覆盖的日期
-  const monthEntries = [];
-  for (const m of monthsRaw) {
-    if (!m.monthStart) continue;
-    const start = new Date(m.monthStart);
-    const end = new Date(m.monthEnd || m.monthStart);
-    // 标记该月所有日期为已覆盖
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      coveredDates.add(d.toISOString().slice(0, 10));
-    }
-    monthEntries.push({ id: m.id, content: m.content || "", date: m.monthStart, retainOriginal: false });
-  }
-
-  // 周摘要覆盖的日期（未被月覆盖的）
-  const weekEntries = [];
-  for (const w of weeksRaw) {
-    if (!w.weekStart) continue;
-    const start = new Date(w.weekStart);
-    const end = new Date(w.weekEnd || w.weekStart);
-    let weekCoveredByMonth = false;
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      if (coveredDates.has(d.toISOString().slice(0, 10))) { weekCoveredByMonth = true; break; }
-    }
-    if (weekCoveredByMonth) continue; // 月已覆盖，跳过
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      coveredDates.add(d.toISOString().slice(0, 10));
-    }
-    weekEntries.push({ id: w.id, content: w.content || "", date: w.weekStart, retainOriginal: false });
-  }
-
-  // 日摘要中未被周/月覆盖的
-  const remainingDays = dayFeelings.filter(f => !coveredDates.has(f.date));
-
-  const totalChars = monthEntries.reduce((s, f) => s + f.content.length, 0)
-    + weekEntries.reduce((s, f) => s + f.content.length, 0)
-    + remainingDays.reduce((s, f) => s + f.content.length, 0);
-
-  console.log(`[rebuilder] tiered: ${monthEntries.length}M + ${weekEntries.length}W + ${remainingDays.length}D (${(totalChars/1024).toFixed(1)}KB)`);
-
-  // 混合返回：月 → 周 → 日（按日期排序）
-  const all = [...monthEntries, ...weekEntries, ...remainingDays];
-  all.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  return all;
+function loadTieredFeelings(memoryDir, threadId) {
+  const feelings = readFeelings(memoryDir, { threadId, forInjection: true }).map(r => {
+    const parsed = parseFeelingTime(r.content) || {};
+    const event = r.eventTime ? new Date(r.eventTime) : null;
+    const localEvent = event && !isNaN(event.getTime()) ? new Date(event.getTime() + 8 * 3600 * 1000) : null;
+    const hour = localEvent ? localEvent.getUTCHours() : parsed.hour;
+    const minute = localEvent ? localEvent.getUTCMinutes() : parsed.minute;
+    const time = { date: r.sourceDate || parsed.date, hour, minute };
+    return { id: r.id, content: r.content, date: time.date, hour, minute, utcTime: feelingToUtc(time), retainOriginal: false };
+  });
+  console.log(`[rebuilder] sqlite: ${feelings.length} memories (daily/coarse; hidden excluded)`);
+  return feelings;
 }
 
 // ---- 锚点 + 片段窗口 ----
@@ -239,7 +192,7 @@ function computeCutoff(windowDays) {
 }
 
 module.exports = {
-  parseJsonlFile, parseFeelingTime, feelingToUtc,
+  parseFeelingTime, feelingToUtc,
   loadRetainConfig, loadTieredFeelings,
   buildFragmentWindows, buildMemoryBlocks,
   computeCutoff,

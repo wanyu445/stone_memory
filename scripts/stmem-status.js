@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { loadConfig, getCfg, listThreadIds, getThreadDir } = require("../src/config");
-const fs = require("fs");
-const { listDates } = require("../src/lib/archive-paths");
+const path = require("path");
+const { MemoryStore } = require("../src/storage/memory-store");
 
 const threads = listThreadIds();
 console.log(`Stone Memory — ${threads.length} 线程\n`);
@@ -13,21 +13,11 @@ if (threads.length === 0) {
 
 for (const tid of threads) {
   const dir = getThreadDir(tid);
-  let archiveDays = 0, feelingCount = 0, featureCount = 0;
-  try { archiveDays = listDates(dir + "/memory/archive").length; } catch {}
-  try {
-    const ff = dir + "/memory/mined/feelings/days.jsonl";
-    if (fs.existsSync(ff)) feelingCount = fs.readFileSync(ff, "utf8").split("\n").filter(l => {
-      try { return JSON.parse(l).type === "feeling"; } catch { return false; }
-    }).length;
-  } catch {}
-  try {
-    const fdir = dir + "/memory/mined/features";
-    for (const cat of ["eat","body","sleep","work","relation","habit","location","preference","misc"]) {
-      const cf = fdir + "/" + cat + ".jsonl";
-      if (fs.existsSync(cf)) featureCount += fs.readFileSync(cf, "utf8").split("\n").filter(Boolean).length;
-    }
-  } catch {}
+  const store = new MemoryStore({ memoryDir: path.join(dir, "memory"), threadId: tid });
+  const archiveDays = store.listMessageDates().length;
+  const feelingCount = store.listFeelings().length;
+  const featureCount = store.listFeatures().length;
+  store.close();
 
   console.log(`  ${tid}`);
   const label = getCfg("label", tid, tid);

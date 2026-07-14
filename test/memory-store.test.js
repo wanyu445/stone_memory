@@ -26,24 +26,33 @@ test("legacy migration is idempotent and dynamic seq follows event time", t => {
   assert.deepEqual(rows.map(r => [r.id, r.seq, r.daySeq]), [["f-early", 1, 1], ["f-late", 2, 2]]);
 });
 
-test("remine candidates replace current automatic results transactionally", t => {
+test("legacy normalized archive migrates once into SQLite messages", t => {
+  const { store, dir } = tempStore(t);
+  const archiveFile = path.join(dir, "archive", "2026", "06", "2026-06-12.jsonl");
+  fs.mkdirSync(path.dirname(archiveFile), { recursive: true });
+  fs.writeFileSync(archiveFile, JSON.stringify({ timestamp: "2026-06-12T08:00:00.123Z", type: "user", text: "hello" }) + "\n");
+  assert.equal(store.migrateLegacy().messageCount, 1);
+  assert.equal(store.migrateLegacy().messageCount, 0);
+  assert.deepEqual(store.listMessages({ date: "2026-06-12" }).map(row => [row.timestamp, row.text]), [["2026-06-12T08:00:00.123Z", "hello"]]);
+});
+
+test("remine directly replaces current results without version data", t => {
   const { store } = tempStore(t);
   const now = new Date().toISOString();
   store.db.prepare(`INSERT INTO feelings
     (id,thread_id,source_date,event_time,order_key,content,importance,source,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`).run("old", "thread-test", "2026-06-12", null, "1", "old", 3, "auto", now, now);
-  const job = store.createJob({ sourceDate: "2026-06-12", mode: "remine", publishStrategy: "replace" });
-  store.addCandidates(job.id, { feelings: [{ content: "new", eventTime: "2026-06-12T15:00:00+08:00", importance: 4 }] });
-  const result = store.publishCandidates(job.id);
+  const result = store.replaceDay("2026-06-12", { feelings: [{ content: "new", eventTime: "2026-06-12T15:00:00+08:00", importance: 4 }] });
   assert.deepEqual(result.feelings.map(f => f.content), ["new"]);
-  assert.equal(result.job.status, "completed");
-  assert.equal(store.db.prepare("SELECT COUNT(*) n FROM memory_revisions").get().n, 1);
+  const tables = store.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name);
+  assert.equal(tables.includes("memory_candidates"), false);
+  assert.equal(tables.includes("memory_revisions"), false);
+  assert.equal(fs.existsSync(path.join(store.memoryDir, "mined", "feelings", "days.jsonl")), false);
 });
 
-test("discarding candidates leaves current memories untouched", t => {
+test("targeted storage appends to the current day and preserves existing memories", t => {
   const { store } = tempStore(t);
-  const job = store.createJob({ sourceDate: "2026-06-12", mode: "targeted", publishStrategy: "append" });
-  store.addCandidates(job.id, { feelings: [{ content: "candidate", importance: 3 }] });
-  assert.equal(store.discardCandidates(job.id).status, "discarded");
-  assert.equal(store.listFeelings().length, 0);
+  store.appendTargeted("2026-06-12", { feelings: [{ content: "first", eventTime: "2026-06-12T18:00:00+08:00", importance: 3 }] });
+  const result = store.appendTargeted("2026-06-12", { feelings: [{ content: "earlier", eventTime: "2026-06-12T09:00:00+08:00", importance: 3 }] });
+  assert.deepEqual(result.feelings.map(row => [row.content, row.daySeq]), [["earlier", 1], ["first", 2]]);
 });

@@ -10,7 +10,7 @@ stone_memory/
 │   ├── stmem                  # CLI 入口 (Linux/Mac)
 │   └── stmem.cmd              # CLI 入口 (Windows)
 ├── scripts/
-│   ├── watcher.js             # 后台轮询 + 自动挖掘
+│   ├── watcher.js             # 实时归档监听 + 自动挖掘
 │   ├── stmem-init.js          # 初始化新线程
 │   ├── stmem-sync.js          # 增量同步线程 → archive
 │   ├── stmem-mine.js          # 挖掘 feelings + features
@@ -26,7 +26,6 @@ stone_memory/
 │   └── services/
 │       ├── memory-archive.js      # Layer 1: 消息存档
 │       ├── memory-miner.js        # Layer 2: 挖掘引擎
-│       ├── memory-retrieval.js    # Layer 3: 检索
 │       ├── memory-keyword-search.js # 关键词搜索
 │       ├── subagent-runner.js     # subagent CLI 调用
 │       └── thread-rebuilder.js    # 线程重建引擎
@@ -42,9 +41,9 @@ stone_memory/
 ```
 ~/.stone_memory/
 ├── stmem.json                    # 全局配置（线程定义 + API keys + runtimes）
+├── stone-memory.db               # 所有线程共享的 SQLite 主数据源
 ├── watcher.pid                   # watcher 进程 ID
 └── runtimes/{runtime}/{purpose}/{threadId}/
-    ├── .sync-state.json          # 同步状态追踪
     ├── logs/                     # 线程日志
     ├── tmp/                      # 临时文件（subagent prompt 等）
     ├── rules/                    # 线程规则（rebuild 时注入）
@@ -52,13 +51,7 @@ stone_memory/
     │   └── operations.md         # 操作指令
     └── memory/
         ├── archive/
-        │   ├── YYYY/MM/YYYY-MM-DD.jsonl       # 清洗后的对话文本
-        │   └── full/YYYY/MM/YYYY-MM-DD.jsonl  # 全量原始线程消息
-        ├── mined/
-        │   ├── feelings/days.jsonl   # 日记式记忆
-        │   ├── features/*.jsonl      # 用户特征（按类别）
-        │   ├── state.json            # 挖掘状态追踪
-        │   └── week-coverage.json    # 周摘要覆盖追踪
+        │   └── full/YYYY/MM/YYYY-MM-DD.jsonl  # 未经规范化的原始线程消息
         ├── topics/*.md               # 专题记忆（按主题）
         ├── import/done/              # 已导入的源文件
         ├── retain-config.json        # 锚点保留配置
@@ -67,9 +60,11 @@ stone_memory/
         └── search-log.jsonl          # 搜索日志
 ```
 
+规范化 messages、feelings、features、挖掘状态和通知统一存放在全局 SQLite 中，通过 `thread_id` 区分线程。消息以 `(thread_id, timestamp)` 为主键。系统只保存当前有效的记忆结果，不维护用户可选的历史版本。运行时唯一保留的 JSONL 是 `archive/full` 原始备份；其他 JSONL 只由显式 `stmem db export` 生成，或用于一次性旧数据迁移。
+
 ## 安装
 
-> **零依赖**，无需 `npm install`。解压后只需一步 PATH 注册即可全局使用 `stmem` 命令。项目可放在任意路径。
+项目依赖 `better-sqlite3`。首次安装需要在项目目录执行 `npm install --production`，再注册 `stmem` 命令。
 
 ### Linux / macOS
 
@@ -128,12 +123,24 @@ stmem init --thread <线程ID>
 ### 导入旧对话
 
 ```bash
-# 导入单个线程文件
+# 先预览单个 JSON、JSONL 或 SQLite 数据源，不会写入
 stmem import --source /path/to/<线程ID>.jsonl --thread <线程ID>
 
-# 导入整个目录（建议）
-stmem import --dir /path/to/线程目录 --thread <线程ID>
+# 确认字段和日期范围后实际导入
+stmem import --source /path/to/<线程ID>.jsonl --thread <线程ID> --apply
+
+# 递归导入目录
+stmem import --dir /path/to/线程目录 --thread <线程ID> --apply
+
+# SQLite 多表时指定对话表；非标准字段可显式映射
+stmem import --source /path/to/chat.db --table messages \
+  --map-time created_at --map-role sender --map-content body --apply
 ```
+
+导入将规范化对话写入 SQLite `messages`，并生成按日期递归保存的 `full` 原始备份，不生成
+feelings/features，也不生成 `seq` 或 `importance`。来源中的评分、向量等额外字段
+不会进入规范化对话，但会原样保留在 `full` 中。旧 `stmem adapt` 命令仍可使用，
+内部会转到同一套导入流程。
 
 ### 挖掘记忆
 
@@ -143,6 +150,9 @@ stmem mine --thread <线程ID> --date 2026-06-09
 
 # 一次性挖完所有未挖日期
 stmem mine --thread <线程ID> --all
+
+# 用户主动要求整日重挖：成功后直接覆盖当天结果，失败则保留旧结果
+stmem mine --thread <线程ID> --date 2026-06-09 --force
 
 # 临时切换模式
 stmem mine --thread <线程ID> --all --api       # 走 API
@@ -161,6 +171,7 @@ stmem rebuild --thread <线程ID> --apply   # 写入
 ### watcher 管理
 
 init 后 watcher 自动启动（Linux 走 systemd，Windows 走后台进程）。
+线程文件发生变化后会在约 300ms 防抖后增量同步到 archive；后台仍会低频巡检，作为文件系统漏事件时的兜底，并负责自动挖掘和摘要维护。
 
 ```bash
 stmem watcher               # 查看状态
@@ -279,7 +290,7 @@ codex mcp add stmem -- node ~/stone_memory/mcp-server.js
 
 > 以上操作均可交由 AI 助手完成：说"帮我注册 stmem MCP 服务"即可。注意注册的是 `mcp-server.js`，不是 `stmem` CLI。
 
-### 可用工具（共 11 个）
+### 可用工具（共 9 个）
 
 | 工具 | 功能 |
 |------|------|
@@ -291,9 +302,7 @@ codex mcp add stmem -- node ~/stone_memory/mcp-server.js
 | `stmem_memory_audit_list` | 从上次审计截止日起列出新 feelings，含锚点类型标注 |
 | `stmem_memory_audit_mark` | 标记锚点（原文锚点 `type: "retain"` / 事件锚点 `type: "event"`） |
 | `stmem_memory_audit_query` | 按日期或关键词查询 feelings，含锚点类型显示 |
-| `stmem_memory_rebuild_queue` | 排队等待下次 MCP 启动时自动重建 |
-| `stmem_memory_summarize` | 合成月摘要：读月 feelings + 事件锚点原文 → 调 AI → 写入 months.jsonl |
-| `stmem_memory_triggers_check` | 检查待办（重建、月摘要），适合会话启动或睡前巡检时调用 |
+| `stmem_memory_triggers_check` | 检查重建和挖掘阻塞待办，适合会话启动或睡前巡检时调用 |
 
 大部分工具直接调用 SM 的 services。重建（rebuild）和挖掘（mine）因需独立进程上下文，走 Node 子进程调用对应脚本。不带 API key 的用户也可以通过 subagent 模式使用。
 
@@ -347,7 +356,7 @@ subagent 模式不依赖外部 API，通过宿主 Agent 的 CLI 执行挖掘/审
 | 文件 | 用途 | 调用方 |
 |------|------|--------|
 | `memory-miner-operations.md` | feelings + features 挖掘指令 | mine、watcher miner |
-| `memory-summary-operations.md` | 月摘要合成指令 | summarize 工具 |
+| `memory-summary-operations.md` | 旧版月摘要合成指令（兼容保留） | legacy 模式 |
 | `memory-subagent-operations.md` | 深度检索指令 | deep_search 工具 |
 
 ops 文件中可以使用 `{{feelingsFile}}`、`{{archiveDir}}` 等占位符，运行时自动替换为线程的实际路径。完整占位符列表见 `src/services/subagent-runner.js` 的 `resolvePlaceholders()`。

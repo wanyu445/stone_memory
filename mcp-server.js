@@ -14,9 +14,9 @@ const { execSync, spawnSync } = require("child_process");
 const { getCfg, getThreadDir, listThreadIds } = require("./src/config");
 const { runSubagent } = require("./src/services/subagent-runner");
 const { parseFeelingTime, feelingToUtc } = require("./src/services/thread-rebuilder");
-const { parseJsonlFile, readFeelings } = require("./src/lib/jsonl");
 const { parseJsonArray, parseJsonObject } = require("./src/lib/json-parse");
-const { listDates, resolveDateFile } = require("./src/lib/archive-paths");
+const { readFeelings: readDatabaseFeelings, readFeatures: readDatabaseFeatures, readMessages } = require("./src/storage/memory-reader");
+const { MemoryStore } = require("./src/storage/memory-store");
 
 const CONFIG_PATH = path.join(os.homedir(), ".stone_memory", "stmem.json");
 const PROJECT_ROOT = path.resolve(__dirname);
@@ -112,41 +112,6 @@ function checkPendingTriggers() {
     try { fs.unlinkSync(PENDING_REBUILD_FILE); } catch {}
   }
 
-  // 2. 待月摘要
-  for (const tid of listThreadIds()) {
-    const summaryTriggerDays = getCfg("summaryTriggerDays", tid, 60);
-    const summaryWindowDays = getCfg("summaryWindowDays", tid, 30);
-    const feelDir = path.join(getThreadDir(tid), "memory", "mined", "feelings");
-    const daysFile = path.join(feelDir, "days.jsonl");
-    const monthsFile = path.join(feelDir, "months.jsonl");
-    if (!fs.existsSync(daysFile)) continue;
-    const uniqueDates = new Set();
-    try {
-      for (const line of fs.readFileSync(daysFile, "utf8").split("\n").filter(Boolean)) {
-        const obj = JSON.parse(line);
-        if (obj.type === "feeling") {
-          const m = (obj.content || "").match(/^(\d+)月(\d+)日/);
-          if (m) uniqueDates.add(feelingDate(m[1], m[2], obj));
-        }
-      }
-    } catch {}
-    if (uniqueDates.size < summaryTriggerDays) continue;
-    const sorted = [...uniqueDates].sort();
-    const start = sorted[0];
-    const end = sorted[Math.min(summaryWindowDays - 1, sorted.length - 1)];
-    const monthKey = start.slice(0, 7);
-    let covered = false;
-    try {
-      if (fs.existsSync(monthsFile)) {
-        for (const line of fs.readFileSync(monthsFile, "utf8").split("\n").filter(Boolean)) {
-          const obj = JSON.parse(line);
-          if (obj.monthStart && obj.monthStart.startsWith(monthKey)) { covered = true; break; }
-        }
-      }
-    } catch {}
-    if (!covered) triggers.push({ type: "summary", threadId: tid, start, end, totalDays: uniqueDates.size });
-  }
-
   // 注入到线程文件尾部
   for (const t of triggers) {
     const sessionDir = getCfg("sessionDir", t.threadId);
@@ -172,47 +137,33 @@ function toolTriggersCheck(args) {
   const lines = ["📋 系统待办检查", ""];
   let found = false;
   for (const tid of listThreadIds()) {
-    const summaryTriggerDays = getCfg("summaryTriggerDays", tid, 60);
-    const summaryWindowDays = getCfg("summaryWindowDays", tid, 30);
-    const feelDir = path.join(getThreadDir(tid), "memory", "mined", "feelings");
-    const daysFile = path.join(feelDir, "days.jsonl");
-    const monthsFile = path.join(feelDir, "months.jsonl");
+    const memoryDir = path.join(getThreadDir(tid), "memory");
+    const store = new MemoryStore({ memoryDir, threadId: tid });
+    try {
+      const blockedDays = store.listDayStates().filter(row => row.status === "blocked").map(row => ({
+        date: row.source_date, attempt: row.attempt, errorCode: row.error_code, errorMessage: row.error_message,
+      }));
+      for (const blocked of blockedDays) {
+        lines.push(`🚨 挖掘已阻塞 — ${tid} / ${blocked.date}（连续失败 ${blocked.attempt} 次）`);
+        lines.push(`   ${blocked.errorCode || "MINING_FAILED"}: ${blocked.errorMessage || "未知错误"}`);
+        lines.push(`   → 修复后手动执行 stmem mine --thread ${tid} --date ${blocked.date}`);
+        lines.push("");
+        found = true;
+      }
+    } finally { store.close(); }
     // 待重建
     const windowDays = getCfg("windowDays", tid, 3);
     let lastArchiveDate = null;
     try {
-      const files = listDates(path.join(getThreadDir(tid), "memory", "archive"));
-      if (files.length > 0) lastArchiveDate = files.pop();
+      const files = new MemoryStore({ memoryDir, threadId: tid });
+      const dates = files.listMessageDates();
+      files.close();
+      if (dates.length > 0) lastArchiveDate = dates.pop();
     } catch {}
     if (lastArchiveDate) {
       const d = Math.floor((Date.now() - new Date(lastArchiveDate).getTime()) / 86400000);
       if (d >= windowDays) { lines.push(`1️⃣  线程重建待执行 — ${tid}，上次存档 ${d} 天前，窗口 ${windowDays} 天`); lines.push(`   → stmem_memory_rebuild(thread: "${tid}")`); lines.push(""); found = true; }
     }
-    // 待月摘要
-    if (!fs.existsSync(daysFile)) continue;
-    const uniqueDates = new Set();
-    try {
-      for (const line of fs.readFileSync(daysFile, "utf8").split("\n").filter(Boolean)) {
-        const obj = JSON.parse(line);
-        if (obj.type === "feeling") {
-          const m = (obj.content || "").match(/^(\d+)月(\d+)日/);
-          if (m) uniqueDates.add(feelingDate(m[1], m[2], obj));
-        }
-      }
-    } catch {}
-    if (uniqueDates.size < summaryTriggerDays) continue;
-    const sorted = [...uniqueDates].sort();
-    const start = sorted[0];
-    const end = sorted[Math.min(summaryWindowDays - 1, sorted.length - 1)];
-    const monthKey = start.slice(0, 7);
-    let covered = false;
-    try {
-      if (fs.existsSync(monthsFile)) for (const line of fs.readFileSync(monthsFile, "utf8").split("\n").filter(Boolean)) {
-        const obj = JSON.parse(line);
-        if (obj.monthStart && obj.monthStart.startsWith(monthKey)) { covered = true; break; }
-      }
-    } catch {}
-    if (!covered) { lines.push(`2️⃣  月摘要待生成 — ${tid}，${start} ~ ${end}（累计 ${uniqueDates.size} 天，前 ${summaryWindowDays} 天可压缩）`); lines.push(`   → stmem_memory_summarize(thread: "${tid}", date: "${monthKey}")`); lines.push(""); found = true; }
   }
   if (!found) lines.push("暂无待办，一切正常 ✅");
   return lines.join("\n");
@@ -222,14 +173,10 @@ function toolTriggersCheck(args) {
 }
 
 /** 读 archive 中指定时间窗口的对话原文 */
-function readArchiveWindow(archiveDir, startUtc, endUtc) {
+function readArchiveWindow(memoryDir, threadId, startUtc, endUtc) {
   const msgs = [];
-  for (const d of [startUtc.slice(0, 10), endUtc.slice(0, 10)]) {
-    const fp = resolveDateFile(archiveDir, d);
-    if (!fs.existsSync(fp)) continue;
-    try {
-      for (const line of fs.readFileSync(fp, "utf8").split("\n").filter(Boolean)) {
-        const obj = JSON.parse(line);
+  try {
+      for (const obj of readMessages(memoryDir, { threadId, from: startUtc, to: endUtc })) {
         if (!obj.timestamp) continue;
         const tMs = new Date(obj.timestamp).getTime();
         if (tMs < new Date(startUtc).getTime() || tMs >= new Date(endUtc).getTime()) continue;
@@ -238,12 +185,13 @@ function readArchiveWindow(archiveDir, startUtc, endUtc) {
         if (text && !text.startsWith("{")) msgs.push(`${label}: ${text}`);
       }
     } catch {}
-  }
   return msgs;
 }
 
 /** 合成月摘要 — 读某月 feelings + 事件锚点原文 → 调 AI → 写入 months.jsonl */
 function toolSummarize(args) {
+  return "固定月摘要功能已移除；请使用 daily/coarse/hidden 摘要颗粒度。";
+  /* 以下旧实现仅在迁移窗口内保留，不注册为 MCP 工具。 */
   try {
     const cfg = loadConfig();
     if (!cfg) return "未配置 stmem.json";
@@ -251,7 +199,7 @@ function toolSummarize(args) {
     if (!tid) return "请指定线程 ID";
     const dateStr = args.date || new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 7);
     const feelDir = path.join(getThreadDir(tid), "memory", "mined", "feelings");
-    const daysFile = path.join(feelDir, "days.jsonl");
+    const daysFile = path.join(feelDir, "legacy-days-export.jsonl");
     const targetFile = path.join(feelDir, "months.jsonl");
     const archiveDir = path.join(getThreadDir(tid), "memory", "archive");
     if (!fs.existsSync(daysFile)) return "没有日摘要数据";
@@ -287,7 +235,7 @@ function toolSummarize(args) {
       } else {
         endUtc = new Date(startMs + 6 * 3600000).toISOString();
       }
-      const msgs = readArchiveWindow(archiveDir, startUtc, endUtc);
+      const msgs = readArchiveWindow(path.join(getThreadDir(tid), "memory"), tid, startUtc, endUtc);
       const also = retainIds.has(af.obj.id) ? " [同时是原文锚点]" : "";
       anchorContext += `\n--- ${parsed.date} ${af.obj.content.slice(0, 40)}...${also} ---\n${msgs.join("\n")}\n`;
     }
@@ -338,8 +286,9 @@ function toolMine(args) {
   if (!fs.existsSync(script)) return `找不到 stmem-mine.js`;
   const dateArg = args.date ? ` --date ${args.date}` : "";
   const threadArg = tid ? ` --thread ${tid}` : "";
+  const forceArg = args.force ? " --force" : "";
   try {
-    const out = execSync(`${process.execPath} ${script}${dateArg}${threadArg}`, {
+    const out = execSync(`${process.execPath} ${script}${dateArg}${threadArg}${forceArg}`, {
       encoding: "utf8", timeout: 600_000, cwd: path.dirname(SCRIPTS_DIR), windowsHide: true,
     });
     return out.trim().slice(-1000) || "挖掘完成";
@@ -356,24 +305,22 @@ function toolStatus() {
   const lines = [];
   for (const tid of listThreadIds()) {
     const dir = getThreadDir(tid);
-    let archiveCount = 0, feelingCount = 0, featureCount = 0;
+    let archiveCount = 0, feelingCount = 0, featureCount = 0, blockedCount = 0;
     try {
-      archiveCount = listDates(path.join(dir, "memory", "archive")).length;
-      const ff = path.join(dir, "memory", "mined", "feelings", "days.jsonl");
-      if (fs.existsSync(ff)) feelingCount = fs.readFileSync(ff, "utf8").split("\n").filter(l => {
-        try { return JSON.parse(l).type === "feeling"; } catch { return false; }
-      }).length;
-      const fdir = path.join(dir, "memory", "mined", "features");
-      for (const cat of ["eat","body","sleep","work","relation","habit","location","preference","misc"]) {
-        const cf = path.join(fdir, `${cat}.jsonl`);
-        if (fs.existsSync(cf)) featureCount += fs.readFileSync(cf, "utf8").split("\n").filter(Boolean).length;
-      }
+      const memoryDir = path.join(dir, "memory");
+      const store = new MemoryStore({ memoryDir, threadId: tid });
+      archiveCount = store.listMessageDates().length;
+      feelingCount = store.listFeelings().length;
+      featureCount = store.listFeatures().length;
+      blockedCount = store.listDayStates().filter(row => row.status === "blocked").length;
+      store.close();
     } catch {}
 
     const label = getCfg("label", tid, tid);
     lines.push(`stmem — ${getCfg("ai", tid)} × ${getCfg("user", tid)}${label !== tid ? ` (${label})` : ""}`);
     lines.push(`线程: ${tid} (${getCfg("runtime", tid)}/${getCfg("purpose", tid)})`);
     lines.push(`archive: ${archiveCount} 天 | feelings: ${feelingCount} | features: ${featureCount}`);
+    if (blockedCount) lines.push(`⚠️ 挖掘阻塞: ${blockedCount} 天（请调用 stmem_memory_triggers_check 查看）`);
   }
   return lines.join("\n");
   } catch (err) {
@@ -410,7 +357,7 @@ function toolDeepSearch(args) {
       if (hit.utcTime) {
         const startMs = new Date(hit.utcTime).getTime() - 30 * 60 * 1000;
         const ctx = searchArchiveContext(new Date(startMs).toISOString().slice(0, 10), query.split(/\s+/).filter(w => w.length >= 2), {
-          maxDays: 3, mode: "event",
+          maxDays: 3, mode: "event", threadId: resolved?.threadId,
         });
         if (ctx.text) archiveHits.push(ctx.text);
       }
@@ -461,13 +408,16 @@ function auditResolvePaths(args) {
   const tid = resolved?.threadId || args.thread;
   if (!tid) throw new Error("无法确定线程 ID");
   const dir = getThreadDir(tid);
-  const feelDir = path.join(dir, "memory", "mined", "feelings");
   return {
     threadId: tid,
-    feelingsFile: path.join(feelDir, "days.jsonl"),
+    memoryDir: path.join(dir, "memory"),
     auditMarksFile: path.join(dir, "memory", "audit-marks.json"),
     retainConfigFile: path.join(dir, "memory", "retain-config.json"),
   };
+}
+
+function auditReadFeelings(p) {
+  return readDatabaseFeelings(p.memoryDir, { threadId: p.threadId });
 }
 
 function auditLoadMarks(p) {
@@ -484,7 +434,7 @@ function toolAuditList(args) {
     const p = auditResolvePaths(args);
     const marks = auditLoadMarks(p);
     const lastCutoff = marks.lastCutoffDate || `${new Date().getFullYear()}-01-01`;
-    const entries = readFeelings(p.feelingsFile);
+    const entries = auditReadFeelings(p);
     let rc = { retain: {}, eventAnchors: {} };
     try { rc = JSON.parse(fs.readFileSync(p.retainConfigFile, "utf8")); } catch {}
     const retainIds = new Set(Object.keys(rc.retain || {}));
@@ -492,7 +442,7 @@ function toolAuditList(args) {
     const byDate = {};
     for (const e of entries) {
       const m = (e.content || "").match(/^(\d+)月(\d+)日/);
-      const dateKey = m ? feelingDate(m[1], m[2], e) : "unknown";
+      const dateKey = e.sourceDate || (m ? feelingDate(m[1], m[2], e) : "unknown");
       if (dateKey <= lastCutoff) continue;
       if (!byDate[dateKey]) byDate[dateKey] = [];
       let tag = "";
@@ -539,7 +489,7 @@ function toolAuditMark(args) {
     const anchorType = args.type === "event" ? "event" : "retain";
     if (cutoffDate && cutoffDate > (marks.lastCutoffDate || "")) marks.lastCutoffDate = cutoffDate;
 
-    const entries = readFeelings(p.feelingsFile);
+    const entries = auditReadFeelings(p);
     const seqToId = {};
     for (const e of entries) { if (typeof e.seq === "number") seqToId[e.seq] = e.id; }
     const feelingIds = numbers.map(n => seqToId[n]).filter(Boolean);
@@ -576,12 +526,12 @@ function toolAuditQuery(args) {
     try { rc = JSON.parse(fs.readFileSync(p.retainConfigFile, "utf8")); } catch {}
     const retainIds = new Set(Object.keys(rc.retain || {}));
     const eventIds = new Set(Object.keys(rc.eventAnchors || {}));
-    const all = readFeelings(p.feelingsFile);
+    const all = auditReadFeelings(p);
     let results = all;
     if (date) {
       results = results.filter(f => {
         const m = (f.content || "").match(/^(\d+)月(\d+)日/);
-        return m && feelingDate(m[1], m[2], f) === date;
+        return f.sourceDate === date || (m && feelingDate(m[1], m[2], f) === date);
       });
     }
     if (keyword) results = results.filter(f => (f.content || "").toLowerCase().includes(keyword));
@@ -623,7 +573,11 @@ const TOOLS = [
     description: "手动触发单日记忆挖掘（feelings + features 双通道）",
     inputSchema: {
       type: "object",
-      properties: { date: { type: "string", description: "日期 YYYY-MM-DD，默认昨天" } },
+      properties: {
+        date: { type: "string", description: "日期 YYYY-MM-DD，默认昨天" },
+        thread: { type: "string", description: "线程 ID，默认自动检测" },
+        force: { type: "boolean", description: "整日重挖；成功后直接替换当天结果，失败保留旧结果" },
+      },
     },
   },
   {
@@ -682,17 +636,6 @@ const TOOLS = [
         date: { type: "string", description: "Date YYYY-MM-DD, e.g. '2026-06-05'." },
         keyword: { type: "string", description: "Keyword to search in feeling content." },
         thread: { type: "string", description: "线程 ID，默认自动检测" },
-      },
-    },
-  },
-  {
-    name: "stmem_memory_summarize",
-    description: "合成月摘要：读指定月的 feelings + 事件锚点原文 → 调 AI → 写入 months.jsonl。压缩后的月摘要会被 rebuild 自动使用，替换单日 feelings。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        thread: { type: "string", description: "线程 ID，默认自动检测" },
-        date: { type: "string", description: "月份 YYYY-MM，默认当前月" },
       },
     },
   },
@@ -756,7 +699,6 @@ function handle(msg) {
       else if (name === "stmem_memory_audit_list") text = toolAuditList(args);
       else if (name === "stmem_memory_audit_mark") text = toolAuditMark(args);
       else if (name === "stmem_memory_audit_query") text = toolAuditQuery(args);
-      else if (name === "stmem_memory_summarize") text = toolSummarize(args);
       else if (name === "stmem_memory_triggers_check") text = toolTriggersCheck(args);
       else text = `未知工具: ${name}`;
     } catch (err) {

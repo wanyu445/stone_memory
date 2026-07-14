@@ -8,9 +8,11 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { ensureDateFile } = require("../src/lib/archive-paths");
+const { normalizeThreadMessage } = require("../src/lib/thread-message");
+const { parseThreadMessages, ingestMessages } = require("../src/services/thread-ingest");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../src/config");
+const { MemoryStore } = require("../src/storage/memory-store");
 
 const tid = process.argv.includes("--thread")
   ? process.argv[process.argv.indexOf("--thread") + 1]
@@ -27,12 +29,8 @@ if (!fs.existsSync(threadFile)) {
   process.exit(1);
 }
 
-const archiveDir = path.join(threadDir, "memory", "archive");
-const syncFile = path.join(threadDir, ".sync-state.json");
-
-// 读上次同步的时间戳（没有就从头）
+const memoryDir = path.join(threadDir, "memory");
 let lastSyncedAt = "";
-try { lastSyncedAt = JSON.parse(fs.readFileSync(syncFile, "utf8")).lastSyncedAt || ""; } catch {}
 
 // 解析整个线程文件
 function parseAllMessages(raw) {
@@ -81,72 +79,48 @@ function isSystemTemplate(text) {
 }
 
 const raw = fs.readFileSync(threadFile, "utf8");
-const allMessages = parseAllMessages(raw);
+const allMessages = parseThreadMessages(raw);
 if (!allMessages.length) {
   console.log("线程文件无有效消息");
   process.exit(0);
 }
 
-// 按时间戳过滤新消息
-const newMessages = lastSyncedAt
-  ? allMessages.filter(m => m.timestamp && m.timestamp > lastSyncedAt)
-  : allMessages;
-
-if (!newMessages.length) {
-  console.log("已是最新");
-  process.exit(0);
+function timestampMs(value) {
+  const ms = new Date(value || "").getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
+
+// 按时间戳过滤新消息。转成 epoch 比较，避免不同时区偏移的 ISO 字符串字典序失真。
+const lastSyncedMs = timestampMs(lastSyncedAt);
+// 每次都把完整线程交给幂等 ingest。水位只用于状态展示，不能用于过滤，
+// 否则后来补入、但时间早于水位的迟到消息会永久丢失。
+const newMessages = allMessages;
 
 // 提取文本 + 按天分组
 const byDate = {};
 let maxTimestamp = lastSyncedAt;
+let maxTimestampMs = lastSyncedMs ?? -Infinity;
 for (const msg of newMessages) {
   if (!msg.timestamp) continue;
-  if (msg.timestamp > maxTimestamp) maxTimestamp = msg.timestamp;
-
-  if (msg.type === "system") continue;
-  let text = "";
-  const content = msg.message?.content;
-  if (typeof content === "string") text = content;
-  else if (Array.isArray(content)) {
-    text = content.filter(b => b.type === "text").map(b => b.text || "").join(" ").trim();
+  const msgMs = timestampMs(msg.timestamp);
+  if (msgMs !== null && msgMs > maxTimestampMs) {
+    maxTimestampMs = msgMs;
+    maxTimestamp = msg.timestamp;
   }
-  if (!text) continue;
+
+  const normalized = normalizeThreadMessage(msg);
+  if (!normalized) continue;
+  const { text } = normalized;
   if (isSystemTemplate(text) || text.includes("<!-- stmem-rule:")) continue;
   const d = beijingDateKey(msg.timestamp);
   if (!byDate[d]) byDate[d] = [];
-  byDate[d].push({ timestamp: msg.timestamp, type: msg.type, text });
+  byDate[d].push(normalized);
 }
 
-// 写 archive（带去重）
-fs.mkdirSync(archiveDir, { recursive: true });
-let total = 0;
-for (const [d, msgs] of Object.entries(byDate)) {
-  const fp = ensureDateFile(archiveDir, d);
-  const existing = new Set();
-  if (fs.existsSync(fp)) {
-    for (const line of fs.readFileSync(fp, "utf8").split("\n").filter(Boolean)) {
-      try { const o = JSON.parse(line); existing.add(o.timestamp + "|" + (o.text || "").slice(0, 50)); } catch {}
-    }
-  }
-  const lines = [];
-  for (const m of msgs) {
-    const key = m.timestamp + "|" + (m.text || "").slice(0, 50);
-    if (existing.has(key)) continue;
-    existing.add(key);
-    lines.push(JSON.stringify(m));
-  }
-  if (lines.length > 0) {
-    fs.appendFileSync(fp, lines.join("\n") + "\n");
-    total += lines.length;
-  }
-}
+// 统一 ingest 服务负责格式解析、北京时间分日、稳定哈希去重和乱序重排。
+const store = new MemoryStore({ memoryDir, threadId: tid });
+const ingestResult = ingestMessages(allMessages, { memoryStore: store, fullDir: path.join(memoryDir, "archive", "full") });
+store.close();
+const total = ingestResult.imported;
 
-// 记录最新时间戳
-fs.writeFileSync(syncFile, JSON.stringify({
-  lastSyncedAt: maxTimestamp,
-  updatedAt: new Date().toISOString(),
-  fileSize: raw.length,
-}));
-
-console.log(`同步完成: +${total} 条 (${byDate.size} 天)，最新 ${maxTimestamp}`);
+console.log(`同步完成: +${total} 条 (${ingestResult.dates} 天)，最新 ${maxTimestamp}`);

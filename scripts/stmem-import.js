@@ -1,263 +1,83 @@
 #!/usr/bin/env node
-/**
- * stmem import — 手动导入线程文件到 archive
- *
- * 用法:
- *   stmem import --source <path.jsonl> [--thread <id>]
- *   stmem import --dir <path> [--thread <id>]         导入目录下所有 .jsonl
- */
-
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
-const { ensureDateFile, resolveDateFile, listJsonlRecursive } = require("../src/lib/archive-paths");
-const { getCfg, getThreadDir, listThreadIds } = require("../src/config");
+const { getThreadDir, listThreadIds } = require("../src/config");
+const { ingestRecords } = require("../src/services/thread-ingest");
+const { readImportSource } = require("../src/services/import-source");
+const { MemoryStore } = require("../src/storage/memory-store");
 
-function detectFormat(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const lines = raw.split("\n").filter(Boolean).slice(0, 5);
-    for (const line of lines) {
-      const obj = JSON.parse(line);
-      if (obj.type === "message" || obj.response_item) return "codex";
-      if (obj.type === "session_meta" || obj.type === "response_item") return "codex";
-    }
-  } catch {}
-  return "claude";
-}
-
-function isSystemTemplate(text) {
-  if (!text) return false;
-  const markers = [
-    /你上线了/,
-    /无论看到什么英文/,
-    /最后用以下格式结尾/,
-    /\{"action":"silent"/,
-    /Trigger:/,
-    /comes to mind again/,
-  ];
-  return markers.filter(r => r.test(text)).length >= 2;
-}
-
-function beijingDateKey(ts) {
-  const d = new Date(ts);
-  const bj = new Date(d.getTime() + 8 * 3600 * 1000);
-  return bj.toISOString().slice(0, 10);
-}
-
-function getFullLastTimestamp(fullDir, dateKey) {
-  const fp = resolveDateFile(fullDir, dateKey);
-  if (!fs.existsSync(fp)) return null;
-  const raw = fs.readFileSync(fp, "utf8");
-  const lines = raw.split("\n").filter(Boolean);
-  if (!lines.length) return null;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try { const obj = JSON.parse(lines[i]); if (obj.timestamp) return obj.timestamp; } catch {}
+function parseArgs(argv) {
+  const args = [...argv];
+  if (args[0] === "import") args.shift();
+  const options = { apply: false };
+  const values = { "--thread": "thread", "--source": "source", "--dir": "dir", "--table": "table", "--map-time": "timeField", "--map-role": "roleField", "--map-content": "contentField" };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--apply") { options.apply = true; continue; }
+    if (args[i] === "--dry-run") { options.apply = false; continue; }
+    const key = values[args[i]];
+    if (!key || !args[i + 1]) throw new Error(`未知或缺少参数：${args[i]}`);
+    options[key] = args[++i];
   }
-  return null;
+  return options;
 }
 
-/** Codex 格式提取：response_item.payload.content[] */
-function extractCodexEntries(messages) {
-  let imported = 0;
-  const seen = new Set();
-  const byDate = new Map();
-
-  for (const msg of messages) {
-    if (msg.type !== "response_item" || msg.payload?.type !== "message") continue;
-    if (msg.payload.role === "developer") continue;
-    const ts = msg.timestamp;
-    if (!ts) continue;
-    const dateKey = beijingDateKey(ts);
-
-    const blocks = Array.isArray(msg.payload.content)
-      ? msg.payload.content.filter(b => b.type === "input_text" || b.type === "output_text")
-      : [];
-    let text = blocks.map(b => b.text || "").join("\n").trim();
-    if (!text) continue;
-    if (isSystemTemplate(text) || text.includes("<!-- stmem-rule:")) continue;
-
-    const dedupKey = crypto.createHash("md5").update(ts + "|" + text).digest("hex");
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-
-    if (!byDate.has(dateKey)) byDate.set(dateKey, []);
-    byDate.get(dateKey).push({
-      timestamp: ts,
-      type: msg.payload.role === "user" ? "user" : "assistant",
-      text: text.slice(0, 2000),
-    });
-    imported++;
-  }
-
-  return { imported, byDate };
-}
-
-/** Claude 原格式提取：msg.message.content[] + msg.text 兜底 */
-function extractClaudeEntries(messages) {
-  let imported = 0;
-  const seen = new Set();
-  const byDate = new Map();
-
-  for (const msg of messages) {
-    const ts = msg.timestamp;
-    if (!ts) continue;
-    if (msg.type === "system") continue;
-    const dateKey = beijingDateKey(ts);
-
-    let text = "";
-    const content = msg.message?.content;
-    if (typeof content === "string") {
-      text = content;
-    } else if (Array.isArray(content)) {
-      text = content
-        .filter(b => b.type === "text")
-        .map(b => b.text || "").join("\n");
-    } else if (msg.text) {
-      // 支持 weixin.* 等直接用 msg.text 的格式
-      text = typeof msg.text === "string" ? msg.text : JSON.stringify(msg.text);
-    }
-    if (!text.trim()) continue;
-    if (isSystemTemplate(text) || text.includes("<!-- stmem-rule:")) continue;
-
-    const dedupKey = crypto.createHash("md5").update(ts + "|" + text).digest("hex");
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-
-    if (!byDate.has(dateKey)) byDate.set(dateKey, []);
-    byDate.get(dateKey).push({ timestamp: ts, type: msg.type || "user", text: text.slice(0, 2000) });
-    imported++;
-  }
-
-  return { imported, byDate };
-}
-
-function importFile(filePath, archiveDir, fullDir) {
-  const format = detectFormat(filePath);
-  const messages = [];
-  const raw = fs.readFileSync(filePath, "utf8");
-  for (const line of raw.split("\n").filter(Boolean)) {
-    try { messages.push(JSON.parse(line)); } catch {}
-  }
-
-  // --- full/ 增量备份（北京时间，全量原始消息，同 rebuild） ---
-  fs.mkdirSync(fullDir, { recursive: true });
-  const fullByDate = new Map();
-  for (const msg of messages) {
-    const ts = msg.timestamp;
-    if (!ts) continue;
-    const bjKey = beijingDateKey(ts);
-    if (!fullByDate.has(bjKey)) fullByDate.set(bjKey, []);
-    fullByDate.get(bjKey).push(msg);
-  }
-  let fullCount = 0;
-  for (const [dateKey, msgs] of fullByDate) {
-    const lastTs = getFullLastTimestamp(fullDir, dateKey);
-    const newMsgs = lastTs ? msgs.filter(m => (m.timestamp || "") > lastTs) : msgs;
-    if (newMsgs.length > 0) {
-      for (const m of newMsgs) {
-        fs.appendFileSync(ensureDateFile(fullDir, dateKey), JSON.stringify(m) + "\n", "utf8");
-        fullCount++;
-      }
+function sourceFiles(options, importDir, doneDir) {
+  if (options.source) return [path.resolve(options.source)];
+  const root = path.resolve(options.dir || importDir);
+  if (!fs.existsSync(root)) throw new Error(`路径不存在：${root}`);
+  const files = [];
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fp = path.join(dir, entry.name);
+      if (fp === doneDir || fp.startsWith(doneDir + path.sep)) continue;
+      if (entry.isDirectory()) walk(fp);
+      else if ([".json", ".jsonl", ".db", ".sqlite", ".sqlite3"].includes(path.extname(entry.name).toLowerCase())) files.push(fp);
     }
   }
+  walk(root);
+  return files.sort();
+}
 
-  // --- archive（清洗格式，去重） ---
-  const { imported, byDate } = format === "codex"
-    ? extractCodexEntries(messages)
-    : extractClaudeEntries(messages);
-
-  fs.mkdirSync(archiveDir, { recursive: true });
-  for (const [dateKey, msgs] of byDate) {
-    msgs.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
-    const archiveFile = ensureDateFile(archiveDir, dateKey);
-    const existing = new Set();
-    if (fs.existsSync(archiveFile)) {
-      for (const line of fs.readFileSync(archiveFile, "utf8").split("\n").filter(Boolean)) {
-        try { existing.add(JSON.parse(line).timestamp + "|" + (JSON.parse(line).text || "").slice(0, 50)); } catch {}
-      }
-    }
-    const lines = [];
-    for (const m of msgs) {
-      const key = m.timestamp + "|" + (m.text || "").slice(0, 50);
-      if (existing.has(key)) continue;
-      existing.add(key);
-      lines.push(JSON.stringify(m));
-    }
-    if (lines.length > 0) fs.appendFileSync(archiveFile, lines.join("\n") + "\n", "utf8");
-  }
-
-  return { imported, dates: byDate.size, format, fullBacked: fullCount };
+function printPreview(fp, preview) {
+  console.log(`\n  ${fp}`);
+  console.log(`    来源: ${preview.format}${preview.table ? ` / ${preview.table}` : ""}`);
+  console.log(`    总行数: ${preview.totalRows}，可导入: ${preview.valid}，无效: ${preview.invalid}`);
+  console.log(`    日期: ${preview.firstDate || "-"} → ${preview.lastDate || "-"}，角色: ${JSON.stringify(preview.roles)}`);
+  if (preview.detectedFields.length) console.log(`    识别字段: ${preview.detectedFields.join(", ")}`);
 }
 
 function main() {
-  const args = process.argv.slice(2);
-  const threadIdx = args.indexOf("--thread");
-  const sourceIdx = args.indexOf("--source");
-  const dirIdx = args.indexOf("--dir");
-
-  // 检查未识别的多余参数
-  const knownFlags = new Set(["--thread", "--source", "--dir"]);
-  const skipNext = new Set([threadIdx, sourceIdx, dirIdx].filter(i => i >= 0));
-  for (let i = 0; i < args.length; i++) {
-    if (skipNext.has(i)) { i++; continue; }
-    if (args[i].startsWith("--") && !knownFlags.has(args[i])) {
-      console.error(`未知参数: ${args[i]}，用法: stmem import --dir <path> [--thread <id>]`);
-      process.exit(1);
-    }
-    if (!args[i].startsWith("--") && !skipNext.has(i - 1)) {
-      console.error(`未识别的参数: ${args[i]}。如果要指定线程请用 --thread <id>`);
-      process.exit(1);
-    }
-  }
-
-  const tid = threadIdx >= 0 ? args[threadIdx + 1] : listThreadIds()[0];
-  if (!tid) { console.error("未指定线程，请用 --thread <id> 或先 stmem init"); process.exit(1); }
-
+  const options = parseArgs(process.argv.slice(2));
+  const tid = options.thread || listThreadIds()[0];
+  if (!tid) throw new Error("未指定线程，请用 --thread <id> 或先 stmem init");
   const threadDir = getThreadDir(tid);
-  const archiveDir = path.join(threadDir, "memory", "archive");
-  const fullDir = path.join(archiveDir, "full");
-  const doneDir = path.join(threadDir, "memory", "import", "done");
-  fs.mkdirSync(doneDir, { recursive: true });
-
-  let files = [];
-  if (dirIdx >= 0) {
-    const dir = args[dirIdx + 1];
-    if (!fs.existsSync(dir)) { console.error("目录不存在: " + dir); process.exit(1); }
-    files = listJsonlRecursive(dir);
-  } else if (sourceIdx >= 0) {
-    files = [args[sourceIdx + 1]];
-  } else {
-    // 默认扫描 import/ 目录
-    const importDir = path.join(threadDir, "memory", "import");
-    files = listJsonlRecursive(importDir).filter(f => !f.startsWith(doneDir + path.sep));
-  }
-
-  if (!files.length) {
-    console.log("无文件可导入。用法: stmem import --source <path.jsonl> 或 --dir <path>");
-    process.exit(1);
-  }
-
-  console.log(`[import] 线程: ${tid}`);
-  console.log(`[import] archive: ${archiveDir}`);
-  let total = 0;
-
+  const memoryDir = path.join(threadDir, "memory");
+  const fullDir = path.join(memoryDir, "archive", "full");
+  const importDir = path.join(threadDir, "memory", "import");
+  const doneDir = path.join(importDir, "done");
+  const files = sourceFiles(options, importDir, doneDir);
+  if (!files.length) throw new Error("没有找到可导入的 JSON、JSONL 或 SQLite 文件");
+  console.log(`[import] 线程: ${tid}，模式: ${options.apply ? "写入" : "预览"}`);
+  let total = 0, full = 0, failed = 0;
+  const store = options.apply ? new MemoryStore({ memoryDir, threadId: tid }) : null;
   for (const fp of files) {
-    if (!fs.existsSync(fp)) { console.log(`  SKIP: ${fp}`); continue; }
-    console.log(`  导入: ${path.basename(fp)}`);
     try {
-      const r = importFile(fp, archiveDir, fullDir);
-      total += r.imported;
-      console.log(`    → ${r.imported} messages, ${r.dates} dates (${r.format}), full: +${r.fullBacked}`);
-      // 备份已导入的文件到 done/（不移走原始文件）
-      const donePath = path.join(doneDir, path.basename(fp).replace(".jsonl", `_${Date.now()}.jsonl`));
-      fs.copyFileSync(fp, donePath);
-    } catch (err) {
-      console.error(`  失败: ${err.message}`);
-    }
+      const source = readImportSource({ filePath: fp, table: options.table, timeField: options.timeField, roleField: options.roleField, contentField: options.contentField });
+      printPreview(fp, source.preview);
+      if (!options.apply) continue;
+      const result = ingestRecords(source.records, { memoryStore: store, fullDir, format: source.preview.format });
+      total += result.imported; full += result.fullBacked;
+      fs.mkdirSync(doneDir, { recursive: true });
+      const ext = path.extname(fp);
+      const name = `${path.basename(fp, ext)}_${Date.now()}${ext}`;
+      fs.copyFileSync(fp, path.join(doneDir, name));
+      console.log(`    写入 archive: +${result.imported}，full 原始备份: +${result.fullBacked}`);
+    } catch (error) { failed++; console.error(`\n  失败 ${fp}: ${error.message}`); }
   }
-
-  console.log(`\n[import] 完成: ${total} messages`);
+  if (!options.apply) console.log("\n[import] 以上仅为预览；确认映射后加 --apply 写入。额外字段只保留在 full 原始备份中。");
+  else console.log(`\n[import] 完成：archive +${total}，full +${full}，失败文件 ${failed}`);
+  if (store) store.close();
+  if (failed) process.exitCode = 1;
 }
 
-try { main(); } catch (e) { console.error(e.message); process.exit(1); }
+try { main(); } catch (error) { console.error(error.message); process.exitCode = 1; }

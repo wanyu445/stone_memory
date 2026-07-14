@@ -130,7 +130,6 @@ async function main() {
   fs.mkdirSync(path.join(threadDir, "memory", "archive"), { recursive: true });
   fs.mkdirSync(path.join(threadDir, "memory", "import", "done"), { recursive: true });
   fs.mkdirSync(path.join(threadDir, "memory", "mined", "feelings"), { recursive: true });
-  fs.mkdirSync(path.join(threadDir, "memory", "mined", "features"), { recursive: true });
   fs.mkdirSync(path.join(threadDir, "rules"), { recursive: true });
   fs.mkdirSync(path.join(threadDir, "logs"), { recursive: true });
 

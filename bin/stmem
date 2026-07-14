@@ -14,15 +14,17 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem status                                  查看所有线程状态
   stmem delete --thread <id> [--dry-run]        删除线程配置及数据
   stmem init --thread <id>                      初始化新线程
-  stmem import --dir <path> [--thread <id>]      导入目录下所有 .jsonl，生成跨日对话文件
+  stmem import --source <json|jsonl|sqlite>       预览导入映射（加 --apply 写入）
+  stmem import --dir <path> [--thread <id>]       递归预览目录中的对话数据
   stmem mine [--thread <id>] --all                  挖掘全部未处理日期，生成feelings + features
   stmem mine [--thread <id>] [--date <YYYY-MM-DD>]  挖掘单日 feelings + features
+  stmem mine [--thread <id>] --date <日期> --force   直接重挖并覆盖当天结果
   stmem rebuild --thread <id> [--window N] [--tool-pairs N]  预览重建
   stmem rebuild --thread <id> --apply           实际写入
   stmem watcher [on|off]                        watcher 总开关启停
   stmem watcher archive [on|off]                watcher 自动挖掘对话开关
   stmem watcher miner [on|off]                  watcher 自动挖掘摘要+特征开关
-  stmem db [status|migrate] [--thread <id>]     检查数据库或迁移旧 JSONL
+  stmem db [status|migrate|migrate-all|export] [--thread <id>]  数据库管理
 
 所有 --thread 可省略，默认取第一个已配置线程。
 

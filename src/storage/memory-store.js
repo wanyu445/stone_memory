@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { openDatabase } = require("./database");
+const { listDateFiles } = require("../lib/archive-paths");
 
 function id(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
@@ -23,16 +24,103 @@ class MemoryStore {
     this.memoryDir = memoryDir;
     this.threadId = threadId;
     this.db = openDatabase(memoryDir);
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT OR IGNORE INTO threads(id,created_at,updated_at) VALUES (?,?,?)`).run(threadId, now, now);
+  }
+
+  registerThread({ runtime = null, purpose = null, label = null } = {}) {
+    this.db.prepare(`UPDATE threads SET runtime=?,purpose=?,label=?,updated_at=? WHERE id=?`)
+      .run(runtime, purpose, label, new Date().toISOString(), this.threadId);
   }
 
   close() { this.db.close(); }
+
+  insertMessages(rows, { source = "archive" } = {}) {
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO messages
+      (thread_id,timestamp,source_date,role,text,source,created_at)
+      VALUES (@threadId,@timestamp,@sourceDate,@role,@text,@source,@createdAt)`);
+    const write = this.db.transaction(items => {
+      let added = 0;
+      const now = new Date().toISOString();
+      for (const row of items) {
+        if (!row?.timestamp || !row?.sourceDate || !row?.role || !row?.text) continue;
+        added += insert.run({ threadId: this.threadId, timestamp: row.timestamp, sourceDate: row.sourceDate,
+          role: row.role, text: row.text, source: row.source || source, createdAt: row.createdAt || now }).changes;
+      }
+      return added;
+    });
+    return write(rows);
+  }
+
+  listMessages({ date = null, from = null, to = null } = {}) {
+    const clauses = ["thread_id=?"];
+    const params = [this.threadId];
+    if (date) { clauses.push("source_date=?"); params.push(date); }
+    if (from) { clauses.push("timestamp>=?"); params.push(from); }
+    if (to) { clauses.push("timestamp<=?"); params.push(to); }
+    return this.db.prepare(`SELECT timestamp,source_date AS sourceDate,role AS type,text,source,created_at AS createdAt
+      FROM messages WHERE ${clauses.join(" AND ")} ORDER BY timestamp`).all(...params);
+  }
+
+  listMessageDates() {
+    return this.db.prepare("SELECT DISTINCT source_date date FROM messages WHERE thread_id=? ORDER BY source_date").all(this.threadId).map(row => row.date);
+  }
+
+  getDayState(date) {
+    return this.db.prepare("SELECT * FROM mining_day_state WHERE thread_id=? AND source_date=?").get(this.threadId, date) || null;
+  }
+
+  listDayStates() {
+    return this.db.prepare("SELECT * FROM mining_day_state WHERE thread_id=? ORDER BY source_date").all(this.threadId);
+  }
+
+  setDayState(date, patch) {
+    const current = this.getDayState(date) || {};
+    const value = (key, column, fallback = null) => Object.prototype.hasOwnProperty.call(patch, key) ? patch[key] : (current[column] ?? fallback);
+    const row = {
+      threadId: this.threadId, sourceDate: date,
+      status: patch.status || current.status || "running",
+      messageCount: value("messageCount", "message_count", 0),
+      feelingCount: value("feelingCount", "feeling_count", 0),
+      featureCount: value("featureCount", "feature_count", 0),
+      attempt: value("attempt", "attempt", 0),
+      errorCode: value("errorCode", "error_code"),
+      errorMessage: value("errorMessage", "error_message"),
+      archiveFingerprint: value("archiveFingerprint", "archive_fingerprint"),
+      startedAt: value("startedAt", "started_at"),
+      completedAt: value("completedAt", "completed_at"),
+      failedAt: value("failedAt", "failed_at"),
+      nextRetryAt: value("nextRetryAt", "next_retry_at"),
+      updatedAt: patch.updatedAt || new Date().toISOString(),
+    };
+    this.db.prepare(`INSERT INTO mining_day_state
+      (thread_id,source_date,status,message_count,feeling_count,feature_count,attempt,error_code,error_message,archive_fingerprint,started_at,completed_at,failed_at,next_retry_at,updated_at)
+      VALUES (@threadId,@sourceDate,@status,@messageCount,@feelingCount,@featureCount,@attempt,@errorCode,@errorMessage,@archiveFingerprint,@startedAt,@completedAt,@failedAt,@nextRetryAt,@updatedAt)
+      ON CONFLICT(thread_id,source_date) DO UPDATE SET
+      status=excluded.status,message_count=excluded.message_count,feeling_count=excluded.feeling_count,
+      feature_count=excluded.feature_count,attempt=excluded.attempt,error_code=excluded.error_code,
+      error_message=excluded.error_message,archive_fingerprint=excluded.archive_fingerprint,
+      started_at=excluded.started_at,completed_at=excluded.completed_at,failed_at=excluded.failed_at,
+      next_retry_at=excluded.next_retry_at,updated_at=excluded.updated_at`).run(row);
+    return this.getDayState(date);
+  }
+
+  clearDayState(date) {
+    return this.db.prepare("DELETE FROM mining_day_state WHERE thread_id=? AND source_date=?").run(this.threadId, date).changes;
+  }
+
+  addNotification({ type, date = null, errorCode = null, errorMessage = null, attempt = null }) {
+    return this.db.prepare(`INSERT INTO notifications
+      (thread_id,type,source_date,error_code,error_message,attempt,is_read,created_at) VALUES (?,?,?,?,?,?,0,?)`)
+      .run(this.threadId, type, date, errorCode, errorMessage, attempt, new Date().toISOString());
+  }
 
   migrateLegacy() {
     const feelingsFile = path.join(this.memoryDir, "mined", "feelings", "days.jsonl");
     const featuresDir = path.join(this.memoryDir, "mined", "features");
     const stateFile = path.join(this.memoryDir, "mined", "state.json");
     const now = new Date().toISOString();
-    let feelingCount = 0, featureCount = 0, jobCount = 0;
+    let feelingCount = 0, featureCount = 0, jobCount = 0, messageCount = 0, stateCount = 0;
 
     const insertFeeling = this.db.prepare(`INSERT OR IGNORE INTO feelings
       (id,thread_id,source_date,event_time,order_key,content,importance,source,source_thread,mining_job_id,created_at,updated_at)
@@ -80,11 +168,21 @@ class MemoryStore {
           const sourceDate = key.slice(6);
           const ts = new Date(state[key]).toISOString();
           jobCount += insertJob.run(`import_${this.threadId}_${sourceDate}`, this.threadId, sourceDate, "full", ts, ts, ts).changes;
+          if (!this.getDayState(sourceDate)) {
+            this.setDayState(sourceDate, { status: "completed", completedAt: ts });
+            stateCount++;
+          }
         }
       } catch {}
+      const archiveDir = path.join(this.memoryDir, "archive");
+      for (const { date, file } of listDateFiles(archiveDir)) {
+        const rows = readJsonl(file).map(row => ({ timestamp: row.timestamp, sourceDate: date,
+          role: row.type, text: row.text, source: "legacy_archive" }));
+        messageCount += this.insertMessages(rows, { source: "legacy_archive" });
+      }
     });
     migrate();
-    return { migrated: true, feelingCount, featureCount, jobCount };
+    return { migrated: true, messageCount, feelingCount, featureCount, jobCount, stateCount };
   }
 
   listFeelings({ date } = {}) {
@@ -101,6 +199,30 @@ class MemoryStore {
     return date
       ? this.db.prepare("SELECT * FROM features WHERE thread_id=? AND source_date=? ORDER BY category,id").all(this.threadId, date)
       : this.db.prepare("SELECT * FROM features WHERE thread_id=? ORDER BY category,id").all(this.threadId);
+  }
+
+  exportLegacy() {
+    const feelingsDir = path.join(this.memoryDir, "mined", "feelings");
+    const featuresDir = path.join(this.memoryDir, "mined", "features");
+    fs.mkdirSync(feelingsDir, { recursive: true });
+    fs.mkdirSync(featuresDir, { recursive: true });
+    const feelings = this.listFeelings().map(row => ({
+      id: row.id, seq: row.seq, sourceDate: row.source_date, eventTime: row.event_time,
+      content: row.content, type: "feeling", importance: row.importance,
+      summaryMode: row.summary_mode, coarseSummary: row.coarse_summary,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }));
+    writeJsonlAtomic(path.join(feelingsDir, "days.jsonl"), feelings);
+    const byCategory = new Map();
+    for (const row of this.listFeatures()) {
+      const category = /^[\w-]+$/.test(row.category || "") ? row.category : "misc";
+      if (!byCategory.has(category)) byCategory.set(category, []);
+      byCategory.get(category).push({ id: row.id, sourceDate: row.source_date, category,
+        content: row.content, type: "feature", importance: row.importance,
+        createdAt: row.created_at, updatedAt: row.updated_at });
+    }
+    for (const [category, rows] of byCategory) writeJsonlAtomic(path.join(featuresDir, `${category}.jsonl`), rows);
+    return { feelingCount: feelings.length, featureCount: [...byCategory.values()].reduce((n, rows) => n + rows.length, 0) };
   }
 
   hasCompletedFullJob(date) {
@@ -137,31 +259,17 @@ class MemoryStore {
     return this.db.prepare("SELECT * FROM mining_jobs WHERE id=?").get(jobId) || null;
   }
 
-  addCandidates(jobId, { feelings = [], features = [] }) {
-    const job = this.getJob(jobId);
-    if (!job) throw new Error(`mining job not found: ${jobId}`);
-    const insert = this.db.prepare(`INSERT INTO memory_candidates
-      (id,mining_job_id,memory_type,source_date,event_time,category,content,importance,source_message_ids,created_at)
-      VALUES (@id,@jobId,@type,@sourceDate,@eventTime,@category,@content,@importance,@sourceMessageIds,@createdAt)`);
-    const add = this.db.transaction(() => {
-      this.db.prepare("DELETE FROM memory_candidates WHERE mining_job_id=?").run(jobId);
-      const now = new Date().toISOString();
-      for (const item of feelings) insert.run(candidateParams(job, item, "feeling", now));
-      for (const item of features) insert.run(candidateParams(job, item, "feature", now));
-      this.updateJob(jobId, { status: "review_pending", feelingCount: feelings.length, featureCount: features.length, finishedAt: now });
-    });
-    add();
-    return this.listCandidates(jobId);
+  replaceDay(sourceDate, { feelings = [], features = [], source = "remine", miningJobId = null, dayState = null } = {}) {
+    return this._writeDay(sourceDate, { feelings, features, source, miningJobId, replace: true, dayState });
   }
 
-  listCandidates(jobId) {
-    return this.db.prepare("SELECT * FROM memory_candidates WHERE mining_job_id=? ORDER BY memory_type,event_time,id").all(jobId);
+  appendTargeted(sourceDate, { feelings = [], features = [], miningJobId = null } = {}) {
+    return this._writeDay(sourceDate, { feelings, features, source: "targeted", miningJobId, replace: false });
   }
 
-  publishCandidates(jobId) {
-    const job = this.getJob(jobId);
-    if (!job || job.status !== "review_pending") throw new Error("job is not awaiting review");
-    const candidates = this.listCandidates(jobId);
+  _writeDay(sourceDate, { feelings, features, source, miningJobId, replace, dayState = null }) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sourceDate)) throw new Error("sourceDate must be YYYY-MM-DD");
+    if (!Array.isArray(feelings) || !Array.isArray(features)) throw new Error("feelings and features must be arrays");
     const now = new Date().toISOString();
     const insertFeeling = this.db.prepare(`INSERT INTO feelings
       (id,thread_id,source_date,event_time,order_key,content,importance,source,source_thread,mining_job_id,created_at,updated_at)
@@ -169,55 +277,39 @@ class MemoryStore {
     const insertFeature = this.db.prepare(`INSERT INTO features
       (id,thread_id,source_date,category,content,importance,source,source_thread,mining_job_id,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-    const revise = this.db.prepare(`INSERT INTO memory_revisions
-      (id,thread_id,source_date,entity_type,entity_id,action,mining_job_id,old_data,new_data,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`);
-    const publish = this.db.transaction(() => {
-      if (job.publish_strategy === "replace") {
-        const oldFeelings = this.db.prepare("SELECT * FROM feelings WHERE thread_id=? AND source_date=? AND source!='manual'").all(this.threadId, job.source_date);
-        const oldFeatures = this.db.prepare("SELECT * FROM features WHERE thread_id=? AND source_date=? AND source!='manual'").all(this.threadId, job.source_date);
-        revise.run(id("rev"), this.threadId, job.source_date, "day", null, "replace", jobId,
-          JSON.stringify({ feelings: oldFeelings, features: oldFeatures }), JSON.stringify(candidates), now);
-        this.db.prepare("DELETE FROM feelings WHERE thread_id=? AND source_date=? AND source!='manual'").run(this.threadId, job.source_date);
-        this.db.prepare("DELETE FROM features WHERE thread_id=? AND source_date=? AND source!='manual'").run(this.threadId, job.source_date);
+    const write = this.db.transaction(() => {
+      if (replace) {
+        this.db.prepare("DELETE FROM feelings WHERE thread_id=? AND source_date=?").run(this.threadId, sourceDate);
+        this.db.prepare("DELETE FROM features WHERE thread_id=? AND source_date=?").run(this.threadId, sourceDate);
       }
-      const source = job.mode === "targeted" ? "targeted" : job.mode === "remine" ? "remine" : "auto";
-      let n = 0;
-      for (const item of candidates) {
-        if (item.memory_type === "feeling") {
-          insertFeeling.run(id("mem"), this.threadId, item.source_date, item.event_time,
-            `${item.event_time || item.source_date}:${String(n++).padStart(6, "0")}`, item.content,
-            item.importance, source, this.threadId, jobId, now, now);
-        } else {
-          insertFeature.run(id("feature"), this.threadId, item.source_date, item.category || "misc",
-            item.content, item.importance, source, this.threadId, jobId, now, now);
-        }
+      let n = this.db.prepare("SELECT COUNT(*) n FROM feelings WHERE thread_id=? AND source_date=?").get(this.threadId, sourceDate).n;
+      for (const item of feelings) {
+        validateMemoryItem(item, "feeling");
+        insertFeeling.run(item.id || id("mem"), this.threadId, sourceDate, item.eventTime || null,
+          `${item.eventTime || sourceDate}:${String(n++).padStart(6, "0")}`, item.content.trim(),
+          clampImportance(item.importance), source, this.threadId, miningJobId, item.createdAt || now, now);
       }
-      this.db.prepare("DELETE FROM memory_candidates WHERE mining_job_id=?").run(jobId);
-      this.updateJob(jobId, { status: "completed", publishedAt: now });
+      for (const item of features) {
+        validateMemoryItem(item, "feature");
+        insertFeature.run(item.id || id("feature"), this.threadId, sourceDate, item.category || "misc",
+          item.content.trim(), clampImportance(item.importance), source, this.threadId, miningJobId, item.createdAt || now, now);
+      }
+      if (dayState) this.setDayState(sourceDate, dayState);
     });
-    publish();
-    return { job: this.getJob(jobId), feelings: this.listFeelings({ date: job.source_date }), features: this.listFeatures({ date: job.source_date }) };
-  }
-
-  discardCandidates(jobId) {
-    const discard = this.db.transaction(() => {
-      this.db.prepare("DELETE FROM memory_candidates WHERE mining_job_id=?").run(jobId);
-      this.updateJob(jobId, { status: "discarded", finishedAt: new Date().toISOString() });
-    });
-    discard();
-    return this.getJob(jobId);
+    write();
+    return { feelings: this.listFeelings({ date: sourceDate }), features: this.listFeatures({ date: sourceDate }) };
   }
 }
 
-function candidateParams(job, item, type, now) {
+function writeJsonlAtomic(file, rows) {
+  const data = rows.map(JSON.stringify).join("\n") + (rows.length ? "\n" : "");
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, data, "utf8");
+  fs.renameSync(tmp, file);
+}
+
+function validateMemoryItem(item, type) {
   if (!item || typeof item.content !== "string" || !item.content.trim()) throw new Error(`invalid ${type} candidate`);
-  return {
-    id: id("candidate"), jobId: job.id, type, sourceDate: job.source_date,
-    eventTime: item.eventTime || null, category: item.category || null,
-    content: item.content.trim(), importance: clampImportance(item.importance),
-    sourceMessageIds: item.sourceMessageIds ? JSON.stringify(item.sourceMessageIds) : null, createdAt: now,
-  };
 }
 
 function readJsonl(file) {

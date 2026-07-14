@@ -15,13 +15,13 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const { MemoryArchive } = require("../src/services/memory-archive");
+const { FullArchive } = require("../src/services/memory-archive");
 const {
   loadTieredFeelings, loadRetainConfig,
   buildFragmentWindows, buildMemoryBlocks, computeCutoff,
 } = require("../src/services/thread-rebuilder");
 const { getCfg, getThreadDir } = require("../src/config");
-const { resolveDateFile } = require("../src/lib/archive-paths");
+const { readMessages } = require("../src/storage/memory-reader");
 
 const CODEX_DIR = path.join(os.homedir(), ".codex", "sessions");
 const DEFAULT_WINDOW_DAYS = 3;
@@ -29,11 +29,7 @@ let MEMORY_BUDGET_CHARS = 100000;
 
 function getFeelingsPaths(threadId) {
   const dir = getThreadDir(threadId);
-  const feelDir = path.join(dir, "memory", "mined", "feelings");
   return {
-    daysFile: path.join(feelDir, "days.jsonl"),
-    weeksFile: path.join(feelDir, "weeks.jsonl"),
-    monthsFile: path.join(feelDir, "months.jsonl"),
     retainConfig: path.join(dir, "memory", "retain-config.json"),
   };
 }
@@ -139,7 +135,7 @@ function main() {
 
   // === 全量备份到 full/ ===
   const memoryDir = path.join(getThreadDir(threadId), "memory");
-  const codexArchive = new MemoryArchive(memoryDir);
+  const codexArchive = new FullArchive(memoryDir);
   const byDate = new Map();
   for (const msg of allMsgs) {
     const ts = msg.timestamp;
@@ -221,7 +217,7 @@ function main() {
   // === Feelings ===
   console.log(`[codex-rebuild] Loading tiered feelings...`);
   const fp = getFeelingsPaths(threadId);
-  const allFeelings = loadTieredFeelings(fp.daysFile, fp.weeksFile, fp.monthsFile, MEMORY_BUDGET_CHARS);
+  const allFeelings = loadTieredFeelings(path.join(getThreadDir(threadId), "memory"), threadId);
   const preWindow = allFeelings.filter(f => f.date < cutoffDate);
   const inWindow = allFeelings.filter(f => f.date >= cutoffDate);
   console.log(`[codex-rebuild] ${preWindow.length} pre-window, ${inWindow.length} in-window`);
@@ -239,11 +235,8 @@ function main() {
   for (const fw of fragmentWindows) {
     const date = fw.feeling.date;
     if (!date) continue;
-    const archiveFile = resolveDateFile(archiveDir, date);
-    if (!fs.existsSync(archiveFile)) continue;
-    for (const line of fs.readFileSync(archiveFile, "utf8").split("\n").filter(Boolean)) {
+    for (const obj of readMessages(path.join(getThreadDir(threadId), "memory"), { threadId, from: fw.startUtc, to: fw.endUtc })) {
       try {
-        const obj = JSON.parse(line);
         if (obj.timestamp) { const t = new Date(obj.timestamp).getTime(), s = new Date(fw.startUtc).getTime(), e = new Date(fw.endUtc).getTime(); if (t >= s && t < e) {
           if (!fragmentArchive[date]) fragmentArchive[date] = [];
           fragmentArchive[date].push({ timestamp: obj.timestamp, type: obj.type, text: obj.text || "" });

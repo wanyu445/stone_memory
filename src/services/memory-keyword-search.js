@@ -1,8 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-const { resolveDateFile, listDates } = require("../lib/archive-paths");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../config");
+const { readFeelings: readDatabaseFeelings, readMessages } = require("../storage/memory-reader");
 
 function resolvePaths(threadId) {
   const tid = threadId || listThreadIds()[0];
@@ -11,8 +11,7 @@ function resolvePaths(threadId) {
   const feelDir = path.join(dir, "memory", "mined", "feelings");
   return {
     threadId: tid,
-    feelingsFile: path.join(feelDir, "days.jsonl"),
-    archiveDir: path.join(dir, "memory", "archive"),
+    memoryDir: path.join(dir, "memory"),
     searchLog: path.join(dir, "memory", "search-log.jsonl"),
     aiName: getCfg("ai", tid) || "AI",
     userName: getCfg("user", tid) || "User",
@@ -91,54 +90,35 @@ function extractKeywords(query) {
 
 let _feelingsCache = null;
 let _feelingsCacheTime = 0;
+let _feelingsCacheKey = null;
 
-function loadFeelings(feelingsFile) {
-  if (_feelingsCache && Date.now() - _feelingsCacheTime < 60000) return _feelingsCache;
-  const raw = fs.readFileSync(feelingsFile, "utf8");
-  const results = [];
-  let pos = 0, len = raw.length;
-  while (pos < len) {
-    while (pos < len && " \t\n\r".includes(raw[pos])) pos++;
-    if (pos >= len) break;
-    const start = pos;
-    let depth = 0, inString = false, escape = false;
-    while (pos < len) {
-      const ch = raw[pos];
-      if (escape) { escape = false; pos++; continue; }
-      if (ch === "\\") { escape = true; pos++; continue; }
-      if (ch === '"') { inString = !inString; pos++; continue; }
-      if (inString) { pos++; continue; }
-      if (ch === "{") { depth++; pos++; continue; }
-      if (ch === "}") { depth--; if (depth === 0) { pos++; break; } pos++; continue; }
-      pos++;
-    }
-    try { results.push(JSON.parse(raw.slice(start, pos))); } catch {}
-  }
+function loadFeelings(_feelingsFile, memoryDir, threadId) {
+  const cacheKey = `${memoryDir}:${threadId}`;
+  if (_feelingsCache && _feelingsCacheKey === cacheKey && Date.now() - _feelingsCacheTime < 60000) return _feelingsCache;
+  const databaseRows = readDatabaseFeelings(memoryDir, { threadId });
+  const results = databaseRows;
 
   // Parse times for all feelings
   const feelings = [];
   for (const r of results) {
     if (r.type !== "feeling") continue;
     const time = parseFeelingTime(r.content);
+    const date = r.sourceDate || time?.date;
     feelings.push({
       id: r.id,
       content: r.content,
-      date: time?.date,
-      utcTime: time ? toUtc(time.date, time.hour, time.minute) : null,
+      date,
+      utcTime: r.eventTime || (time ? toUtc(date, time.hour, time.minute) : null),
     });
   }
   _feelingsCache = feelings;
+  _feelingsCacheKey = cacheKey;
   _feelingsCacheTime = Date.now();
   return feelings;
 }
 
-function readArchive(archiveDir, dateStr) {
-  const fp = resolveDateFile(archiveDir, dateStr);
-  if (!fs.existsSync(fp)) return [];
-  const raw = fs.readFileSync(fp, "utf8");
-  return raw.split("\n").filter(Boolean).map(line => {
-    try { return JSON.parse(line); } catch { return null; }
-  }).filter(Boolean);
+function readArchive(memoryDir, threadId, dateStr) {
+  return readMessages(memoryDir, { threadId, date: dateStr });
 }
 
 // ---- 主搜索 ----
@@ -148,7 +128,7 @@ function searchByKeyword(query, { maxResults = 1, threadId } = {}) {
   if (keywords.length === 0) return { hits: [], text: "No searchable keywords found." };
 
   const p = resolvePaths(threadId);
-  const feelings = loadFeelings(p.feelingsFile);
+  const feelings = loadFeelings(p.feelingsFile, p.memoryDir, p.threadId);
   const scored = [];
 
   for (let i = 0; i < feelings.length; i++) {
@@ -184,11 +164,11 @@ function searchByKeyword(query, { maxResults = 1, threadId } = {}) {
 
     // Read archive for the feeling's date and potentially next day
     const archiveDate = hit.date;
-    let messages = readArchive(p.archiveDir, archiveDate);
+    let messages = readArchive(p.memoryDir, p.threadId, archiveDate);
     // If endUtc spills to next day, also read next day
     const endDate = endUtc.slice(0, 10);
     if (endDate !== archiveDate) {
-      messages = messages.concat(readArchive(p.archiveDir, endDate));
+      messages = messages.concat(readArchive(p.memoryDir, p.threadId, endDate));
     }
 
     // Filter by time window（数值比较，防时区格式差异）
@@ -237,7 +217,7 @@ function searchArchiveContext(feelingDate, keywords, { maxDays = 5, contextLines
   const half = Math.floor(contextLines / 2);
 
   // 全量扫描所有 archive 日期，按关键词命中数排序，取 top N
-  let allDates = listDates(p.archiveDir);
+  let allDates = [...new Set(readMessages(p.memoryDir, { threadId: p.threadId }).map(row => row.sourceDate))].sort();
 
   // 跳过已覆盖的日期（增量更新）
   if (skipBefore) {
@@ -247,7 +227,7 @@ function searchArchiveContext(feelingDate, keywords, { maxDays = 5, contextLines
   // 统计每个日期的命中数，feelingDate 优先排第一
   const dateHitCounts = [];
   for (const dateStr of allDates) {
-    const messages = readArchive(p.archiveDir, dateStr);
+    const messages = readArchive(p.memoryDir, p.threadId, dateStr);
     if (messages.length === 0) continue;
     let hits = 0;
     for (const m of messages) {

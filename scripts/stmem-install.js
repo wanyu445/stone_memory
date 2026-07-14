@@ -167,7 +167,8 @@ async function main() {
   console.log("\n✅ 安装完成\n");
   console.log("快速开始:");
   console.log("  stmem init --thread <线程ID>           # 初始化新线程");
-  console.log("  stmem import --dir <目录> --thread ID   # 导入旧对话");
+  console.log("  stmem import --dir <目录> --thread ID   # 预览旧对话导入");
+  console.log("  stmem import --dir <目录> --thread ID --apply  # 确认并写入");
   console.log("  stmem mine --thread ID --all           # 挖掘记忆");
   console.log("  stmem rebuild --thread ID --apply      # 线程重建");
   console.log("");

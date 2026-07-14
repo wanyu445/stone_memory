@@ -19,17 +19,14 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 
-const { MemoryArchive } = require("../src/services/memory-archive");
+const { FullArchive } = require("../src/services/memory-archive");
 const { getCfg, getThreadDir } = require("../src/config");
-const { parseJsonlFile } = require("../src/lib/jsonl");
 const { resolveDateFile, listDateFiles } = require("../src/lib/archive-paths");
+const { readFeelings: readDatabaseFeelings, readMessages } = require("../src/storage/memory-reader");
 
 let THREAD_BASE = null;
 let FULL_ARCHIVE = null;
 let SESSION_DIR = null;
-let FEELINGS_FILE = null;
-let FEELINGS_WEEKS_FILE = null;
-let FEELINGS_MONTHS_FILE = null;
 let RETAIN_CONFIG_FILE = null;
 let ARCHIVE_DIR = null;
 let RULES_DIR = null;
@@ -41,13 +38,9 @@ function initThreadPaths(threadId) {
   if (currentThreadId === threadId && THREAD_BASE) return;
   currentThreadId = threadId;
   THREAD_BASE = getThreadDir(threadId);
-  FULL_ARCHIVE = new MemoryArchive(path.join(THREAD_BASE, "memory"));
+  FULL_ARCHIVE = new FullArchive(path.join(THREAD_BASE, "memory"));
   SESSION_DIR = getCfg("sessionDir", threadId);
   if (!SESSION_DIR) throw new Error("请在 stmem.json 中配置 sessionDir");
-  const feelDir = path.join(THREAD_BASE, "memory", "mined", "feelings");
-  FEELINGS_FILE = path.join(feelDir, "days.jsonl");
-  FEELINGS_WEEKS_FILE = path.join(feelDir, "weeks.jsonl");
-  FEELINGS_MONTHS_FILE = path.join(feelDir, "months.jsonl");
   RETAIN_CONFIG_FILE = path.join(THREAD_BASE, "memory", "retain-config.json");
   ARCHIVE_DIR = path.join(THREAD_BASE, "memory", "archive");
   RULES_DIR = path.join(THREAD_BASE, "rules");
@@ -151,9 +144,9 @@ function feelingToUtc(f) {
  * 超过预算 → 用周摘要替换对应日期 → 仍超 → 用月摘要
  */
 function loadTieredFeelings() {
-  const monthsRaw = parseJsonlFile(FEELINGS_MONTHS_FILE);
-  const weeksRaw = parseJsonlFile(FEELINGS_WEEKS_FILE);
-  const daysRaw = parseJsonlFile(FEELINGS_FILE).filter(r => r.type === "feeling");
+  const daysRaw = readDatabaseFeelings(path.join(THREAD_BASE, "memory"), { threadId: currentThreadId, forInjection: true });
+  const monthsRaw = [];
+  const weeksRaw = [];
 
   // 先全用日
   const dayFeelings = [];
@@ -205,29 +198,6 @@ function loadTieredFeelings() {
   console.log(`[rebuild]   tiered: ${monthEntries.length}M + ${weekEntries.length}W + ${dayFeelings.length}D → ${result.length} entries (${(total/1024).toFixed(1)} KB, budget ${(MEMORY_BUDGET_CHARS/1024).toFixed(0)} KB)`);
   result.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   return result;
-}
-
-function loadFeelings() {
-  const entries = parseJsonlFile(FEELINGS_FILE);
-  const feelings = [];
-  for (let i = 0; i < entries.length; i++) {
-    const r = entries[i];
-    if (r.type !== "feeling") continue;
-    const content = (r.content || "").trim();
-    if (!content) continue;
-    const time = parseFeelingTime(content);
-    if (!time || !time.date) continue;
-    feelings.push({
-      id: r.id,
-      content,
-      date: time.date,
-      hour: time.hour,
-      minute: time.minute,
-      utcTime: feelingToUtc(time),
-      retainOriginal: false, // 由 retain-config.json 决定, 不在 feelings 里硬编码
-    });
-  }
-  return feelings;
 }
 
 // ---- 全量备份 ----
@@ -500,12 +470,9 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   for (const fw of fragmentWindows) {
     const date = fw.feeling.date;
     if (!date) continue;
-    const archiveFile = resolveDateFile(ARCHIVE_DIR, date);
-    if (!fs.existsSync(archiveFile)) continue;
     const entries = [];
-    for (const line of fs.readFileSync(archiveFile, "utf8").split("\n").filter(Boolean)) {
+    for (const obj of readMessages(path.join(THREAD_BASE, "memory"), { threadId: currentThreadId, from: fw.startUtc, to: fw.endUtc })) {
       try {
-        const obj = JSON.parse(line);
         if (obj.timestamp) {
           const t = new Date(obj.timestamp).getTime(), s = new Date(fw.startUtc).getTime(), e = new Date(fw.endUtc).getTime();
           if (t >= s && t < e) entries.push({ timestamp: obj.timestamp, type: obj.type, text: obj.text || "" });

@@ -17,6 +17,7 @@ const { MemoryArchive } = require("../src/services/memory-archive");
 const { MemoryMiner } = require("../src/services/memory-miner");
 const { getCfg, getThreadDir, listThreadIds, loadConfig } = require("../src/config");
 const { MemoryStore } = require("../src/storage/memory-store");
+const { listDates } = require("../src/lib/archive-paths");
 
 function syncDatabase(memoryDir, tid) {
   const store = new MemoryStore({ memoryDir, threadId: tid });
@@ -80,10 +81,7 @@ async function main() {
     const archiveDir = path.join(memoryDir, "archive");
     let allDates = [];
     try {
-      allDates = fs.readdirSync(archiveDir)
-        .filter(f => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
-        .map(f => f.replace(".jsonl", ""))
-        .sort();
+      allDates = listDates(archiveDir);
     } catch {}
     if (!allDates.length) { console.log("[stmem] archive 目录无数据"); process.exit(0); }
 

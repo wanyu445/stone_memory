@@ -21,6 +21,7 @@ const {
   buildFragmentWindows, buildMemoryBlocks, computeCutoff,
 } = require("../src/services/thread-rebuilder");
 const { getCfg, getThreadDir } = require("../src/config");
+const { resolveDateFile } = require("../src/lib/archive-paths");
 
 const CODEX_DIR = path.join(os.homedir(), ".codex", "sessions");
 const DEFAULT_WINDOW_DAYS = 3;
@@ -238,7 +239,7 @@ function main() {
   for (const fw of fragmentWindows) {
     const date = fw.feeling.date;
     if (!date) continue;
-    const archiveFile = path.join(archiveDir, `${date}.jsonl`);
+    const archiveFile = resolveDateFile(archiveDir, date);
     if (!fs.existsSync(archiveFile)) continue;
     for (const line of fs.readFileSync(archiveFile, "utf8").split("\n").filter(Boolean)) {
       try {

@@ -10,6 +10,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { ensureDateFile, resolveDateFile, listJsonlRecursive } = require("../src/lib/archive-paths");
 const { getCfg, getThreadDir, listThreadIds } = require("../src/config");
 
 function detectFormat(filePath) {
@@ -45,7 +46,7 @@ function beijingDateKey(ts) {
 }
 
 function getFullLastTimestamp(fullDir, dateKey) {
-  const fp = path.join(fullDir, `${dateKey}.jsonl`);
+  const fp = resolveDateFile(fullDir, dateKey);
   if (!fs.existsSync(fp)) return null;
   const raw = fs.readFileSync(fp, "utf8");
   const lines = raw.split("\n").filter(Boolean);
@@ -155,7 +156,7 @@ function importFile(filePath, archiveDir, fullDir) {
     const newMsgs = lastTs ? msgs.filter(m => (m.timestamp || "") > lastTs) : msgs;
     if (newMsgs.length > 0) {
       for (const m of newMsgs) {
-        fs.appendFileSync(path.join(fullDir, `${dateKey}.jsonl`), JSON.stringify(m) + "\n", "utf8");
+        fs.appendFileSync(ensureDateFile(fullDir, dateKey), JSON.stringify(m) + "\n", "utf8");
         fullCount++;
       }
     }
@@ -169,7 +170,7 @@ function importFile(filePath, archiveDir, fullDir) {
   fs.mkdirSync(archiveDir, { recursive: true });
   for (const [dateKey, msgs] of byDate) {
     msgs.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
-    const archiveFile = path.join(archiveDir, `${dateKey}.jsonl`);
+    const archiveFile = ensureDateFile(archiveDir, dateKey);
     const existing = new Set();
     if (fs.existsSync(archiveFile)) {
       for (const line of fs.readFileSync(archiveFile, "utf8").split("\n").filter(Boolean)) {
@@ -223,13 +224,13 @@ function main() {
   if (dirIdx >= 0) {
     const dir = args[dirIdx + 1];
     if (!fs.existsSync(dir)) { console.error("目录不存在: " + dir); process.exit(1); }
-    files = fs.readdirSync(dir).filter(f => f.endsWith(".jsonl")).map(f => path.join(dir, f));
+    files = listJsonlRecursive(dir);
   } else if (sourceIdx >= 0) {
     files = [args[sourceIdx + 1]];
   } else {
     // 默认扫描 import/ 目录
     const importDir = path.join(threadDir, "memory", "import");
-    try { files = fs.readdirSync(importDir).filter(f => f.endsWith(".jsonl")).map(f => path.join(importDir, f)); } catch {}
+    files = listJsonlRecursive(importDir).filter(f => !f.startsWith(doneDir + path.sep));
   }
 
   if (!files.length) {

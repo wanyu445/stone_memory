@@ -9,6 +9,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { ensureDateFile } = require("../src/lib/archive-paths");
 const os = require("os");
 
 const STONE = path.join(os.homedir(), ".stone_memory");
@@ -144,7 +145,7 @@ async function main() {
   }
   for (const [d, msgs] of Object.entries(byDate)) {
     const lines = msgs.map(m => JSON.stringify(m));
-    fs.appendFileSync(path.join(archiveDir, `${d}.jsonl`), lines.join("\n") + "\n");
+    fs.appendFileSync(ensureDateFile(archiveDir, d), lines.join("\n") + "\n");
   }
 
   console.log(`适配完成: ${entries.length} 条, ${Object.keys(byDate).length} 天`);

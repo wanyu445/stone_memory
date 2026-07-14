@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { ensureDateFile, resolveDateFile, listDateFiles, migrateFlatFiles } = require("../lib/archive-paths");
 
 /**
  * Layer 1 — 原始存档
@@ -32,12 +33,14 @@ class MemoryArchive {
     this.fullDir = path.join(this.archiveDir, "full");
     fs.mkdirSync(this.archiveDir, { recursive: true });
     fs.mkdirSync(this.fullDir, { recursive: true });
+    migrateFlatFiles(this.archiveDir);
+    migrateFlatFiles(this.fullDir);
   }
 
   /** 完整存档 — 增量写入全量线程消息（含工具链/思考链），北京时间日期 */
   archiveFull(msg) {
     const dateKey = this._beijingDateKey(msg.timestamp);
-    const filePath = path.join(this.fullDir, `${dateKey}.jsonl`);
+    const filePath = ensureDateFile(this.fullDir, dateKey);
     try {
       fs.appendFileSync(filePath, JSON.stringify(msg) + "\n", "utf8");
     } catch (err) {
@@ -55,7 +58,7 @@ class MemoryArchive {
       grouped.get(dateKey).push(msg);
     }
     for (const [dateKey, batch] of grouped) {
-      const filePath = path.join(this.fullDir, `${dateKey}.jsonl`);
+      const filePath = ensureDateFile(this.fullDir, dateKey);
       const lines = batch.map((m) => JSON.stringify(m) + "\n").join("");
       try {
         fs.appendFileSync(filePath, lines, "utf8");
@@ -67,7 +70,7 @@ class MemoryArchive {
 
   /** 获取 full/ 中某天最后一条消息的时间戳（增量备份用） */
   getFullLastTimestamp(dateKey) {
-    const filePath = path.join(this.fullDir, `${dateKey}.jsonl`);
+    const filePath = resolveDateFile(this.fullDir, dateKey);
     try {
       const raw = fs.readFileSync(filePath, "utf8");
       const lines = raw.split("\n").filter(Boolean);
@@ -95,7 +98,7 @@ class MemoryArchive {
   /** 写入一条存档记录 */
   archiveMessage(msg) {
     const dateKey = this._dateKey(msg.timestamp);
-    const filePath = path.join(this.archiveDir, `${dateKey}.jsonl`);
+    const filePath = ensureDateFile(this.archiveDir, dateKey);
     const line = JSON.stringify(msg) + "\n";
     try {
       fs.appendFileSync(filePath, line, "utf8");
@@ -114,7 +117,7 @@ class MemoryArchive {
       grouped.get(dateKey).push(msg);
     }
     for (const [dateKey, batch] of grouped) {
-      const filePath = path.join(this.archiveDir, `${dateKey}.jsonl`);
+      const filePath = ensureDateFile(this.archiveDir, dateKey);
       const lines = batch.map((m) => JSON.stringify(m) + "\n").join("");
       try {
         fs.appendFileSync(filePath, lines, "utf8");
@@ -126,7 +129,7 @@ class MemoryArchive {
 
   /** 读取某天的存档 */
   readDay(dateStr) {
-    const filePath = path.join(this.archiveDir, `${dateStr}.jsonl`);
+    const filePath = resolveDateFile(this.archiveDir, dateStr);
     try {
       const raw = fs.readFileSync(filePath, "utf8");
       return raw
@@ -147,11 +150,11 @@ class MemoryArchive {
 
   /** 读取最近 N 条存档（跨文件，从新到旧扫描） */
   readRecent(count = 100) {
-    const files = this._listArchiveFiles().sort().reverse();
+    const files = this._listArchiveFiles().reverse();
     const results = [];
     for (const file of files) {
       if (results.length >= count) break;
-      const entries = this.readDay(file.replace(".jsonl", ""));
+      const entries = this.readDay(file);
       for (let i = entries.length - 1; i >= 0; i--) {
         if (results.length >= count) break;
         results.unshift(entries[i]);
@@ -163,10 +166,10 @@ class MemoryArchive {
   /** 读取最近 N 小时的存档 */
   readRecentHours(hours = 1) {
     const cutoff = Date.now() - hours * 3600 * 1000;
-    const files = this._listArchiveFiles().sort().reverse();
+    const files = this._listArchiveFiles().reverse();
     const results = [];
     for (const file of files) {
-      const dateStr = file.replace(".jsonl", "");
+      const dateStr = file;
       if (this._dateToMs(dateStr) < cutoff - 86400000) break;
       const entries = this.readDay(dateStr);
       for (const entry of entries) {
@@ -179,7 +182,7 @@ class MemoryArchive {
 
   _listArchiveFiles() {
     try {
-      return fs.readdirSync(this.archiveDir).filter((f) => f.endsWith(".jsonl"));
+      return listDateFiles(this.archiveDir).map(item => item.date);
     } catch {
       return [];
     }

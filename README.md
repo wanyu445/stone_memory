@@ -52,8 +52,8 @@ stone_memory/
     │   └── operations.md         # 操作指令
     └── memory/
         ├── archive/
-        │   ├── YYYY-MM-DD.jsonl      # 清洗后的对话文本
-        │   └── full/YYY-MM-DD.jsonl  # 全量原始线程消息
+        │   ├── YYYY/MM/YYYY-MM-DD.jsonl       # 清洗后的对话文本
+        │   └── full/YYYY/MM/YYYY-MM-DD.jsonl  # 全量原始线程消息
         ├── mined/
         │   ├── feelings/days.jsonl   # 日记式记忆
         │   ├── features/*.jsonl      # 用户特征（按类别）

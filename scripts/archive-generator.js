@@ -3,7 +3,7 @@
  * Archive Generator — 多线程统一入口
  *
  * 输入: Claude Code + Codex 线程 JSONL 文件列表
- * 输出: archive/YYYY-MM-DD.jsonl (统一格式 {timestamp, type, text})
+ * 输出: archive/YYYY/MM/YYYY-MM-DD.jsonl (统一格式 {timestamp, type, text})
  *
  * 同一天多个线程的内容合并，timestamp+text 去重
  *
@@ -14,6 +14,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { ensureDateFile } = require("../src/lib/archive-paths");
 const { getThreadDir, listThreadIds } = require("../src/config");
 
 function getArchiveDir(threadId) {
@@ -122,7 +123,7 @@ function writeArchive(entries) {
 
   let total = 0;
   for (const [date, msgs] of Object.entries(byDate)) {
-    const filePath = path.join(ARCHIVE_DIR, `${date}.jsonl`);
+    const filePath = ensureDateFile(ARCHIVE_DIR, date);
 
     // 读已有内容用于去重
     const existing = new Set();

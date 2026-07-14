@@ -21,6 +21,7 @@ const { execSync } = require("child_process");
 
 const { loadConfig, getCfg, getThreadDir, listThreadIds } = require("../src/config");
 const { runSubagent } = require("../src/services/subagent-runner");
+const { listDates, ensureDateFile, listJsonlRecursive } = require("../src/lib/archive-paths");
 const LOG_DIR = path.join(os.homedir(), ".stone_memory", "logs");
 
 function log(msg) {
@@ -120,15 +121,7 @@ function saveWeekCoverage(tid, ranges) {
 }
 
 function scanArchiveDates(tid) {
-  const dir = getArchiveDir(tid);
-  const dates = [];
-  try {
-    for (const f of fs.readdirSync(dir)) {
-      const m = f.match(/^(\d{4}-\d{2}-\d{2})\.jsonl$/);
-      if (m) dates.push(m[1]);
-    }
-  } catch {}
-  return dates.sort();
+  return listDates(getArchiveDir(tid));
 }
 
 async function runMining(tid, dateStr) {
@@ -230,7 +223,7 @@ function importThreadFile(tid, filePath, fileName) {
 
   for (const [dateKey, msgs] of byDate) {
     msgs.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
-    const archiveFile = path.join(archiveDir, `${dateKey}.jsonl`);
+    const archiveFile = ensureDateFile(archiveDir, dateKey);
     const lines = msgs.map(m => JSON.stringify(m) + "\n").join("");
     fs.appendFileSync(archiveFile, lines, "utf8");
   }
@@ -246,11 +239,11 @@ function importThreadFile(tid, filePath, fileName) {
 
 async function checkImports(tid) {
   const importDir = path.join(getThreadDir(tid), "memory", "import");
-  let files = [];
-  try { files = fs.readdirSync(importDir).filter(f => f.endsWith(".jsonl")); } catch { return; }
+  const doneDir = path.join(importDir, "done");
+  const files = listJsonlRecursive(importDir).filter(f => !f.startsWith(doneDir + path.sep));
 
-  for (const f of files) {
-    const fpath = path.join(importDir, f);
+  for (const fpath of files) {
+    const f = path.basename(fpath);
     if (!fs.statSync(fpath).isFile()) continue;
     try { importThreadFile(tid, fpath, f); } catch (err) {
       log(`[${tid}] import ${f} 失败: ${err.message}`);

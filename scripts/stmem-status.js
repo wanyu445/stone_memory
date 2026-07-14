@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const { loadConfig, getCfg, listThreadIds, getThreadDir } = require("../src/config");
 const fs = require("fs");
+const { listDates } = require("../src/lib/archive-paths");
 
 const threads = listThreadIds();
 console.log(`Stone Memory — ${threads.length} 线程\n`);
@@ -13,7 +14,7 @@ if (threads.length === 0) {
 for (const tid of threads) {
   const dir = getThreadDir(tid);
   let archiveDays = 0, feelingCount = 0, featureCount = 0;
-  try { archiveDays = fs.readdirSync(dir + "/memory/archive").filter(f => f.endsWith(".jsonl")).length; } catch {}
+  try { archiveDays = listDates(dir + "/memory/archive").length; } catch {}
   try {
     const ff = dir + "/memory/mined/feelings/days.jsonl";
     if (fs.existsSync(ff)) feelingCount = fs.readFileSync(ff, "utf8").split("\n").filter(l => {

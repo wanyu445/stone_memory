@@ -13,6 +13,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { runSubagent } = require("../src/services/subagent-runner");
 const { parseJsonArray } = require("../src/lib/json-parse");
+const { resolveDateFile, listDates } = require("../src/lib/archive-paths");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../src/config");
 
@@ -73,7 +74,7 @@ function saveState(stateFile, state) {
 }
 
 function readDayArchive(archiveDir, dateStr) {
-  const fp = path.join(archiveDir, `${dateStr}.jsonl`);
+  const fp = resolveDateFile(archiveDir, dateStr);
   try {
     const raw = fs.readFileSync(fp, "utf8");
     return raw.split("\n").filter(Boolean).map(line => {
@@ -84,10 +85,7 @@ function readDayArchive(archiveDir, dateStr) {
 
 function listArchiveDates(archiveDir) {
   try {
-    return fs.readdirSync(archiveDir)
-      .filter(f => f.endsWith(".jsonl"))
-      .map(f => f.replace(".jsonl", ""))
-      .sort();
+    return listDates(archiveDir);
   } catch { return []; }
 }
 

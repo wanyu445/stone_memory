@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { resolveDateFile, listDates } = require("../lib/archive-paths");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../config");
 
@@ -132,7 +133,7 @@ function loadFeelings(feelingsFile) {
 }
 
 function readArchive(archiveDir, dateStr) {
-  const fp = path.join(archiveDir, `${dateStr}.jsonl`);
+  const fp = resolveDateFile(archiveDir, dateStr);
   if (!fs.existsSync(fp)) return [];
   const raw = fs.readFileSync(fp, "utf8");
   return raw.split("\n").filter(Boolean).map(line => {
@@ -236,10 +237,7 @@ function searchArchiveContext(feelingDate, keywords, { maxDays = 5, contextLines
   const half = Math.floor(contextLines / 2);
 
   // 全量扫描所有 archive 日期，按关键词命中数排序，取 top N
-  let allDates = fs.readdirSync(p.archiveDir)
-    .filter(f => f.endsWith(".jsonl"))
-    .map(f => f.replace(".jsonl", ""))
-    .sort();
+  let allDates = listDates(p.archiveDir);
 
   // 跳过已覆盖的日期（增量更新）
   if (skipBefore) {

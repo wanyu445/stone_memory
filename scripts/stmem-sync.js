@@ -8,6 +8,7 @@
  */
 const fs = require("fs");
 const path = require("path");
+const { ensureDateFile } = require("../src/lib/archive-paths");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../src/config");
 
@@ -121,7 +122,7 @@ for (const msg of newMessages) {
 fs.mkdirSync(archiveDir, { recursive: true });
 let total = 0;
 for (const [d, msgs] of Object.entries(byDate)) {
-  const fp = path.join(archiveDir, `${d}.jsonl`);
+  const fp = ensureDateFile(archiveDir, d);
   const existing = new Set();
   if (fs.existsSync(fp)) {
     for (const line of fs.readFileSync(fp, "utf8").split("\n").filter(Boolean)) {

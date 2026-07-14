@@ -1,0 +1,9 @@
+.mcp.json
+node_modules/
+.env
+.env.*
+*.log
+*.db
+*.db-shm
+*.db-wal
+

@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
+
+const SCRIPTS = path.resolve(__dirname, "..", "scripts");
+const cmd = process.argv[2];
+
+// --help / -h / 无参数 → 打印帮助
+if (!cmd || cmd === "--help" || cmd === "-h") {
+  console.log(`stmem — Stone Memory 多线程记忆系统
+
+用法:
+  stmem status                                  查看所有线程状态
+  stmem delete --thread <id> [--dry-run]        删除线程配置及数据
+  stmem init --thread <id>                      初始化新线程
+  stmem import --dir <path> [--thread <id>]      导入目录下所有 .jsonl，生成跨日对话文件
+  stmem mine [--thread <id>] --all                  挖掘全部未处理日期，生成feelings + features
+  stmem mine [--thread <id>] [--date <YYYY-MM-DD>]  挖掘单日 feelings + features
+  stmem rebuild --thread <id> [--window N] [--tool-pairs N]  预览重建
+  stmem rebuild --thread <id> --apply           实际写入
+  stmem watcher [on|off]                        watcher 总开关启停
+  stmem watcher archive [on|off]                watcher 自动挖掘对话开关
+  stmem watcher miner [on|off]                  watcher 自动挖掘摘要+特征开关
+
+所有 --thread 可省略，默认取第一个已配置线程。
+
+配置: ~/.stone_memory/stmem.json`);
+  process.exit(0);
+}
+
+// 每次执行命令前确保 watcher 存活（init 自己会启动，跳过）
+if (cmd !== "init") ensureWatcher();
+
+switch (cmd) {
+  case "init":
+    require(path.join(SCRIPTS, "stmem-init"));
+    break;
+  case "mine":
+    require(path.join(SCRIPTS, "stmem-mine"));
+    break;
+  case "rebuild":
+    require(path.join(SCRIPTS, "stmem-rebuild"));
+    break;
+  case "status":
+    require(path.join(SCRIPTS, "stmem-status"));
+    break;
+  case "list":
+    require(path.join(SCRIPTS, "stmem-list"));
+    break;
+  case "delete":
+    require(path.join(SCRIPTS, "stmem-delete"));
+    break;
+  case "sync":
+    require(path.join(SCRIPTS, "stmem-sync"));
+    break;
+  case "import":
+    require(path.join(SCRIPTS, "stmem-import"));
+    break;
+  case "adapt":
+    require(path.join(SCRIPTS, "stmem-adapt"));
+    break;
+  case "watcher":
+    require(path.join(SCRIPTS, "stmem-watcher"));
+    break;
+  default:
+    console.log("未知命令: " + cmd + "\n运行 stmem --help 查看可用命令");
+    process.exit(1);
+}
+
+function ensureWatcher() {
+  const { spawn } = require("child_process");
+  const pidFile = path.join(os.homedir(), ".stone_memory", "watcher.pid");
+  const watcherScript = path.join(SCRIPTS, "watcher.js");
+
+  if (!fs.existsSync(watcherScript)) return;
+
+  try {
+    const oldPid = parseInt(fs.readFileSync(pidFile, "utf8"), 10);
+    try { process.kill(oldPid, 0); return; } catch {}
+  } catch {}
+
+  // watcher 不在运行，自动拉起
+  const w = spawn(process.execPath, [watcherScript], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  w.unref();
+  fs.writeFileSync(pidFile, String(w.pid));
+  // 不打印——后台静默启动
+}

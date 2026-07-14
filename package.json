@@ -1,0 +1,12 @@
+{
+  "name": "stone-memory",
+  "version": "1.0.0",
+  "description": "多线程 AI 长期记忆系统 — 自动挖掘 feelings + features，滑动窗口线程重建",
+  "bin": {
+    "stmem": "./bin/stmem"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

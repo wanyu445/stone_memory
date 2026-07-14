@@ -16,6 +16,7 @@ const { runSubagent } = require("./src/services/subagent-runner");
 const { parseFeelingTime, feelingToUtc } = require("./src/services/thread-rebuilder");
 const { parseJsonlFile, readFeelings } = require("./src/lib/jsonl");
 const { parseJsonArray, parseJsonObject } = require("./src/lib/json-parse");
+const { listDates, resolveDateFile } = require("./src/lib/archive-paths");
 
 const CONFIG_PATH = path.join(os.homedir(), ".stone_memory", "stmem.json");
 const PROJECT_ROOT = path.resolve(__dirname);
@@ -180,8 +181,8 @@ function toolTriggersCheck(args) {
     const windowDays = getCfg("windowDays", tid, 3);
     let lastArchiveDate = null;
     try {
-      const files = fs.readdirSync(path.join(getThreadDir(tid), "memory", "archive")).filter(f => f.endsWith(".jsonl")).sort();
-      if (files.length > 0) lastArchiveDate = files.pop().replace(".jsonl", "");
+      const files = listDates(path.join(getThreadDir(tid), "memory", "archive"));
+      if (files.length > 0) lastArchiveDate = files.pop();
     } catch {}
     if (lastArchiveDate) {
       const d = Math.floor((Date.now() - new Date(lastArchiveDate).getTime()) / 86400000);
@@ -224,7 +225,7 @@ function toolTriggersCheck(args) {
 function readArchiveWindow(archiveDir, startUtc, endUtc) {
   const msgs = [];
   for (const d of [startUtc.slice(0, 10), endUtc.slice(0, 10)]) {
-    const fp = path.join(archiveDir, `${d}.jsonl`);
+    const fp = resolveDateFile(archiveDir, d);
     if (!fs.existsSync(fp)) continue;
     try {
       for (const line of fs.readFileSync(fp, "utf8").split("\n").filter(Boolean)) {
@@ -357,7 +358,7 @@ function toolStatus() {
     const dir = getThreadDir(tid);
     let archiveCount = 0, feelingCount = 0, featureCount = 0;
     try {
-      archiveCount = fs.readdirSync(path.join(dir, "memory", "archive")).filter(f => f.endsWith(".jsonl")).length;
+      archiveCount = listDates(path.join(dir, "memory", "archive")).length;
       const ff = path.join(dir, "memory", "mined", "feelings", "days.jsonl");
       if (fs.existsSync(ff)) feelingCount = fs.readFileSync(ff, "utf8").split("\n").filter(l => {
         try { return JSON.parse(l).type === "feeling"; } catch { return false; }

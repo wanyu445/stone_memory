@@ -22,6 +22,7 @@ const os = require("os");
 const { MemoryArchive } = require("../src/services/memory-archive");
 const { getCfg, getThreadDir } = require("../src/config");
 const { parseJsonlFile } = require("../src/lib/jsonl");
+const { resolveDateFile, listDateFiles } = require("../src/lib/archive-paths");
 
 let THREAD_BASE = null;
 let FULL_ARCHIVE = null;
@@ -237,9 +238,9 @@ function loadFullMessages() {
   const all = [];
   let skipped = 0;
   try {
-    const files = fs.readdirSync(fullDir).filter((f) => f.endsWith(".jsonl")).sort();
-    for (const f of files) {
-      const raw = fs.readFileSync(path.join(fullDir, f), "utf8");
+    const files = listDateFiles(fullDir);
+    for (const { file } of files) {
+      const raw = fs.readFileSync(file, "utf8");
       for (const line of raw.split("\n").filter(Boolean)) {
         try { all.push(JSON.parse(line)); } catch { skipped++; }
       }
@@ -499,7 +500,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   for (const fw of fragmentWindows) {
     const date = fw.feeling.date;
     if (!date) continue;
-    const archiveFile = path.join(ARCHIVE_DIR, `${date}.jsonl`);
+    const archiveFile = resolveDateFile(ARCHIVE_DIR, date);
     if (!fs.existsSync(archiveFile)) continue;
     const entries = [];
     for (const line of fs.readFileSync(archiveFile, "utf8").split("\n").filter(Boolean)) {

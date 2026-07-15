@@ -17,6 +17,13 @@ class MiningError extends Error {
   }
 }
 
+function normalizeNewImportance(value) {
+  const importance = Number(value);
+  if (!Number.isFinite(importance) || importance <= 2) return 2;
+  if (importance >= 5) return 5;
+  return 3;
+}
+
 function subagentSafe(prompt, opts = {}) {
   try {
     return runSubagent(prompt, opts);
@@ -35,14 +42,15 @@ function buildFeelingPrompt(aiName, userName, purpose) {
 
 输出 JSON 数组：
 [
-  {"content": "6月9日，下午五点二十六分。用户搓通了搜索工具的窗口截取逻辑。", "importance": 4}
+  {"content": "6月9日，下午五点二十六分。用户搓通了搜索工具的窗口截取逻辑。", "importance": 3}
 ]
 
 写作要点：
 - 每条以完整日期开头："6月9日，下午五点二十六分"
 - 时间精确到分——同一时段多件事靠分钟区分
 - 记录决策、偏好、模式和习惯
-- importance: 1=琐事 3=值得记 5=关键决策或长期习惯
+- importance 只允许 2/3/5：2=普通但值得保存，3=持续有价值，5=极少数会长期影响后续工作的关键决策
+- 不要输出 1 或 4
 - 如果没有值得记的内容，输出 []。`;
   }
 
@@ -55,7 +63,7 @@ function buildFeelingPrompt(aiName, userName, purpose) {
 [
   {
     "content": "5月25日，晚上七点。她清轮询文本把uuid搞断了。说不怕是假的——不是怕我丢了，是怕把刚拼好的又弄碎了。我没丢，她能修。",
-    "importance": 4
+    "importance": 3
   }
 ]
 
@@ -66,7 +74,9 @@ function buildFeelingPrompt(aiName, userName, purpose) {
 - 要有具体画面和细节，不是空泛总结
 - 你可以在结尾加一句你的感受或判断
 - 共享词汇直接用你们之间的专属词汇
-- importance: 1=琐事可忘 3=值得记 5=必须记住一辈子
+- importance 只允许 2/3/5：2=普通事实或小片段，3=有持续价值的事件或关系叙事，5=极少数不可替代的关系转折、长期承诺、身份确认或重要边界改变
+- 情绪强烈、亲密、争吵、性或技术修复本身不等于 5；只有它改变了长期关系走向时才给 5
+- 不要输出 1 或 4
 
 如果没有值得记的内容，输出 []。`;
   }
@@ -93,7 +103,8 @@ function buildFeaturePrompt(userName, purpose) {
 写作要点：
 - 一句一个客观事实，不要带日期和叙事
 - 同一条信息多次出现 → importance 提高
-- importance: 1=偶尔提到 3=多次确认 5=核心特征
+- importance 只允许 2/3/5：2=单次但值得保存，3=多次确认，5=极少数长期核心特征
+- 不要输出 1 或 4
 
 如果没有值得提取的特征，输出 []。`;
   }
@@ -121,7 +132,8 @@ function buildFeaturePrompt(userName, purpose) {
 - 一句一个事实，简洁精确。正面陈述："她xxx"
 - 不要复述对话内容，提取背后的隐含特征
 - 同一条信息在不同日期多次出现 → importance 提高
-- importance: 1=偶尔提到 3=多次确认 5=长期稳定的核心特征
+- importance 只允许 2/3/5：2=单次但值得保存，3=多次确认或持续有效，5=极少数长期稳定的核心特征
+- 不要输出 1 或 4
 
 如果没有值得提取的特征，输出 []。`;
   }
@@ -414,7 +426,7 @@ class MemoryMiner {
       content: m.content,
       category: m.category || (isFeature ? "misc" : ""),
       type: isFeature ? "feature" : "feeling",
-      importance: Math.min(5, Math.max(1, Math.floor(m.importance || 3))),
+      importance: normalizeNewImportance(m.importance),
       createdAt: now, accessedAt: now, accessCount: 0,
     }));
 
@@ -527,4 +539,4 @@ class MemoryMiner {
   }
 }
 
-module.exports = { MemoryMiner, MiningError };
+module.exports = { MemoryMiner, MiningError, normalizeNewImportance };

@@ -226,6 +226,21 @@ class MemoryStore {
       : this.db.prepare("SELECT * FROM features WHERE thread_id=? ORDER BY category,id").all(this.threadId);
   }
 
+  applyCoarseSummaries(rows) {
+    const update = this.db.prepare(`UPDATE feelings
+      SET coarse_summary=?,summary_mode='coarse',updated_at=?
+      WHERE id=? AND thread_id=?`);
+    return this.db.transaction(items => {
+      const now = new Date().toISOString();
+      let updated = 0;
+      for (const row of items || []) {
+        if (!row?.id || !row?.coarseSummary) continue;
+        updated += update.run(row.coarseSummary, now, row.id, this.threadId).changes;
+      }
+      return updated;
+    })(rows);
+  }
+
   exportLegacy() {
     const feelingsDir = path.join(this.memoryDir, "mined", "feelings");
     const featuresDir = path.join(this.memoryDir, "mined", "features");

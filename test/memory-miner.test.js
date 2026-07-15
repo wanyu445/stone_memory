@@ -3,7 +3,11 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { MemoryMiner } = require("../src/services/memory-miner");
+const { MemoryMiner, normalizeNewImportance } = require("../src/services/memory-miner");
+
+test("new mining normalizes importance to 2, 3, or 5", () => {
+  assert.deepEqual([1, 2, 3, 4, 5, null].map(normalizeNewImportance), [2, 2, 3, 3, 5, 2]);
+});
 
 function minerFixture(t, messages) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-miner-"));

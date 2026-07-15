@@ -33,6 +33,31 @@ class MemoryStore {
       .run(runtime, purpose, label, new Date().toISOString(), this.threadId);
   }
 
+  setFork({ parentThreadId, memoriesFlowToParent = true }) {
+    if (!parentThreadId || parentThreadId === this.threadId) throw new Error("parent thread must differ from child thread");
+    const parent = this.db.prepare("SELECT id FROM threads WHERE id=?").get(parentThreadId);
+    if (!parent) throw new Error(`parent thread not found: ${parentThreadId}`);
+    const cycle = this.db.prepare(`WITH RECURSIVE ancestors(id,parent_thread_id) AS (
+      SELECT id,parent_thread_id FROM threads WHERE id=?
+      UNION ALL
+      SELECT t.id,t.parent_thread_id FROM threads t JOIN ancestors a ON t.id=a.parent_thread_id
+    ) SELECT 1 FROM ancestors WHERE id=? LIMIT 1`).get(parentThreadId, this.threadId);
+    if (cycle) throw new Error("fork relationship would create a cycle");
+    this.db.prepare(`UPDATE threads SET parent_thread_id=?,memories_flow_to_parent=?,updated_at=? WHERE id=?`)
+      .run(parentThreadId, memoriesFlowToParent ? 1 : 0, new Date().toISOString(), this.threadId);
+    return this.getThread();
+  }
+
+  getThread() {
+    return this.db.prepare("SELECT * FROM threads WHERE id=?").get(this.threadId) || null;
+  }
+
+  setMemoriesFlowToParent(enabled) {
+    this.db.prepare("UPDATE threads SET memories_flow_to_parent=?,updated_at=? WHERE id=?")
+      .run(enabled ? 1 : 0, new Date().toISOString(), this.threadId);
+    return this.getThread();
+  }
+
   close() { this.db.close(); }
 
   insertMessages(rows, { source = "archive" } = {}) {

@@ -31,7 +31,6 @@ let RETAIN_CONFIG_FILE = null;
 let ARCHIVE_DIR = null;
 let RULES_DIR = null;
 let DEFAULT_WINDOW_DAYS = 3;
-let MEMORY_BUDGET_CHARS = 100000;
 let currentThreadId = null;
 
 function initThreadPaths(threadId) {
@@ -45,7 +44,6 @@ function initThreadPaths(threadId) {
   ARCHIVE_DIR = path.join(THREAD_BASE, "memory", "archive");
   RULES_DIR = path.join(THREAD_BASE, "rules");
   DEFAULT_WINDOW_DAYS = getCfg("windowDays", threadId, 3);
-  MEMORY_BUDGET_CHARS = getCfg("memoryBudgetChars", threadId, 100000);
 }
 const { buildMemoryBlocks } = require("../src/services/thread-rebuilder");
 
@@ -139,65 +137,18 @@ function feelingToUtc(f) {
 
 // ---- Feelings ----
 
-/**
- * 预算优先加载: 日总量 ≤ 预算 → 全用日
- * 超过预算 → 用周摘要替换对应日期 → 仍超 → 用月摘要
- */
-function loadTieredFeelings() {
+/** 从 SQLite 加载当前可注入的 daily/coarse feelings；hidden 由 reader 过滤。 */
+function loadInjectableFeelings() {
   const daysRaw = readDatabaseFeelings(path.join(THREAD_BASE, "memory"), { threadId: currentThreadId, forInjection: true });
-  const monthsRaw = [];
-  const weeksRaw = [];
-
-  // 先全用日
-  const dayFeelings = [];
+  const feelings = [];
   for (const r of daysRaw) {
     const content = (r.content || "").trim();
     if (!content) continue;
     const time = parseFeelingTime(content);
     if (!time?.date) continue;
-    dayFeelings.push({ id: r.id, content, date: time.date, hour: time.hour, minute: time.minute, utcTime: feelingToUtc(time), retainOriginal: false });
+    feelings.push({ id: r.id, content, date: time.date, hour: time.hour, minute: time.minute, utcTime: feelingToUtc(time), retainOriginal: false });
   }
-
-  const dayTotal = dayFeelings.reduce((s, f) => s + f.content.length, 0);
-  if (dayTotal <= MEMORY_BUDGET_CHARS || (weeksRaw.length === 0 && monthsRaw.length === 0)) {
-    console.log(`[rebuild]   ${dayFeelings.length} days (${(dayTotal/1024).toFixed(1)} KB) within budget, all days`);
-    return dayFeelings;
-  }
-
-  // 超出预算 → 按周替换（从最早的周开始），每次替换后检查总量
-  const result = [...dayFeelings];
-  const getTotal = () => result.reduce((s, f) => s + (f.content || "").length, 0);
-
-  const weekEntries = weeksRaw.filter(w => w.weekStart && w.weekEnd).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
-  for (const w of weekEntries) {
-    if (getTotal() <= MEMORY_BUDGET_CHARS) break;
-    // 替换该周覆盖的日摘要为周摘要
-    result.push({ id: w.id, content: w.content || "", date: w.weekStart, retainOriginal: false });
-    const ws = new Date(w.weekStart), we = new Date(w.weekEnd);
-    for (let d = new Date(ws); d <= we; d.setDate(d.getDate() + 1)) {
-      const ds = d.toISOString().slice(0, 10);
-      const idx = result.findIndex(f => f.date === ds && !f.retainOriginal && f.id !== w.id);
-      if (idx >= 0) result.splice(idx, 1);
-    }
-  }
-
-  // 仍超 → 按月替换
-  const monthEntries = monthsRaw.filter(m => m.monthStart).sort((a, b) => a.monthStart.localeCompare(b.monthStart));
-  for (const m of monthEntries) {
-    if (getTotal() <= MEMORY_BUDGET_CHARS) break;
-    result.push({ id: m.id, content: m.content || "", date: m.monthStart, retainOriginal: false });
-    const ms = new Date(m.monthStart), me = new Date(m.monthEnd || m.monthStart);
-    for (let d = new Date(ms); d <= me; d.setDate(d.getDate() + 1)) {
-      const ds = d.toISOString().slice(0, 10);
-      const idx = result.findIndex(f => f.date === ds && f.id !== m.id);
-      if (idx >= 0) result.splice(idx, 1);
-    }
-  }
-
-  const total = getTotal();
-  console.log(`[rebuild]   tiered: ${monthEntries.length}M + ${weekEntries.length}W + ${dayFeelings.length}D → ${result.length} entries (${(total/1024).toFixed(1)} KB, budget ${(MEMORY_BUDGET_CHARS/1024).toFixed(0)} KB)`);
-  result.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  return result;
+  return feelings;
 }
 
 // ---- 全量备份 ----
@@ -353,8 +304,8 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
 
 function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverride = null) {
   // === 加载 ===
-  console.log("[rebuild] Loading feelings (tiered: month > week > day)...");
-  const allFeelings = loadTieredFeelings();
+  console.log("[rebuild] Loading injectable feelings (daily/coarse; hidden excluded)...");
+  const allFeelings = loadInjectableFeelings();
   console.log(`[rebuild]   ${allFeelings.length} feelings`);
 
   // === 先增量备份当前线程到 full/ ===

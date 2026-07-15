@@ -12,6 +12,7 @@ stone_memory/
 ├── scripts/
 │   ├── watcher.js             # 实时归档监听 + 自动挖掘
 │   ├── stmem-init.js          # 初始化新线程
+│   ├── stmem-fork.js          # 登记父子线程记忆关系
 │   ├── stmem-sync.js          # 增量同步线程 → archive
 │   ├── stmem-mine.js          # 挖掘 feelings + features
 │   ├── stmem-import.js        # 导入旧线程文件
@@ -26,13 +27,13 @@ stone_memory/
 │   └── services/
 │       ├── memory-archive.js      # Layer 1: 消息存档
 │       ├── memory-miner.js        # Layer 2: 挖掘引擎
+│       ├── feature-phrase-extractor.js # feature 通用检索词提取
+│       ├── feature-term-evidence.js    # archive/feeling 证据统计
 │       ├── memory-keyword-search.js # 关键词搜索
 │       ├── subagent-runner.js     # subagent CLI 调用
 │       └── thread-rebuilder.js    # 线程重建引擎
 └── operations/                # AI 指令模板
     ├── memory-miner-operations.md
-    ├── memory-audit-operations.md
-    ├── memory-summary-operations.md
     └── memory-subagent-operations.md
 ```
 
@@ -61,6 +62,8 @@ stone_memory/
 ```
 
 规范化 messages、feelings、features、挖掘状态和通知统一存放在全局 SQLite 中，通过 `thread_id` 区分线程。消息以 `(thread_id, timestamp)` 为主键。系统只保存当前有效的记忆结果，不维护用户可选的历史版本。运行时唯一保留的 JSONL 是 `archive/full` 原始备份；其他 JSONL 只由显式 `stmem db export` 生成，或用于一次性旧数据迁移。
+
+父子线程不复制记忆。子线程每次 rebuild 都会动态读取父级最新的 feelings/features；子线程自己的近期上下文仍只来自自己的 `full`。子线程记忆默认可回流给父级，也可以在建立关系时关闭。
 
 ## 安装
 
@@ -120,6 +123,20 @@ stmem init --thread <线程ID>
 
 交互式填写: AI 名字、用户昵称、运行时、用途、挖掘模式等。
 
+### 关联 fork 线程
+
+先分别初始化或登记父、子线程，再建立关系：
+
+```bash
+# 默认：父级记忆对子线程可见，子线程记忆也可回流父级
+stmem fork --parent <父线程ID> --thread <子线程ID>
+
+# 子线程仍同步父级记忆，但子线程产生的记忆不回流
+stmem fork --parent <父线程ID> --thread <子线程ID> --no-memory-return
+```
+
+这里只建立持续的记忆关系，不复制 feelings/features，也不拼接父线程或兄弟线程的近期 `full`。
+
 ### 导入旧对话
 
 ```bash
@@ -158,6 +175,21 @@ stmem mine --thread <线程ID> --date 2026-06-09 --force
 stmem mine --thread <线程ID> --all --api       # 走 API
 stmem mine --thread <线程ID> --all --subagent  # 走 subagent CLI
 ```
+
+### Feature 词语证据
+
+从所有清洗后的 features 生成候选词，并只读回查当前线程的原始用户消息和 feelings：
+
+```bash
+stmem feature-phrases --thread <线程ID>       # 只读提取去重后的 feature 检索词
+stmem feature-phrases --thread <线程ID> --json
+stmem feature-evidence --thread <线程ID>      # 自动回查 archive 词频与 feelings importance
+stmem feature-evidence --thread <线程ID> --json
+```
+
+`feature-phrases` 使用同一套通用词性规则处理所有已经过 miner/cleanup 筛选的 feature 类别，不绑定用户性别，也不为 eat/work/relation 分别写规则。它输出去重后的检索词索引，优先保留引号、括号私有词及连续名词短语；同一词只合并 feature ID、最高 importance 和来源日期，不另建属性或语义关系模型。复杂句式无法可靠识别时宁可报告未提取，不从原文中猜词。
+
+报告中的对话频率只统计用户消息，并与命中的 feelings 数量、覆盖日期数分开。同一个词可以同时属于多个特征库。这两个命令都只读，不修改 importance 或摘要状态。
 
 ### 线程重建
 
@@ -219,10 +251,7 @@ stmem watcher miner on      # 打开自动挖掘
     "minerMode": "subagent",
     "apiProvider": "deepseek",
     "windowDays": 3,
-    "keepToolPairs": 30,
-    "summaryTriggerDays": 60,
-    "summaryWindowDays": 30,
-    "memoryBudgetChars": 100000
+    "keepToolPairs": 30
   }
 }
 ```
@@ -300,7 +329,7 @@ codex mcp add stmem -- node ~/stone_memory/mcp-server.js
 | `stmem_memory_search` | 关键词搜索 feelings + 回溯原文 archive |
 | `stmem_memory_deep_search` | 深度检索（子 agent 多级搜索 + 原文回溯） |
 | `stmem_memory_audit_list` | 从上次审计截止日起列出新 feelings，含锚点类型标注 |
-| `stmem_memory_audit_mark` | 标记锚点（原文锚点 `type: "retain"` / 事件锚点 `type: "event"`） |
+| `stmem_memory_audit_mark` | 标记原文锚点或长期关键事件锚点 |
 | `stmem_memory_audit_query` | 按日期或关键词查询 feelings，含锚点类型显示 |
 | `stmem_memory_triggers_check` | 检查重建和挖掘阻塞待办，适合会话启动或睡前巡检时调用 |
 
@@ -351,12 +380,11 @@ subagent 模式不依赖外部 API，通过宿主 Agent 的 CLI 执行挖掘/审
 
 ## operations 文件说明
 
-`operations/` 目录下的 md 文件是 SM 的 AI 指令模板，所有挖掘/审计/摘要操作都从这里读取 prompt：
+`operations/` 目录下的 md 文件是 SM 的 AI 指令模板：
 
 | 文件 | 用途 | 调用方 |
 |------|------|--------|
 | `memory-miner-operations.md` | feelings + features 挖掘指令 | mine、watcher miner |
-| `memory-summary-operations.md` | 旧版月摘要合成指令（兼容保留） | legacy 模式 |
 | `memory-subagent-operations.md` | 深度检索指令 | deep_search 工具 |
 
 ops 文件中可以使用 `{{feelingsFile}}`、`{{archiveDir}}` 等占位符，运行时自动替换为线程的实际路径。完整占位符列表见 `src/services/subagent-runner.js` 的 `resolvePlaceholders()`。

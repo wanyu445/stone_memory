@@ -17,7 +17,7 @@ const os = require("os");
 const crypto = require("crypto");
 const { FullArchive } = require("../src/services/memory-archive");
 const {
-  loadTieredFeelings, loadRetainConfig,
+  loadInjectableFeelings, loadRetainConfig,
   buildFragmentWindows, buildMemoryBlocks, computeCutoff,
 } = require("../src/services/thread-rebuilder");
 const { getCfg, getThreadDir } = require("../src/config");
@@ -25,7 +25,6 @@ const { readMessages } = require("../src/storage/memory-reader");
 
 const CODEX_DIR = path.join(os.homedir(), ".codex", "sessions");
 const DEFAULT_WINDOW_DAYS = 3;
-let MEMORY_BUDGET_CHARS = 100000;
 
 function getFeelingsPaths(threadId) {
   const dir = getThreadDir(threadId);
@@ -88,7 +87,6 @@ function main() {
   const windowIdx = args.indexOf("--window");
   const toolPairsIdx = args.indexOf("--tool-pairs");
   const threadId = threadIdx >= 0 ? args[threadIdx + 1] : null;
-  MEMORY_BUDGET_CHARS = getCfg("memoryBudgetChars", threadId, 100000);
   const windowDays = windowIdx >= 0 ? parseInt(args[windowIdx + 1]) || DEFAULT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS;
   const keepPairs = toolPairsIdx >= 0 ? parseInt(args[toolPairsIdx + 1]) || 40 : 40;
 
@@ -215,9 +213,9 @@ function main() {
   console.log(`[codex-rebuild] Window: ${windowDays} days (cutoff: ${cutoffDate})`);
 
   // === Feelings ===
-  console.log(`[codex-rebuild] Loading tiered feelings...`);
+  console.log(`[codex-rebuild] Loading injectable feelings (daily/coarse; hidden excluded)...`);
   const fp = getFeelingsPaths(threadId);
-  const allFeelings = loadTieredFeelings(path.join(getThreadDir(threadId), "memory"), threadId);
+  const allFeelings = loadInjectableFeelings(path.join(getThreadDir(threadId), "memory"), threadId);
   const preWindow = allFeelings.filter(f => f.date < cutoffDate);
   const inWindow = allFeelings.filter(f => f.date >= cutoffDate);
   console.log(`[codex-rebuild] ${preWindow.length} pre-window, ${inWindow.length} in-window`);

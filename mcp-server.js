@@ -3,25 +3,23 @@
  * STMEM MCP Server — stdio JSON-RPC
  *
  * 工具: stmem_memory_rebuild, _mine, _status, _search, _deep_search,
- *       _audit_list, _audit_mark, _audit_query, _summarize, _triggers_check
+ *       _audit_list, _audit_mark, _audit_query, _triggers_check
  * 订阅用户无 API key 时自动用 claude -p（OAuth token）
  */
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync, spawnSync } = require("child_process");
+const { execSync } = require("child_process");
 const { getCfg, getThreadDir, listThreadIds } = require("./src/config");
 const { runSubagent } = require("./src/services/subagent-runner");
-const { parseFeelingTime, feelingToUtc } = require("./src/services/thread-rebuilder");
-const { parseJsonArray, parseJsonObject } = require("./src/lib/json-parse");
-const { readFeelings: readDatabaseFeelings, readFeatures: readDatabaseFeatures, readMessages } = require("./src/storage/memory-reader");
+const { parseJsonArray } = require("./src/lib/json-parse");
+const { readFeelings: readDatabaseFeelings, readFeatures: readDatabaseFeatures } = require("./src/storage/memory-reader");
 const { MemoryStore } = require("./src/storage/memory-store");
 
 const CONFIG_PATH = path.join(os.homedir(), ".stone_memory", "stmem.json");
 const PROJECT_ROOT = path.resolve(__dirname);
 const SCRIPTS_DIR = path.join(PROJECT_ROOT, "scripts");
-const OPS_DIR = path.join(PROJECT_ROOT, "operations");
 const LOG_FILE = path.join(os.homedir(), ".stone_memory", "logs", "mcp.log");
 const PENDING_REBUILD_FILE = path.join(os.homedir(), ".stone_memory", "rebuild-pending.json");
 
@@ -32,8 +30,6 @@ function feelingDate(month, day, feeling) {
   if (!year) { const now = new Date(); year = parseInt(month) > now.getMonth() + 1 ? now.getFullYear() - 1 : now.getFullYear(); }
   return `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
 }
-function feelingYM(month, feeling) { const d = feelingDate(month, 1, feeling); return d.slice(0, 7); }
-
 // 启动时检查触发器，注入提醒到线程文件尾部
 checkPendingTriggers();
 
@@ -84,10 +80,7 @@ function resolveThread(args, cfg) {
 function checkPendingTriggers() {
   const cfg = loadConfig();
   if (!cfg) return;
-  const triggers = [];
-  const now = new Date().toISOString();
-
-  // 1. 待重建 — 直接执行，不注入文本提醒
+  // 待重建 — 直接执行，不注入文本提醒
   if (fs.existsSync(PENDING_REBUILD_FILE)) {
     let queue;
     try {
@@ -110,22 +103,6 @@ function checkPendingTriggers() {
       }
     } catch {}
     try { fs.unlinkSync(PENDING_REBUILD_FILE); } catch {}
-  }
-
-  // 注入到线程文件尾部
-  for (const t of triggers) {
-    const sessionDir = getCfg("sessionDir", t.threadId);
-    if (!sessionDir) continue;
-    const threadFile = path.join(sessionDir, `${t.threadId}.jsonl`);
-    if (!fs.existsSync(threadFile)) continue;
-    let text = "";
-    if (t.type === "summary") text = `📋 待办：月摘要待生成（${t.start} ~ ${t.end}），已满 ${t.totalDays} 天，需要时请调用 summarize 工具。`;
-    if (!text) continue;
-    const tc = cfg[t.threadId] || {};
-    const line = tc.runtime === "codex"
-      ? JSON.stringify({ timestamp: now, type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text }] } })
-      : JSON.stringify({ type: "system", subtype: "stmem-trigger", timestamp: now, message: { content: text } });
-    try { fs.appendFileSync(threadFile, "\n" + line, "utf8"); log(`trigger injected: ${t.type} → ${t.threadId}`); } catch (e) { log(`trigger inject failed: ${e.message}`); }
   }
 }
 
@@ -170,92 +147,6 @@ function toolTriggersCheck(args) {
   } catch (err) {
     return `待办检查失败: ${err.message}`;
   }
-}
-
-/** 读 archive 中指定时间窗口的对话原文 */
-function readArchiveWindow(memoryDir, threadId, startUtc, endUtc) {
-  const msgs = [];
-  try {
-      for (const obj of readMessages(memoryDir, { threadId, from: startUtc, to: endUtc })) {
-        if (!obj.timestamp) continue;
-        const tMs = new Date(obj.timestamp).getTime();
-        if (tMs < new Date(startUtc).getTime() || tMs >= new Date(endUtc).getTime()) continue;
-        const label = obj.type === "user" ? (getCfg("user", "") || "用户") : (getCfg("ai", "") || "AI");
-        const text = (obj.text || "").replace(/^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/gm, "").trim();
-        if (text && !text.startsWith("{")) msgs.push(`${label}: ${text}`);
-      }
-    } catch {}
-  return msgs;
-}
-
-/** 合成月摘要 — 读某月 feelings + 事件锚点原文 → 调 AI → 写入 months.jsonl */
-function toolSummarize(args) {
-  return "固定月摘要功能已移除；请使用 daily/coarse/hidden 摘要颗粒度。";
-  /* 以下旧实现仅在迁移窗口内保留，不注册为 MCP 工具。 */
-  try {
-    const cfg = loadConfig();
-    if (!cfg) return "未配置 stmem.json";
-    const tid = (resolveThread(args, cfg) || {}).threadId || args.thread;
-    if (!tid) return "请指定线程 ID";
-    const dateStr = args.date || new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 7);
-    const feelDir = path.join(getThreadDir(tid), "memory", "mined", "feelings");
-    const daysFile = path.join(feelDir, "legacy-days-export.jsonl");
-    const targetFile = path.join(feelDir, "months.jsonl");
-    const archiveDir = path.join(getThreadDir(tid), "memory", "archive");
-    if (!fs.existsSync(daysFile)) return "没有日摘要数据";
-    let rc = { eventAnchors: {} };
-    const rcFile = path.join(getThreadDir(tid), "memory", "retain-config.json");
-    try { rc = JSON.parse(fs.readFileSync(rcFile, "utf8")); } catch {}
-    const eventAnchors = rc.eventAnchors || {};
-    const retainIds = new Set(Object.keys(rc.retain || {}));
-    const allFeelings = [], anchorFeelings = [];
-    const rawLines = fs.readFileSync(daysFile, "utf8").split("\n").filter(Boolean);
-    for (let i = 0; i < rawLines.length; i++) {
-      try {
-        const obj = JSON.parse(rawLines[i]);
-        if (obj.type !== "feeling") continue;
-        const m = (obj.content || "").match(/^(\d+)月(\d+)日/);
-        if (!m || feelingYM(m[1], obj) !== dateStr) continue;
-        allFeelings.push(obj);
-        if (eventAnchors[obj.id]) anchorFeelings.push({ obj, idx: allFeelings.length - 1 });
-      } catch {}
-    }
-    if (!allFeelings.length) return `${dateStr} 没有日摘要`;
-    let anchorContext = "";
-    for (const af of anchorFeelings) {
-      const parsed = parseFeelingTime(af.obj.content || "");
-      if (!parsed || parsed.hour === null) continue;
-      const startMs = new Date(feelingToUtc(parsed)).getTime() - 30 * 60 * 1000;
-      const startUtc = new Date(startMs).toISOString();
-      const ni = af.idx + 1 < allFeelings.length ? af.idx + 1 : null;
-      let endUtc;
-      if (ni !== null) {
-        const np = parseFeelingTime(allFeelings[ni].content || "");
-        endUtc = np ? feelingToUtc(np) : new Date(startMs + 6 * 3600000).toISOString();
-      } else {
-        endUtc = new Date(startMs + 6 * 3600000).toISOString();
-      }
-      const msgs = readArchiveWindow(path.join(getThreadDir(tid), "memory"), tid, startUtc, endUtc);
-      const also = retainIds.has(af.obj.id) ? " [同时是原文锚点]" : "";
-      anchorContext += `\n--- ${parsed.date} ${af.obj.content.slice(0, 40)}...${also} ---\n${msgs.join("\n")}\n`;
-    }
-    let opsContent = "";
-    try { opsContent = fs.readFileSync(path.join(OPS_DIR, "memory-summary-operations.md"), "utf8"); } catch {}
-    const feelingList = allFeelings.map(f => `- ${f.content}`).join("\n");
-    const ym = parseInt(dateStr.slice(5, 7));
-    const lastDay = new Date(parseInt(dateStr.slice(0, 4)), ym, 0).getDate();
-    const prompt = `${opsContent ? opsContent + "\n\n" : ""}## 数据\n时间段：${dateStr}-01 ~ ${dateStr}-${lastDay}\n总计 ${allFeelings.length} 条日摘要\n\n${feelingList}${anchorContext ? `\n\n## ⭐ 事件锚点原文\n以下是为标记为重要事件的对话原文，月摘要中需要展开写：\n${anchorContext}` : ""}\n\n请合成月摘要，输出 JSON。`;
-    const result = runSubagent(prompt, { opsFile: path.join(OPS_DIR, "memory-summary-operations.md"), threadId: tid });
-    let entry = parseJsonObject(result);
-    if (!entry) return `AI 返回无法解析:\n${result.slice(0, 300)}`;
-    let seq = 1;
-    if (fs.existsSync(targetFile)) for (const line of fs.readFileSync(targetFile, "utf8").split("\n").filter(Boolean)) {
-      try { const o = JSON.parse(line); if (typeof o.seq === "number" && o.seq >= seq) seq = o.seq + 1; } catch {}
-    }
-    entry.seq = seq; entry.type = "feeling_month"; entry.monthStart = `${dateStr}-01`; entry.createdAt = new Date().toISOString();
-    fs.appendFileSync(targetFile, JSON.stringify(entry) + "\n", "utf8");
-    return `✅ 月摘要已写入 months.jsonl（#${seq}，${allFeelings.length} 条 feelings${anchorFeelings.length ? `，${anchorFeelings.length} 个事件锚点已展开` : ""}）`;
-  } catch (err) { return `摘要失败: ${err.message}`; }
 }
 
 // ── 工具实现 ──
@@ -460,8 +351,8 @@ function toolAuditList(args) {
       "",
       "每条看一遍。两种锚点：",
       "  type: retain → 原文锚点，这句对话不能丢，rebuild 时保留原文",
-      "  type: event → 事件锚点，这件事在月摘要里要重点写，不占窗口上下文",
-      "  已在行的标注 [原文] [事件] 或 [原文+事件]",
+      "  type: event → 事件锚点，标记长期关键事件，供生命周期保护和巡检使用",
+      "  已标记的条目显示 [原文]、[事件] 或 [原文+事件]",
       "",
       "不用每条都标。只标真正重要的。",
       "",
@@ -615,14 +506,14 @@ const TOOLS = [
   },
   {
     name: "stmem_memory_audit_mark",
-    description: "Mark feelings by seq number with anchor type. Input: { cutoffDate, numbers, type }",
+    description: "Mark feelings by seq number as original-text or key-event anchors. Input: { cutoffDate, numbers, type }",
     inputSchema: {
       type: "object",
       required: ["cutoffDate"],
       properties: {
         cutoffDate: { type: "string", description: "Audit cutoff date (YYYY-MM-DD)." },
         numbers: { type: "array", items: { type: "integer" }, description: "Seq numbers to mark, e.g. [1, 3, 5]." },
-        type: { type: "string", description: "锚点类型。'retain' = 原文锚点（保留对话原文，默认），'event' = 事件锚点（标注重要事件，用于月摘要）" },
+        type: { type: "string", enum: ["retain", "event"], description: "'retain' 保留对应原文；'event' 标记长期关键事件，供生命周期保护和巡检使用。默认 retain。" },
         thread: { type: "string", description: "线程 ID，默认自动检测" },
       },
     },
@@ -641,7 +532,7 @@ const TOOLS = [
   },
   {
     name: "stmem_memory_triggers_check",
-    description: "检查当前待办事项（重建、月摘要），返回自然语言列表。适合在会话启动或睡前巡检时调用。",
+    description: "检查当前待办事项（重建、挖掘阻塞），返回自然语言列表。适合在会话启动或睡前巡检时调用。",
     inputSchema: { type: "object", properties: {} },
   },
 ];

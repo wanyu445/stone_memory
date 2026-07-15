@@ -27,6 +27,11 @@ test("SQLite reader applies daily, coarse, and hidden modes without destroying f
     ["coarse", "6月11日，发生了一件事。"],
   ]);
 
+  store.db.prepare("UPDATE feelings SET coarse_summary=? WHERE id='coarse'")
+    .run("6月11日，晚上八点。发生了一件事。");
+  assert.equal(readFeelings(memoryDir, { threadId: "thread-test", forInjection: true })[1].content,
+    "6月11日，晚上八点。发生了一件事。");
+
   const rebuilt = loadInjectableFeelings(memoryDir, "thread-test");
   assert.deepEqual(rebuilt.map(row => row.id), ["daily", "coarse"]);
 });

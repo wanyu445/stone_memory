@@ -74,6 +74,8 @@ function readMessages(memoryDir, { threadId, date = null, from = null, to = null
 
 function injectionContent(row) {
   if (row.summary_mode !== "coarse" || !row.coarse_summary) return row.content;
+  if (/^\d{1,2}月\d{1,2}日/u.test(row.coarse_summary)) return row.coarse_summary;
+  // 兼容迁移期产生的无日期 coarse_summary；新压缩结果必须自带完整日期时间。
   const [, , month, day] = row.source_date.match(/^(\d{4})-(\d{2})-(\d{2})$/) || [];
   return month ? `${Number(month)}月${Number(day)}日，${row.coarse_summary}` : row.coarse_summary;
 }

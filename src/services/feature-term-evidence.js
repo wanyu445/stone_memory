@@ -26,6 +26,55 @@ function scanTermEvidence({ terms, feelings, archiveDir }) {
   });
 }
 
+function aggregateFeelingEvidence({ feelings, termEvidence }) {
+  const byFeeling = new Map((feelings || []).map(feeling => [feeling.id, {
+    feelingId: feeling.id,
+    sourceDate: feeling.source_date || feeling.sourceDate || null,
+    content: String(feeling.content || ""),
+    importance: feeling.importance ?? null,
+    summaryMode: feeling.summary_mode || feeling.summaryMode || "daily",
+    matchedTerms: new Map(),
+  }]));
+
+  for (const term of termEvidence || []) {
+    for (const feelingId of term.feelingIds || []) {
+      const feeling = byFeeling.get(feelingId);
+      if (!feeling) continue;
+      const key = term.normalizedTerm || String(term.term || "").toLowerCase();
+      if (!feeling.matchedTerms.has(key)) feeling.matchedTerms.set(key, {
+        term: term.term,
+        normalizedTerm: key,
+        categories: [],
+        featureIds: [],
+        featureImportance: null,
+        messageCount: term.messageCount || 0,
+        activeDays: term.activeDays || 0,
+        firstSeen: term.firstSeen || null,
+        lastSeen: term.lastSeen || null,
+      });
+      const match = feeling.matchedTerms.get(key);
+      if (term.category && !match.categories.includes(term.category)) match.categories.push(term.category);
+      for (const featureId of term.featureIds || []) {
+        if (!match.featureIds.includes(featureId)) match.featureIds.push(featureId);
+      }
+      if (term.importance != null) match.featureImportance = Math.max(match.featureImportance ?? 0, Number(term.importance));
+      match.messageCount = Math.max(match.messageCount, term.messageCount || 0);
+      match.activeDays = Math.max(match.activeDays, term.activeDays || 0);
+      if (term.firstSeen && (!match.firstSeen || term.firstSeen < match.firstSeen)) match.firstSeen = term.firstSeen;
+      if (term.lastSeen && (!match.lastSeen || term.lastSeen > match.lastSeen)) match.lastSeen = term.lastSeen;
+    }
+  }
+
+  return [...byFeeling.values()]
+    .map(feeling => ({
+      ...feeling,
+      matchedTerms: [...feeling.matchedTerms.values()].sort((a, b) =>
+        b.activeDays - a.activeDays || b.messageCount - a.messageCount || a.term.localeCompare(b.term, "zh-CN")),
+    }))
+    .filter(feeling => feeling.matchedTerms.length > 0)
+    .sort((a, b) => (a.sourceDate || "").localeCompare(b.sourceDate || "") || a.feelingId.localeCompare(b.feelingId));
+}
+
 function readUserArchive(archiveDir) {
   const rows = [];
   for (const { date, file } of listDateFiles(archiveDir)) {
@@ -46,4 +95,4 @@ function termVariants(term) {
   return [...new Set([String(term), toSimplified(String(term)), toTraditional(String(term))])];
 }
 
-module.exports = { scanTermEvidence, readUserArchive, termVariants };
+module.exports = { scanTermEvidence, aggregateFeelingEvidence, readUserArchive, termVariants };

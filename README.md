@@ -189,7 +189,19 @@ stmem feature-evidence --thread <线程ID> --json
 
 `feature-phrases` 使用同一套通用词性规则处理所有已经过 miner/cleanup 筛选的 feature 类别，不绑定用户性别，也不为 eat/work/relation 分别写规则。它输出去重后的检索词索引，优先保留引号、括号私有词及连续名词短语；同一词只合并 feature ID、最高 importance 和来源日期，不另建属性或语义关系模型。复杂句式无法可靠识别时宁可报告未提取，不从原文中猜词。
 
-报告中的对话频率只统计用户消息，并与命中的 feelings 数量、覆盖日期数分开。同一个词可以同时属于多个特征库。这两个命令都只读，不修改 importance 或摘要状态。
+报告中的对话频率只统计用户消息，并与命中的 feelings 数量、覆盖日期数分开。同一个词可以同时属于多个特征库。`feature-evidence` 还会为每条命中的 feeling 反向列出 terms 及其 `messageCount`、`activeDays`、`firstSeen`、`lastSeen`；JSON 输出位于 `feelingEvidence`。这两个命令都只读，不修改 importance 或摘要状态。
+
+### Feeling 压缩
+
+压缩器与 miner 使用相同的线程模式配置，支持 API 和 subagent。默认只 dry-run；importance 1–3 压成客观事实，4–5 保留核心感受但大幅简写。压缩结果必须原样保留 feeling 开头的完整日期和对应时间。
+
+```bash
+stmem compress --thread <线程ID> --before 2026-06-01 --limit 20
+stmem compress --thread <线程ID> --ids <id1,id2> --subagent
+stmem compress --thread <线程ID> --before 2026-06-01 --apply
+```
+
+`--apply` 必须同时提供 `--before`、`--ids` 或 `--all`。应用后完整 `content` 不变，只写入完整时间前缀开头的 `coarse_summary`，并将 `summary_mode` 切换为 `coarse`。
 
 ### 线程重建
 
@@ -385,6 +397,7 @@ subagent 模式不依赖外部 API，通过宿主 Agent 的 CLI 执行挖掘/审
 | 文件 | 用途 | 调用方 |
 |------|------|--------|
 | `memory-miner-operations.md` | feelings + features 挖掘指令 | mine、watcher miner |
+| `memory-compressor-operations.md` | feelings 长期颗粒度压缩指令 | compress |
 | `memory-subagent-operations.md` | 深度检索指令 | deep_search 工具 |
 
 ops 文件中可以使用 `{{feelingsFile}}`、`{{archiveDir}}` 等占位符，运行时自动替换为线程的实际路径。完整占位符列表见 `src/services/subagent-runner.js` 的 `resolvePlaceholders()`。

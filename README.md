@@ -203,6 +203,18 @@ stmem compress --thread <线程ID> --before 2026-06-01 --apply
 
 `--apply` 必须同时提供 `--before`、`--ids` 或 `--all`。应用后完整 `content` 不变，只写入完整时间前缀开头的 `coarse_summary`，并将 `summary_mode` 切换为 `coarse`。
 
+### 生命周期 dry-run
+
+生命周期报告把 feature term 的 archive 时间证据反向聚合到 feelings，并结合 importance 和人工锚点生成只读建议：
+
+```bash
+stmem lifecycle --thread <线程ID>
+stmem lifecycle --thread <线程ID> --action coarse_candidate --all
+stmem lifecycle --thread <线程ID> --json
+```
+
+未命中 feature terms 的 feelings 不参与处理；事件锚点禁止自动压缩；历史 importance 4 只展示兼容审查。报告不会调用压缩模型，也不会修改数据库。
+
 ### 线程重建
 
 ```bash

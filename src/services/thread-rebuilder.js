@@ -79,7 +79,7 @@ function loadRetainConfig(retainConfigPath) {
   catch { return { retain: {} }; }
 }
 
-function loadTieredFeelings(memoryDir, threadId) {
+function loadInjectableFeelings(memoryDir, threadId) {
   const feelings = readFeelings(memoryDir, { threadId, forInjection: true }).map(r => {
     const parsed = parseFeelingTime(r.content) || {};
     const event = r.eventTime ? new Date(r.eventTime) : null;
@@ -193,7 +193,7 @@ function computeCutoff(windowDays) {
 
 module.exports = {
   parseFeelingTime, feelingToUtc,
-  loadRetainConfig, loadTieredFeelings,
+  loadRetainConfig, loadInjectableFeelings,
   buildFragmentWindows, buildMemoryBlocks,
   computeCutoff,
 };

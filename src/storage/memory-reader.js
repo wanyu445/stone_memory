@@ -14,9 +14,10 @@ function withReadDatabase(memoryDir, fn) {
 function readFeelings(memoryDir, { threadId = null, forInjection = false } = {}) {
   if (!hasDatabase(memoryDir)) return [];
   return withReadDatabase(memoryDir, db => {
-    const where = [threadId ? "thread_id=?" : null, forInjection ? "summary_mode!='hidden'" : null].filter(Boolean);
-    const rows = db.prepare(`SELECT * FROM feelings ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY source_date, COALESCE(event_time,''), order_key, id`).all(...(threadId ? [threadId] : []));
+    const visibility = threadId ? visibleThreadSql("feelings") : "SELECT feelings.* FROM feelings";
+    const rows = db.prepare(`SELECT * FROM (${visibility}) visible
+      ${forInjection ? "WHERE summary_mode!='hidden'" : ""}
+      ORDER BY source_date, COALESCE(event_time,''), order_key, id`).all(...(threadId ? [threadId, threadId] : []));
     return rows.map((row, index) => ({
       id: row.id, seq: index + 1, type: "feeling", sourceDate: row.source_date,
       eventTime: row.event_time, content: forInjection ? injectionContent(row) : row.content,
@@ -30,12 +31,33 @@ function readFeatures(memoryDir, { threadId = null } = {}) {
   if (!hasDatabase(memoryDir)) return [];
   return withReadDatabase(memoryDir, db => {
     const rows = threadId
-      ? db.prepare("SELECT * FROM features WHERE thread_id=? ORDER BY category,id").all(threadId)
+      ? db.prepare(`SELECT * FROM (${visibleThreadSql("features")}) visible ORDER BY category,id`).all(threadId, threadId)
       : db.prepare("SELECT * FROM features ORDER BY category,id").all();
     return rows.map(row => ({ id: row.id, type: "feature", sourceDate: row.source_date,
       category: row.category, content: row.content, importance: row.importance,
       createdAt: row.created_at, updatedAt: row.updated_at }));
   });
+}
+
+function visibleThreadSql(table) {
+  return `WITH RECURSIVE
+    ancestors(id,parent_thread_id) AS (
+      SELECT id,parent_thread_id FROM threads WHERE id=?
+      UNION ALL
+      SELECT t.id,t.parent_thread_id FROM threads t JOIN ancestors a ON t.id=a.parent_thread_id
+    ),
+    flowing_descendants(id) AS (
+      SELECT id FROM threads WHERE id=?
+      UNION ALL
+      SELECT t.id FROM threads t JOIN flowing_descendants d ON t.parent_thread_id=d.id
+      WHERE t.memories_flow_to_parent=1
+    ),
+    visible_threads(id) AS (
+      SELECT id FROM ancestors
+      UNION
+      SELECT id FROM flowing_descendants
+    )
+    SELECT ${table}.* FROM ${table} JOIN visible_threads v ON v.id=${table}.thread_id`;
 }
 
 function readMessages(memoryDir, { threadId, date = null, from = null, to = null } = {}) {

@@ -139,7 +139,7 @@ const FEATURE_CATEGORIES = [
 
 /**
  * Layer 2 — 记忆挖掘
- * 每天凌晨跑一次，读昨天存档 → 两次 DeepSeek 提取（感受 + 特征）→ 算向量 → 分别存储。
+ * 每天读取待处理日期的消息，分两路提取 feelings 与 features，并原子写入 SQLite。
  */
 class MemoryMiner {
   constructor({ memoryDir, archive, deepseekConfig, personaConfig, threadId }) {
@@ -164,7 +164,7 @@ class MemoryMiner {
   start(dailyAtHour = 3) {
     if (this.timer) return;
     console.log(`[memory-miner] daily mode: runs at ${String(dailyAtHour).padStart(2, "0")}:00 each day`);
-    console.log(`[memory-miner] dual extraction: feelings → feelings.jsonl, features → features/*.jsonl`);
+    console.log(`[memory-miner] dual extraction: feelings + features → SQLite`);
     this._scheduleNext(dailyAtHour);
   }
 

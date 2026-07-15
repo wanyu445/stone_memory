@@ -14,6 +14,9 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem status                                  查看所有线程状态
   stmem delete --thread <id> [--dry-run]        删除线程配置及数据
   stmem init --thread <id>                      初始化新线程
+  stmem fork --parent <id> --thread <id>        将线程登记为共享父级记忆的子线程
+  stmem feature-phrases [--thread <id>]         从所有清洗后的 features 提取通用检索词
+  stmem feature-evidence [--thread <id>]        回查 archive 与 feelings 的词频证据
   stmem import --source <json|jsonl|sqlite>       预览导入映射（加 --apply 写入）
   stmem import --dir <path> [--thread <id>]       递归预览目录中的对话数据
   stmem mine [--thread <id>] --all                  挖掘全部未处理日期，生成feelings + features
@@ -38,6 +41,15 @@ if (cmd !== "init") ensureWatcher();
 switch (cmd) {
   case "init":
     require(path.join(SCRIPTS, "stmem-init"));
+    break;
+  case "fork":
+    require(path.join(SCRIPTS, "stmem-fork"));
+    break;
+  case "feature-phrases":
+    require(path.join(SCRIPTS, "stmem-feature-phrases"));
+    break;
+  case "feature-evidence":
+    require(path.join(SCRIPTS, "stmem-feature-evidence"));
     break;
   case "mine":
     require(path.join(SCRIPTS, "stmem-mine"));

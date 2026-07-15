@@ -13,6 +13,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^11.10.0"
+    "@node-rs/jieba": "^2.0.1",
+    "better-sqlite3": "^11.10.0",
+    "opencc-js": "^1.4.1"
   }
 }

@@ -112,13 +112,13 @@ stmem feature-evidence --thread <id> --json
 
 term 证据反向聚合已经完成：`feature-evidence` 的文本与 JSON 输出会为每条命中的 feeling 列出 feature terms，以及这些词在 archive 的 messageCount、activeDays、firstSeen、lastSeen。同一简繁词跨 category 合并，保留 categories 与 featureIds。
 
-1. 生成 feeling 级生命周期 dry-run，不修改数据库：
-   - importance=2：建议退化为事实摘要；
-   - importance=3：结合词语时间曲线建议保留、观察或隐藏候选；
-   - importance=5：存在满一个月后加入主 Agent 巡检候选；
-   - 没有匹配 feeling 的词不触发摘要处理。
-2. 处理历史数据中仍存在的 importance 1 和 4。用户先前明确新体系只有 2、3、5；在正式应用前先 dry-run 展示兼容映射，不直接改库。此前建议候选映射为 1→2、4→5，但必须让用户确认后才写入。
-3. 用户确认 dry-run 规则后，才实现 daily/coarse/hidden 的实际状态变化和审计。
+Feeling 级生命周期 dry-run 已实现为 `stmem lifecycle`，不调用模型、不修改数据库：importance 1–2 进入事实型 coarse 候选；importance 3 根据 term 最近活跃和历史覆盖给出 keep/observe/coarse_candidate；importance 5 满 30 天进入主 Agent 巡检；event 锚点禁止自动压缩；没有匹配 feeling 的词不参与处理。
+
+019 以数据最新日 2026-07-12 为参考：590 条 feelings 中 571 条命中、19 条排除；238 条历史 importance 4 等待兼容审查，189 keep，133 条 importance 5 进入主 Agent 巡检，10 条 importance 1–2 为 coarse 候选，1 条 observe。当前 retain 40 条、event anchor 0 条，数据库仍全部为 daily。
+
+1. 用户确认生命周期 dry-run 规则和历史 importance 兼容映射。当前仅预览 1→2、4→5，不直接改库。
+2. 确认后才将选定 coarse_candidate 送入 compressor，并设计 main_agent_review 的实际巡检输出。
+3. 最后才实现 hidden 状态变化和审计；不自动删除任何完整 content。
 
 ## 不要做
 

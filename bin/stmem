@@ -19,6 +19,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem feature-evidence [--thread <id>]        回查 archive 与 feelings 的词频证据
   stmem compress [--thread <id>] [--before 日期]  dry-run 压缩 daily feelings
   stmem compress --thread <id> --apply          写入 coarse_summary 并切换为 coarse
+  stmem lifecycle [--thread <id>] [--action 类型]  feeling 生命周期只读报告
   stmem import --source <json|jsonl|sqlite>       预览导入映射（加 --apply 写入）
   stmem import --dir <path> [--thread <id>]       递归预览目录中的对话数据
   stmem mine [--thread <id>] --all                  挖掘全部未处理日期，生成feelings + features
@@ -55,6 +56,9 @@ switch (cmd) {
     break;
   case "compress":
     require(path.join(SCRIPTS, "stmem-compress"));
+    break;
+  case "lifecycle":
+    require(path.join(SCRIPTS, "stmem-lifecycle"));
     break;
   case "mine":
     require(path.join(SCRIPTS, "stmem-mine"));

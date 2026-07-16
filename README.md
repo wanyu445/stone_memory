@@ -27,7 +27,7 @@ stone_memory/
 │   └── services/
 │       ├── memory-archive.js      # Layer 1: 消息存档
 │       ├── memory-miner.js        # Layer 2: 挖掘引擎
-│       ├── feature-phrase-extractor.js # feature 通用检索词提取
+│       ├── feature-phrase-extractor.js # feature 记忆概念（对象/行为/状态）提取
 │       ├── feature-term-evidence.js    # archive/feeling 证据统计
 │       ├── memory-keyword-search.js # 关键词搜索
 │       ├── subagent-runner.js     # subagent CLI 调用
@@ -214,6 +214,18 @@ stmem lifecycle --thread <线程ID> --json
 ```
 
 未命中 feature terms 的 feelings 不参与处理；事件锚点禁止自动压缩；历史 importance 4 只展示兼容审查。报告不会调用压缩模型，也不会修改数据库。
+
+### Term 时间轴
+
+按自定义时间范围查看 feature term 在 archive 用户消息中的逐日词频，并叠加命中的 feeling、importance 和锚点：
+
+```bash
+stmem term-timeline --thread <线程ID> --terms 通宵,茶叶,老公
+stmem term-timeline --thread <线程ID> --terms 论文 --from 2026-05-01 --to 2026-07-01
+stmem term-timeline --thread <线程ID> --terms 外卖 --json
+```
+
+输出只展示证据，不自动分类曲线，也不产生生命周期状态变化。JSON 中的 `timeline` 包含所选范围内的零值日期，方便前端直接绘制连续曲线。
 
 ### 线程重建
 

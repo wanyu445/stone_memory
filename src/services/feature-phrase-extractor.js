@@ -9,8 +9,14 @@ const STOP_TERMS = new Set([
   "她", "他", "它", "祂", "ta", "TA", "自己", "本人", "用户", "使用者", "对方", "别人", "其他人",
   "一个", "一种", "一些", "东西", "事情", "方面", "相关", "内容", "时候", "期间", "现在", "之前", "之后",
   "喜欢", "觉得", "认为", "希望", "需要", "主动", "容易", "进行", "非常", "比较", "已经", "一直", "ai", "AI",
+  "使用", "作为", "才能", "比如", "包括", "相关", "是否", "可能", "直到", "名为",
 ]);
 const NOUN_TAGS = new Set(["n", "nr", "ns", "nt", "nz", "vn", "eng"]);
+// Features are already cleaned memory statements. Their useful concepts are not
+// limited to dictionary nouns: Jieba tags 外卖、熬夜、喝茶 and many states/actions
+// as verbs or adjectives. Keep noun chunks for phrase quality, and additionally
+// admit atomic content words without letting them glue whole clauses together.
+const CONTENT_TAGS = new Set(["v", "a"]);
 const TITLE_SUFFIXES = new Set(["老师", "先生", "女士", "姐姐", "妹妹", "哥哥", "弟弟", "医生", "博士", "教授"]);
 const TITLE_PREFIX_BLOCKLIST = new Set(["她", "他", "我", "你", "喜欢", "讨厌", "称呼", "一个"]);
 
@@ -45,6 +51,9 @@ function splitMarkedList(value) {
 function extractTaggedTerms(content, candidates) {
   const tagged = jieba.tag(content);
   extractTitleTerms(tagged, candidates);
+  for (const token of tagged) {
+    if (CONTENT_TAGS.has(token.tag) && token.word.length >= 2) candidates.add(token.word);
+  }
   let chunk = [];
   const flush = () => {
     if (!chunk.length) return;

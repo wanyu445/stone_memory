@@ -14,6 +14,12 @@ test("extracts content-bearing actions and states without admitting narrative sc
   for (const scaffold of ["经常", "觉得"]) assert.equal(terms.includes(scaffold), false, scaffold);
 });
 
+test("reconstructs adjacent content concepts split by the segmenter", () => {
+  assert.equal(extractTermsFromFeature({ content: "她曾通宵喝茶" }).includes("通宵喝茶"), true);
+  assert.equal(extractTermsFromFeature({ content: "她认为直接说爱你代表关系更紧密" }).includes("爱你"), true);
+  assert.equal(extractTermsFromFeature({ content: "她觉得焦虑" }).includes("觉得焦虑"), false);
+});
+
 test("keeps quoted and private relation vocabulary", () => {
   const terms = extractTermsFromFeature({ content: "他称AI为“老公”，并建立石头人格（糯糯、暗石、石头君等）" });
   for (const expected of ["老公", "糯糯", "暗石", "石头君"]) assert.equal(terms.includes(expected), true, expected);

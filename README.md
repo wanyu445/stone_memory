@@ -187,7 +187,7 @@ stmem feature-evidence --thread <线程ID>      # 自动回查 archive 词频与
 stmem feature-evidence --thread <线程ID> --json
 ```
 
-`feature-phrases` 使用同一套通用词性规则处理所有已经过 miner/cleanup 筛选的 feature 类别，不绑定用户性别，也不为 eat/work/relation 分别写规则。它输出去重后的检索词索引，优先保留引号、括号私有词及连续名词短语；同一词只合并 feature ID、最高 importance 和来源日期，不另建属性或语义关系模型。复杂句式无法可靠识别时宁可报告未提取，不从原文中猜词。
+`feature-phrases` 使用同一套通用规则处理所有已经过 miner/cleanup 筛选的 feature 类别，不绑定用户性别，也不为 eat/work/relation 分别写规则。它提取可追踪的记忆概念，包括对象、行为和状态，优先保留引号、括号私有词、连续名词与相邻内容短语；“喜欢、觉得、经常、需要”等叙述骨架会被过滤。同一词只合并 feature ID、最高 importance 和来源日期，不另建属性或语义关系模型。
 
 报告中的对话频率只统计用户消息，并与命中的 feelings 数量、覆盖日期数分开。同一个词可以同时属于多个特征库。`feature-evidence` 还会为每条命中的 feeling 反向列出 terms 及其 `messageCount`、`activeDays`、`firstSeen`、`lastSeen`；JSON 输出位于 `feelingEvidence`。这两个命令都只读，不修改 importance 或摘要状态。
 
@@ -223,9 +223,11 @@ stmem lifecycle --thread <线程ID> --json
 stmem term-timeline --thread <线程ID> --terms 通宵,茶叶,老公
 stmem term-timeline --thread <线程ID> --terms 论文 --from 2026-05-01 --to 2026-07-01
 stmem term-timeline --thread <线程ID> --terms 外卖 --json
+# 多词查询额外输出同日、同消息、同 feeling 的共现证据
+stmem term-timeline --thread <线程ID> --terms 老公,论文,爱你
 ```
 
-输出只展示证据，不自动分类曲线，也不产生生命周期状态变化。JSON 中的 `timeline` 包含所选范围内的零值日期，方便前端直接绘制连续曲线。
+输出只展示证据，不自动分类曲线，也不产生生命周期状态变化。JSON 中的 `timeline` 包含所选范围内的零值日期，方便前端直接绘制连续曲线；`baseline` 给出全时段日均、活跃日均和活跃日占比，`intersections` 给出两两及全词集合的同日、同消息和同 feeling 重合。
 
 ### 线程重建
 

@@ -51,6 +51,7 @@ function splitMarkedList(value) {
 function extractTaggedTerms(content, candidates) {
   const tagged = jieba.tag(content);
   extractTitleTerms(tagged, candidates);
+  extractContentPhrases(tagged, candidates);
   for (const token of tagged) {
     if (CONTENT_TAGS.has(token.tag) && token.word.length >= 2) candidates.add(token.word);
   }
@@ -75,6 +76,28 @@ function extractTaggedTerms(content, candidates) {
     else flush();
   }
   flush();
+}
+
+function extractContentPhrases(tagged, candidates) {
+  for (let index = 0; index < tagged.length - 1; index++) {
+    const left = tagged[index];
+    const right = tagged[index + 1];
+    if (isScaffoldToken(left) || isScaffoldToken(right)) continue;
+    const contentPair = isConceptToken(left) && isConceptToken(right);
+    const relationalPair = left.tag === "v" && right.tag === "r";
+    if (!contentPair && !relationalPair) continue;
+    const phrase = `${left.word}${right.word}`;
+    if (phrase.length >= 2 && phrase.length <= 20) candidates.add(phrase);
+  }
+}
+
+function isConceptToken(token) {
+  return isNounToken(token) || CONTENT_TAGS.has(token.tag);
+}
+
+function isScaffoldToken(token) {
+  const normalized = normalizeTerm(token.word);
+  return STOP_TERMS.has(token.word) || STOP_TERMS.has(normalized);
 }
 
 function extractTitleTerms(tagged, candidates) {

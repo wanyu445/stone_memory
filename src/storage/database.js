@@ -3,7 +3,7 @@ const path = require("path");
 const Database = require("better-sqlite3");
 const { resolveDatabasePath } = require("./database-location");
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -107,6 +107,14 @@ CREATE TABLE IF NOT EXISTS features (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS term_daily_stats (
+  thread_id TEXT NOT NULL,
+  normalized_term TEXT NOT NULL,
+  source_date TEXT NOT NULL,
+  user_message_count INTEGER NOT NULL DEFAULT 0,
+  occurrence_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(thread_id, normalized_term, source_date)
+);
 CREATE INDEX IF NOT EXISTS idx_feelings_thread_timeline
   ON feelings(thread_id, source_date, event_time, order_key);
 CREATE INDEX IF NOT EXISTS idx_features_thread_date
@@ -117,6 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread_date
   ON messages(thread_id, source_date, timestamp);
 CREATE INDEX IF NOT EXISTS idx_notifications_thread_read
   ON notifications(thread_id, is_read, created_at);
+CREATE INDEX IF NOT EXISTS idx_term_daily_stats_thread_date
+  ON term_daily_stats(thread_id, source_date);
 `;
 
 function openDatabase(memoryDir) {

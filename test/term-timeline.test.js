@@ -23,9 +23,26 @@ test("counts daily archive occurrences, fills zero days, and overlays feelings",
     { date: "2026-04-17", messageCount: 1, occurrenceCount: 1 },
   ]);
   assert.equal(row.feelings[0].retainAnchor, true);
+  assert.deepEqual(row.categorySupport, { body: 1, eat: 1 });
+  assert.equal(row.categoryPurity.eat, 0.5);
   assert.equal(row.activeDays, 2);
   assert.equal(row.baseline.calendarDailyMean, 1);
   assert.equal(row.baseline.activeDailyMean, 1.5);
+});
+
+test("uses cached daily evidence without changing feeling overlays", () => {
+  const [row] = buildTermTimeline({
+    requestedTerms: ["喝茶"], extractedTerms: [],
+    messages: [{ date: "2026-04-15", text: "不应重新统计" }, { date: "2026-04-16", text: "喝茶" }],
+    dailyStats: [
+      { normalizedTerm: "喝茶", sourceDate: "2026-04-15", messageCount: 2, occurrenceCount: 3 },
+      { normalizedTerm: "喝茶", sourceDate: "2026-04-16", messageCount: 0, occurrenceCount: 0 },
+    ],
+    feelings: [{ id: "f1", source_date: "2026-04-15", importance: 3, content: "4月15日，喝茶。" }],
+  });
+  assert.equal(row.messageCount, 2);
+  assert.equal(row.occurrenceCount, 3);
+  assert.equal(row.feelings.length, 1);
 });
 
 test("counts non-overlapping normalized occurrences", () => {
@@ -59,4 +76,16 @@ test("builds pair and full-set temporal co-occurrence signatures", () => {
   assert.equal(relationWork.sameFeelings[0].importance, 5);
   const all = signatures.find(row => row.terms.length === 3);
   assert.equal(all.sameMessages.length, 0);
+});
+
+test("detects terms split across a thirty-minute local message window", () => {
+  const rows = [
+    { date: "2026-07-01", timestamp: "2026-07-01T15:44:00Z", text: "还要做学术海报" },
+    { date: "2026-07-02", timestamp: "2026-07-01T16:06:00Z", text: "中期检查后继续毕业论文" },
+  ];
+  const timelines = buildTermTimeline({ requestedTerms: ["学术海报", "中期检查"], extractedTerms: [], messages: rows, feelings: [] });
+  const [signature] = buildCooccurrenceSignatures({ termTimelines: timelines, messages: rows, feelings: [] });
+  assert.equal(signature.sameMessages.length, 0);
+  assert.equal(signature.sameWindows.length, 1);
+  assert.equal(signature.sameWindows[0].gapMinutes, 22);
 });

@@ -3,10 +3,14 @@ const fs = require("fs");
 const path = require("path");
 const { getThreadDir, listThreadIds } = require("../src/config");
 const { MemoryStore } = require("../src/storage/memory-store");
-const { extractFeatureTerms } = require("../src/services/feature-phrase-extractor");
+const { extractFeatureTerms, normalizeTerm } = require("../src/services/feature-phrase-extractor");
 const { readUserArchive } = require("../src/services/feature-term-evidence");
 const { buildTermTimeline, buildCooccurrenceSignatures } = require("../src/services/term-timeline");
 const { buildRelationLifecycles } = require("../src/services/relation-lifecycle");
+const { buildRelationCompressionPlan, summarizeRelationCompressionPlan } = require("../src/services/relation-compression-plan");
+const { buildWorkLifecycles } = require("../src/services/work-lifecycle");
+const { buildWorkCompressionPlan, summarizeWorkCompressionPlan } = require("../src/services/work-compression-plan");
+const { updateTermEvidenceCache } = require("../src/services/term-evidence-cache");
 
 const args = process.argv.slice(2);
 const value = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
@@ -16,27 +20,42 @@ if (!threadId) throw new Error("没有已配置线程，请使用 --thread <id>"
 if (!requestedTerms.length) throw new Error("请使用 --terms 词1,词2 指定要查看的词");
 const memoryDir = path.join(getThreadDir(threadId), "memory");
 const store = new MemoryStore({ memoryDir, threadId });
-let features, feelings;
-try { features = store.listFeatures(); feelings = store.listFeelings(); } finally { store.close(); }
+const features = store.listFeatures();
+const feelings = store.listFeelings();
 let anchors = { retain: {}, eventAnchors: {} };
 try { anchors = JSON.parse(fs.readFileSync(path.join(memoryDir, "retain-config.json"), "utf8")); } catch {}
-const messages = readUserArchive(path.join(memoryDir, "archive"));
+let messages = store.listMessages().filter(row => row.type === "user")
+  .map(row => ({ date: row.sourceDate, timestamp: row.timestamp, text: row.text }));
+if (!messages.length) messages = readUserArchive(path.join(memoryDir, "archive"));
 const from = value("--from");
 const to = value("--to");
+const extractedTerms = extractFeatureTerms(features);
+updateTermEvidenceCache({ store, terms: requestedTerms });
+const dailyStats = store.listTermDailyStats(requestedTerms.map(normalizeTerm), { from, to });
+store.close();
 const report = buildTermTimeline({
   requestedTerms,
-  extractedTerms: extractFeatureTerms(features),
+  extractedTerms,
   feelings,
   messages,
+  dailyStats,
   anchors,
   from,
   to,
 });
 const intersections = buildCooccurrenceSignatures({ termTimelines: report, messages, feelings, anchors, from, to });
 const relation = buildRelationLifecycles({ termTimelines: report, intersections });
+relation.compressionPlan = buildRelationCompressionPlan({ relation, termTimelines: report, anchors });
+relation.compressionSummary = summarizeRelationCompressionPlan(relation.compressionPlan);
+const work = buildWorkLifecycles({ termTimelines: report, intersections });
+work.compressionPlan = buildWorkCompressionPlan({
+  work, termTimelines: report,
+  relationFeelingIds: relation.compressionPlan.filter(row => row.takeover).map(row => row.feelingId), anchors,
+});
+work.compressionSummary = summarizeWorkCompressionPlan(work.compressionPlan);
 
 if (args.includes("--json")) {
-  console.log(JSON.stringify({ threadId, report, intersections, relation }, null, 2));
+  console.log(JSON.stringify({ threadId, report, intersections, relation, work }, null, 2));
   process.exit(0);
 }
 
@@ -68,10 +87,29 @@ for (const intersection of intersections) {
 for (const lifecycle of relation.terms) {
   console.log(`\n[Relation ${lifecycle.term}] ${lifecycle.state}/${lifecycle.shape}；confidence=${lifecycle.confidence}${lifecycle.inferredRelation ? "；relation=共现推断" : ""}`);
   console.log(`  ${lifecycle.reasons.join("；")}`);
+  const positions = Object.entries(lifecycle.feelingPoints.reduce((counts, point) => {
+    counts[point.position] = (counts[point.position] || 0) + 1;
+    return counts;
+  }, {})).map(([position, count]) => `${position}=${count}`).join("；");
+  if (positions) console.log(`  feeling位置: ${positions}`);
 }
 for (const pair of relation.pairs) {
   console.log(`\n[Relation 配对 ${pair.terms.join(" ↔ ")}] ${pair.state}/${pair.shape}`);
   console.log(`  同日=${pair.evidence.sameDays}；同消息=${pair.evidence.sameMessages}；同 feeling=${pair.evidence.sameFeelings}；跨度=${pair.evidence.spanDays} 天`);
+}
+if (relation.compressionPlan.length) {
+  console.log(`\n[Relation 压缩计划] ${Object.entries(relation.compressionSummary.actions).map(([action, count]) => `${action}=${count}`).join("；")}`);
+  for (const row of relation.compressionPlan.filter(item => item.action !== "compress_coarse").slice(0, feelingLimit)) {
+    console.log(`  ${row.sourceDate} ${row.feelingId} [importance ${row.importance}] → ${row.action}：${row.reason}`);
+  }
+}
+for (const project of work.groups) {
+  console.log(`\n[Work 项目 ${project.id}] ${project.state}/${project.shape}；${project.firstSeen || "-"} ~ ${project.lastSeen || "-"}`);
+  console.log(`  members: ${project.members.map(row => row.term).join(" → ")}`);
+  console.log(`  活跃 ${project.activeDays} 天；连接证据 ${project.links.length} 条`);
+}
+if (work.compressionPlan.length) {
+  console.log(`\n[Work 压缩计划] ${Object.entries(work.compressionSummary.actions).map(([action, count]) => `${action}=${count}`).join("；")}`);
 }
 
 function format(value) {

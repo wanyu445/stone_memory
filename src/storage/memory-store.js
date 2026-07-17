@@ -226,6 +226,46 @@ class MemoryStore {
       : this.db.prepare("SELECT * FROM features WHERE thread_id=? ORDER BY category,id").all(this.threadId);
   }
 
+  latestTermEvidenceDates(normalizedTerms) {
+    const terms = [...new Set((normalizedTerms || []).filter(Boolean))];
+    if (!terms.length) return new Map();
+    const placeholders = terms.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT normalized_term,MAX(source_date) source_date
+      FROM term_daily_stats WHERE thread_id=? AND normalized_term IN (${placeholders})
+      GROUP BY normalized_term`).all(this.threadId, ...terms);
+    return new Map(rows.map(row => [row.normalized_term, row.source_date]));
+  }
+
+  upsertTermDailyStats(rows) {
+    const upsert = this.db.prepare(`INSERT INTO term_daily_stats
+      (thread_id,normalized_term,source_date,user_message_count,occurrence_count)
+      VALUES (?,?,?,?,?)
+      ON CONFLICT(thread_id,normalized_term,source_date) DO UPDATE SET
+        user_message_count=excluded.user_message_count,
+        occurrence_count=excluded.occurrence_count`);
+    return this.db.transaction(items => {
+      let changed = 0;
+      for (const row of items || []) {
+        changed += upsert.run(this.threadId, row.normalizedTerm, row.sourceDate,
+          row.userMessageCount || 0, row.occurrenceCount || 0).changes;
+      }
+      return changed;
+    })(rows);
+  }
+
+  listTermDailyStats(normalizedTerms, { from = null, to = null } = {}) {
+    const terms = [...new Set((normalizedTerms || []).filter(Boolean))];
+    if (!terms.length) return [];
+    const clauses = [`thread_id=?`, `normalized_term IN (${terms.map(() => "?").join(",")})`];
+    const params = [this.threadId, ...terms];
+    if (from) { clauses.push("source_date>=?"); params.push(from); }
+    if (to) { clauses.push("source_date<=?"); params.push(to); }
+    return this.db.prepare(`SELECT normalized_term AS normalizedTerm,source_date AS sourceDate,
+      user_message_count AS messageCount,occurrence_count AS occurrenceCount
+      FROM term_daily_stats WHERE ${clauses.join(" AND ")}
+      ORDER BY normalized_term,source_date`).all(...params);
+  }
+
   applyCoarseSummaries(rows) {
     const update = this.db.prepare(`UPDATE feelings
       SET coarse_summary=?,summary_mode='coarse',updated_at=?

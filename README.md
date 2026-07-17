@@ -10,7 +10,8 @@ stone_memory/
 │   ├── stmem                  # CLI 入口 (Linux/Mac)
 │   └── stmem.cmd              # CLI 入口 (Windows)
 ├── scripts/
-│   ├── watcher.js             # 实时归档监听 + 自动挖掘
+│   ├── watcher-supervisor.js  # 动态维护每线程一个 watcher worker
+│   ├── watcher.js             # 单线程实时归档监听 + 自动挖掘 worker
 │   ├── stmem-init.js          # 初始化新线程
 │   ├── stmem-fork.js          # 登记父子线程记忆关系
 │   ├── stmem-sync.js          # 增量同步线程 → archive
@@ -468,3 +469,17 @@ memory/topics/
 ├── topic_果冻果冻安全词游戏.md    # 重要约定
 └── topic_论坛.md                # 固定话题
 ```
+
+### Watcher 进程模型
+
+常驻 watcher 使用 supervisor + per-thread worker：supervisor 动态读取配置，确保每个 thread ID 恰好有一个 `watcher.js --thread <id>`。单个线程同步、挖掘或模型调用卡住时，不会阻塞其他线程；新增或删除线程无需重启整个 watcher，下一次配置巡检会自动增减 worker。
+
+所有正式线程共享 `~/.stone_memory/stone-memory.db`，通过 `thread_id` 隔离；fork 依靠同库递归读取父子关系，不复制记忆。SQLite 使用 WAL 和 30 秒 busy timeout，不同 worker 可以并发调用模型，实际短写事务由 SQLite 串行提交。
+
+规范化 archive 的正式数据源是共享数据库中的 `messages` 表，每行都写入对应 `thread_id`。full 原始备份不改写原始 JSON，但保存在对应线程自己的路径：
+
+```text
+~/.stone_memory/runtimes/<runtime>/<purpose>/<threadId>/memory/archive/full/<year>/<month>/<date>.jsonl
+```
+
+因此 full 的线程归属由目录确定；旧 `memory/archive/*.jsonl` 仅为迁移遗留，不是当前规范化 archive 数据源。

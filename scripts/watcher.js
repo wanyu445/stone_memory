@@ -9,8 +9,8 @@
  *   - 全写 log，不重复挖
  *
  * 用法:
- *   node scripts/watcher.js [--interval 300] [--once] [--thread <id>]
- *   --thread 省略时监视所有已配置线程
+ *   node scripts/watcher.js --thread <id> [--interval 300] [--once]
+ *   常驻多线程监听由 watcher-supervisor.js 为每个线程启动本 worker。
  */
 
 const fs = require("fs");
@@ -25,6 +25,7 @@ const { shouldAttempt } = require("../src/services/mining-state");
 const { ingestThreadFile: ingestSharedThreadFile } = require("../src/services/thread-ingest");
 const { MemoryStore } = require("../src/storage/memory-store");
 const LOG_DIR = path.join(os.homedir(), ".stone_memory", "logs");
+let workerLockDir = null;
 
 function log(msg) {
   const ts = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
@@ -37,6 +38,36 @@ function log(msg) {
 function beijingToday() {
   const bj = new Date(Date.now() + 8 * 3600 * 1000);
   return bj.toISOString().slice(0, 10);
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function acquireWorkerLock(threadId) {
+  const suffix = crypto.createHash("sha256").update(threadId).digest("hex").slice(0, 20);
+  const lockDir = path.join(os.homedir(), ".stone_memory", `.watcher-worker-${suffix}.lock`);
+  try {
+    fs.mkdirSync(lockDir);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    let owner = null;
+    try { owner = JSON.parse(fs.readFileSync(path.join(lockDir, "owner.json"), "utf8")); } catch {}
+    if (owner?.pid && processAlive(owner.pid)) return null;
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    fs.mkdirSync(lockDir);
+  }
+  fs.writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, threadId, createdAt: new Date().toISOString() }));
+  return lockDir;
+}
+
+function releaseWorkerLock() {
+  if (!workerLockDir) return;
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(workerLockDir, "owner.json"), "utf8"));
+    if (owner.pid === process.pid) fs.rmSync(workerLockDir, { recursive: true, force: true });
+  } catch {}
+  workerLockDir = null;
 }
 
 // ── 路径 helpers（全部接收 threadId） ──
@@ -233,11 +264,35 @@ async function main() {
   const intervalSec = intervalIdx >= 0 ? parseInt(args[intervalIdx + 1], 10) || 300 : 300;
   const once = args.includes("--once");
   const threadFlag = args.includes("--thread") ? args[args.indexOf("--thread") + 1] : null;
+  const supervisorPid = args.includes("--supervisor-pid") ? Number(args[args.indexOf("--supervisor-pid") + 1]) : null;
 
+  if (!threadFlag && !once) {
+    throw new Error("watcher worker 必须指定 --thread；多线程请启动 watcher-supervisor.js");
+  }
   const threadIds = threadFlag ? [threadFlag] : listThreadIds();
   if (!threadIds.length) {
     log("没有配置任何线程，请先运行 stmem init --thread <id>");
     process.exit(1);
+  }
+  if (threadFlag) {
+    workerLockDir = acquireWorkerLock(threadFlag);
+    if (!workerLockDir) {
+      log(`[${threadFlag}] 已有 worker 正在运行，本进程退出`);
+      return;
+    }
+    process.once("exit", releaseWorkerLock);
+    process.once("SIGTERM", () => { releaseWorkerLock(); process.exit(0); });
+    process.once("SIGINT", () => { releaseWorkerLock(); process.exit(0); });
+    if (supervisorPid) {
+      const parentCheck = setInterval(() => {
+        if (!processAlive(supervisorPid)) {
+          log(`[${threadFlag}] supervisor ${supervisorPid} 已消失，worker 退出等待接管`);
+          releaseWorkerLock();
+          process.exit(0);
+        }
+      }, 5000);
+      parentCheck.unref();
+    }
   }
 
   for (const tid of threadIds) {

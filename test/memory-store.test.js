@@ -12,6 +12,12 @@ function tempStore(t) {
   return { store, dir };
 }
 
+test("shared SQLite waits for short writes from per-thread watcher workers", t => {
+  const { store } = tempStore(t);
+  assert.equal(store.db.pragma("busy_timeout", { simple: true }), 30000);
+  assert.equal(store.db.pragma("journal_mode", { simple: true }).toLowerCase(), "wal");
+});
+
 test("legacy migration is idempotent and dynamic seq follows event time", t => {
   const { store, dir } = tempStore(t);
   const feelingsDir = path.join(dir, "mined", "feelings");

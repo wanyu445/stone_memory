@@ -56,6 +56,7 @@ async function main() {
         anchorCharacters: week.anchorCharacters,
         compressibleRatio: week.compressibleRatio,
         candidateTerms: context.plan.candidateTerms,
+        categoryProfile: context.plan.categoryProfile,
         allDailyDecisions: context.plan.summary,
         keepExamples: week.keep.slice(0, 5).map(decisionExample),
         coarseExamples: week.coarse.slice(0, 5).map(decisionExample),
@@ -67,7 +68,8 @@ async function main() {
       if (!apply) break;
 
       // 所有模型调用先完成；只有结果齐全后才开启单个数据库事务。
-      const coarseFeelings = week.coarse.map(row => context.feelingsById.get(row.feelingId));
+      const coarseFeelings = week.coarse.map(row => ({ ...context.feelingsById.get(row.feelingId),
+        category: row.category || null, compressionStyle: row.compressionStyle || "ordinary" }));
       const results = await compressInBatches(compressor, coarseFeelings, positiveNumber(value("--batch-size"), 20));
       report.updated = store.applyCoarseWeek(results);
       report.applied = true;
@@ -126,6 +128,7 @@ function print(result, json) {
     console.log(`\n${row.from} ~ ${row.to}：候选周排名 ${row.rank}/${row.eligibleWeeks}，keep ${row.keep}，coarse ${row.coarse}`);
     console.log(`  可压缩字符占比：${(row.compressibleRatio * 100).toFixed(1)}%（${row.coarseCharacters}/${row.totalCharacters}），锚点字符 ${row.anchorCharacters}`);
     console.log(`  摘要反筛后进入拟合的 term：${row.candidateTerms}`);
+    console.log(`  核心库：relation；副核心库：${row.categoryProfile.secondaryCategory || "无"}`);
     console.log(`  路由：${Object.entries(row.routes).map(([key, count]) => `${key}=${count}`).join("；")}`);
     console.log(`  窗口字符：${row.windowCharacters.before} → 预计 ${row.windowCharacters.estimatedAfter}`);
     console.log("  keep 示例:");

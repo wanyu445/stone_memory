@@ -217,6 +217,10 @@ stmem compact --thread <线程ID> --auto --apply \
 
 排名只消费 planner 已经产生的 keep/coarse，不重新发明 importance 权重：先比较 `coarseCharacters / totalCharacters`，再比较预计节省量，完全相同时优先更早的周。`compact` 每周写入后按实际注入纯文本重新测量容量并重新规划、重新排名；已是 coarse 的 feeling 不会再次调用模型。event/retain 锚点始终保持 daily。`--auto` 只有当前字符量高于 `--max-chars` 才启动，并在低于 `--stop-chars` 后停止。archive 词频仍供时间轴展示，但生命周期拟合只使用摘要点。
 
+每次规划还会从全部 feelings 自动生成线程级 category profile。relation 固定作为主核心并继续使用专用生命周期；非 relation feelings 根据摘要中具有区分度的 feature terms 归入证据最强的 category。覆盖至少 2 周、至少 5 条且占非关系归属摘要至少 10% 的 category 中，importance 4–5 密度最高者成为唯一副核心。几乎每条摘要都出现的宽词 IDF 接近零，不能给某个库刷票。
+
+副核心可以因用户而异：019 为 work，哲学型用户可为 preference，美食家可为 eat。副核心仍然 coarse，但使用 `compressionStyle=secondary_core`：保留具体观点、口味判断、身体规律、习惯意义或项目结论，最多 220 字；普通 coarse 最多 160 字。路由顺序为 anchor → relation → secondary core → fact。副核心是每次 compact 动态重算结果，不新增数据库状态或用户维护项。
+
 ### 生命周期 dry-run
 
 生命周期报告把 feature term 的 archive 时间证据反向聚合到 feelings，并结合 importance 和人工锚点生成只读建议：

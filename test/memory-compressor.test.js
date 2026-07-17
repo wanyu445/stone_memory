@@ -7,11 +7,25 @@ const { buildCompressionPrompt, validateCompressionResult, temporalPrefix } = re
 const { MemoryStore } = require("../src/storage/memory-store");
 
 test("compression prompt carries ids, content, dates, and historical importance", () => {
-  const prompt = buildCompressionPrompt([{ id: "f1", source_date: "2026-06-01", importance: 4, content: "完整感受。" }]);
+  const prompt = buildCompressionPrompt([{ id: "f1", source_date: "2026-06-01", importance: 4,
+    category: "preference", compressionStyle: "secondary_core", content: "完整感受。" }]);
   assert.match(prompt, /"id": "f1"/);
   assert.match(prompt, /"sourceDate": "2026-06-01"/);
   assert.match(prompt, /"importance": 4/);
   assert.match(prompt, /完整感受/);
+  assert.match(prompt, /secondary_core/);
+  assert.match(prompt, /preference/);
+});
+
+test("secondary core allows a lighter 220-character coarse summary", () => {
+  const prefix = "6月1日，晚上九点。";
+  const summary = prefix + "观".repeat(160);
+  assert.throws(() => validateCompressionResult(
+    [{ id: "ordinary", content: `${prefix}完整观点。` }],
+    [{ id: "ordinary", coarseSummary: summary }]), /长度/);
+  assert.equal(validateCompressionResult(
+    [{ id: "core", content: `${prefix}完整观点。`, compressionStyle: "secondary_core" }],
+    [{ id: "core", coarseSummary: summary }])[0].coarseSummary, summary);
 });
 
 test("temporal prefix requires both the date and corresponding time", () => {

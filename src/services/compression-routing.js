@@ -1,5 +1,6 @@
-function buildCompressionRouting({ feelings = [], relationPlan = [], workPlan = [], anchors = {} }) {
+function buildCompressionRouting({ feelings = [], relationPlan = [], secondaryCorePlan = [], workPlan = [], anchors = {} }) {
   const relation = new Map(relationPlan.map(row => [row.feelingId, row]));
+  const secondary = new Map(secondaryCorePlan.map(row => [row.feelingId, row]));
   const work = new Map(workPlan.map(row => [row.feelingId, row]));
   const eventAnchors = new Set(Object.keys(anchors.eventAnchors || {}));
   const retainAnchors = new Set(Object.keys(anchors.retain || {}));
@@ -13,12 +14,17 @@ function buildCompressionRouting({ feelings = [], relationPlan = [], workPlan = 
       const decision = relation.get(feeling.id);
       return { ...base, route: "relation", action: decision.action, reason: decision.reason };
     }
+    if (secondary.has(feeling.id)) {
+      const decision = secondary.get(feeling.id);
+      return { ...base, route: "secondary_core", category: decision.category,
+        compressionStyle: decision.compressionStyle, action: decision.action, reason: decision.reason };
+    }
     if (importance > 3 && work.has(feeling.id)) {
       const decision = work.get(feeling.id);
       return { ...base, route: "work", action: decision.action, reason: decision.reason };
     }
     return { ...base, route: "fact", action: "compress_coarse",
-      reason: importance <= 3 ? "importance 1–3 直接压成客观事实" : "无高置信 relation/work 接管签名，按事实简写" };
+      reason: importance <= 3 ? "importance 1–3 直接压成客观事实" : "无高置信主核心或副核心接管，按事实简写" };
   });
 }
 

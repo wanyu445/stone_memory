@@ -10,6 +10,8 @@ function compressionRows(feelings) {
     id: row.id,
     sourceDate: row.source_date || row.sourceDate || null,
     importance: Number(row.importance),
+    category: row.category || null,
+    compressionStyle: row.compressionStyle || "ordinary",
     content: String(row.content || ""),
   }));
 }
@@ -35,8 +37,9 @@ function validateCompressionResult(feelings, raw) {
     const id = String(row?.id || "");
     const coarseSummary = String(row?.coarseSummary || "").trim();
     if (!expected.has(id) || seen.has(id)) throw new Error(`压缩结果包含未知或重复 id: ${id || "<empty>"}`);
-    if (!coarseSummary || coarseSummary.length > 160) throw new Error(`压缩结果长度无效: ${id}`);
     const original = (feelings || []).find(feeling => feeling.id === id);
+    const maxLength = original?.compressionStyle === "secondary_core" ? 220 : 160;
+    if (!coarseSummary || coarseSummary.length > maxLength) throw new Error(`压缩结果长度无效: ${id}`);
     const expectedPrefix = temporalPrefix(original?.content);
     if (!expectedPrefix) throw new Error(`原 feeling 缺少完整日期时间前缀: ${id}`);
     if (!coarseSummary.startsWith(expectedPrefix)) throw new Error(`压缩结果没有原样保留日期时间前缀: ${id}`);

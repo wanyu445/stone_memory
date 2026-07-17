@@ -59,7 +59,10 @@ function estimateWeekCharacters(week, feelings, ratio = 0.45) {
   for (const decision of week?.decisions || []) {
     const length = String(byId.get(decision.feelingId)?.content || decision.content || "").length;
     before += length;
-    after += decision.action === "compress_coarse" ? Math.min(160, Math.ceil(length * ratio)) : length;
+    const secondary = decision.compressionStyle === "secondary_core";
+    const compressionRatio = secondary ? 0.7 : ratio;
+    const maxLength = secondary ? 220 : 160;
+    after += decision.action === "compress_coarse" ? Math.min(maxLength, Math.ceil(length * compressionRatio)) : length;
   }
   return { before, estimatedAfter: after, estimatedSaving: Math.max(0, before - after) };
 }

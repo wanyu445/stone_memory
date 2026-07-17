@@ -50,3 +50,22 @@ test("event and retain anchors bypass category routing until the marker is remov
   const afterRemoval = buildCompressionRouting({ feelings, anchors: { eventAnchors: {}, retain: {} } });
   assert.deepEqual(afterRemoval.map(row => row.action), ["compress_coarse", "compress_coarse"]);
 });
+
+test("relation wins over secondary core, which wins over legacy work and fact", () => {
+  const feelings = [
+    { id: "relation", source_date: "2026-06-01", importance: 5, content: "老公聊论文" },
+    { id: "secondary", source_date: "2026-06-02", importance: 3, content: "论文进展" },
+  ];
+  const rows = buildCompressionRouting({
+    feelings,
+    relationPlan: [{ feelingId: "relation", takeover: true, action: "keep_daily", reason: "relation" }],
+    secondaryCorePlan: feelings.map(row => ({ feelingId: row.id, category: "work",
+      compressionStyle: "secondary_core", action: "compress_coarse", reason: "secondary" })),
+    workPlan: feelings.map(row => ({ feelingId: row.id, action: "keep_daily", reason: "legacy work" })),
+  });
+  assert.deepEqual(rows.map(row => [row.feelingId, row.route, row.action]), [
+    ["relation", "relation", "keep_daily"],
+    ["secondary", "secondary_core", "compress_coarse"],
+  ]);
+  assert.equal(rows[1].compressionStyle, "secondary_core");
+});

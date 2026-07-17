@@ -113,7 +113,9 @@ stmem feature-evidence --thread <id> --json
 
 旧 `lifecycle` 的固定天数阈值只保留为早期实验，不得用于写库或作为正式压缩决策。正式方向是：每个 feature 概念回查 archive 形成逐日曲线，在曲线上叠加 feeling、importance 与锚点；category 提供不同的正常生命周期形状先验，而不是统一过期时间。
 
-`stmem term-timeline --thread <id> --terms 词1,词2` 已提供单词只读证据：逐日 user 消息数、真实出现次数、零值日期、feature category/IDs，以及 feeling 小点。下一步实现多词联合时间轴，区分同日、同消息/局部窗口、同 feeling 点三种共现强度，并结合各词相对自身基线的异常程度形成 Temporal Co-occurrence Signature。
+`stmem term-timeline --thread <id> --terms 词1,词2` 已提供只读证据：逐日 user 消息数、真实出现次数、零值日期、feature category/IDs、feeling 小点，以及同日、同消息、同 feeling 三种共现强度和各词历史基线，形成第一版 Temporal Co-occurrence Signature。
+
+多词联合时间轴与 relation 第一版阶段分类已经实现。relation 输出 forming / experimental / established / retired / revived，并区分 continuous 与 episodic；成对角色仅在同消息亲和度足够高时成立，避免把“老公+论文”等普通共现误判成角色配对。019 回归结果：老公、爱你为 established/continuous；少爷—女仆为 established/episodic_pair；神父—修女为 retired_pair。该结果只读，不得直接修改摘要状态。
 
 曲线、category、importance 和原文必须交叉验证。曲线负责定位候选时段，不能单独决定摘要去留；尤其不能因为“论文”字面出现在 importance 5 feeling 中就认定论文是核心主题。完成联合证据层并用“通宵+茶叶”“老公+外卖”“老公+论文+爱你”抽查前，不实现自动 hidden。
 

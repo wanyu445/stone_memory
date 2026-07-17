@@ -6,6 +6,7 @@ const { MemoryStore } = require("../src/storage/memory-store");
 const { extractFeatureTerms } = require("../src/services/feature-phrase-extractor");
 const { readUserArchive } = require("../src/services/feature-term-evidence");
 const { buildTermTimeline, buildCooccurrenceSignatures } = require("../src/services/term-timeline");
+const { buildRelationLifecycles } = require("../src/services/relation-lifecycle");
 
 const args = process.argv.slice(2);
 const value = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
@@ -32,9 +33,10 @@ const report = buildTermTimeline({
   to,
 });
 const intersections = buildCooccurrenceSignatures({ termTimelines: report, messages, feelings, anchors, from, to });
+const relation = buildRelationLifecycles({ termTimelines: report, intersections });
 
 if (args.includes("--json")) {
-  console.log(JSON.stringify({ threadId, report, intersections }, null, 2));
+  console.log(JSON.stringify({ threadId, report, intersections, relation }, null, 2));
   process.exit(0);
 }
 
@@ -61,6 +63,15 @@ for (const intersection of intersections) {
     console.log(`  ${feeling.sourceDate} ${feeling.id} [importance ${feeling.importance}${flags ? `; ${flags}` : ""}] ${feeling.content}`);
   }
   if (intersection.sameFeelings.length > feelingLimit) console.log(`  …另有 ${intersection.sameFeelings.length - feelingLimit} 条 feeling，使用 --all 查看`);
+}
+
+for (const lifecycle of relation.terms) {
+  console.log(`\n[Relation ${lifecycle.term}] ${lifecycle.state}/${lifecycle.shape}；confidence=${lifecycle.confidence}${lifecycle.inferredRelation ? "；relation=共现推断" : ""}`);
+  console.log(`  ${lifecycle.reasons.join("；")}`);
+}
+for (const pair of relation.pairs) {
+  console.log(`\n[Relation 配对 ${pair.terms.join(" ↔ ")}] ${pair.state}/${pair.shape}`);
+  console.log(`  同日=${pair.evidence.sameDays}；同消息=${pair.evidence.sameMessages}；同 feeling=${pair.evidence.sameFeelings}；跨度=${pair.evidence.spanDays} 天`);
 }
 
 function format(value) {

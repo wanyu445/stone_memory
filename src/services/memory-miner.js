@@ -122,7 +122,7 @@ function buildFeaturePrompt(userName, purpose) {
 - body: 身体特征、健康状态、容易累/困/疼
 - sleep: 作息规律、睡眠特点
 - work: 工作、论文、毕设、实验、项目、debug
-- relation: 与AI的关系/称呼、家人/同事/朋友、社交边界
+- relation: 与AI的关系/称呼、成对角色、家人/同事/朋友、社交边界
 - habit: 日常习惯、行为模式、拖延、列待办
 - location: 常去的地方、住哪、在哪工作
 - preference: 技术工具偏好、娱乐偏好、购物偏好
@@ -131,6 +131,7 @@ function buildFeaturePrompt(userName, purpose) {
 写作要点：
 - 一句一个事实，简洁精确。正面陈述："她xxx"
 - 不要复述对话内容，提取背后的隐含特征
+- relation 要原词保留称呼和成对角色；短期角色实验也可记 importance 2
 - 同一条信息在不同日期多次出现 → importance 提高
 - importance 只允许 2/3/5：2=单次但值得保存，3=多次确认或持续有效，5=极少数长期稳定的核心特征
 - 不要输出 1 或 4

@@ -55,6 +55,7 @@
 - 不写日期，不写故事，不写感受
 - 提取背后的隐含特征，不是复述对话
 - category: eat / body / sleep / work / relation / habit / location / preference / misc
+- relation 要原词保留称呼和成对角色（如“少爷—女仆”）；短期角色实验也可记 importance 2
 - importance 只允许 2 / 3 / 5：2=单次但值得保存，3=多次确认或持续有效，5=极少数长期稳定且会影响大量互动的核心特征
 - 不输出 importance 1 或 4
 

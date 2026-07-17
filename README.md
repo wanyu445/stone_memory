@@ -203,6 +203,19 @@ stmem compress --thread <线程ID> --before 2026-06-01 --apply
 
 `--apply` 必须同时提供 `--before`、`--ids` 或 `--all`。应用后完整 `content` 不变，只写入完整时间前缀开头的 `coarse_summary`，并将 `summary_mode` 切换为 `coarse`。
 
+正式的生命周期压缩入口是周级 `compact`。它先用仍为 `daily` 的 feelings 反筛 relation/work terms，再将历史 coarse feeling 点作为完整曲线证据重算 relation/work/fact 路由。默认只展示最早连续 7 天；只有整周模型结果全部成功，才在一个事务中写入所有 coarse 候选：
+
+```bash
+stmem compact --thread <线程ID>                         # dry-run，不调用模型
+stmem compact --thread <线程ID> --week-days 1           # 小批 dry-run
+stmem compact --thread <线程ID> --apply --api            # 原子处理最早一周
+stmem compact --thread <线程ID> --apply --weeks 2        # 最多依次处理两周
+stmem compact --thread <线程ID> --auto --apply \
+  --max-chars 70000 --stop-chars 60000                  # 超水位后逐周处理
+```
+
+`compact` 每周写入后按实际注入文本重新测量容量；已是 coarse 的 feeling 不会再次调用模型。event/retain 锚点始终保持 daily。`--auto` 只有当前字符量高于 `--max-chars` 才启动，并在低于 `--stop-chars` 后停止。archive 词频仍供时间轴展示，但生命周期拟合只使用摘要点。
+
 ### 生命周期 dry-run
 
 生命周期报告把 feature term 的 archive 时间证据反向聚合到 feelings，并结合 importance 和人工锚点生成只读建议：

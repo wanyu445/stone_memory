@@ -281,6 +281,23 @@ class MemoryStore {
     })(rows);
   }
 
+  applyCoarseWeek(rows) {
+    const items = rows || [];
+    if (!items.length) return 0;
+    const update = this.db.prepare(`UPDATE feelings
+      SET coarse_summary=?,summary_mode='coarse',updated_at=?
+      WHERE id=? AND thread_id=? AND summary_mode='daily'`);
+    return this.db.transaction(values => {
+      const now = new Date().toISOString();
+      for (const row of values) {
+        if (!row?.id || !row?.coarseSummary) throw new Error("整周压缩结果包含空 id 或空摘要");
+        const result = update.run(row.coarseSummary, now, row.id, this.threadId);
+        if (result.changes !== 1) throw new Error(`整周原子写入失败，feeling 已变化或不存在: ${row.id}`);
+      }
+      return values.length;
+    })(items);
+  }
+
   exportLegacy() {
     const feelingsDir = path.join(this.memoryDir, "mined", "feelings");
     const featuresDir = path.join(this.memoryDir, "mined", "features");

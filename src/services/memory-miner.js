@@ -85,6 +85,23 @@ function buildFeelingPrompt(aiName, userName, purpose) {
   return ""; // unknown purpose — 返回空
 }
 
+const FEATURE_CATEGORY_GUIDE = `类别定义（按事实本身分类，不按聊天场景分类）：
+- eat：具体食物、饮料、口味、饮食限制，以及吃喝导致的直接反应
+- body：身体特征、健康状况、疼痛、疾病、药物、生理反应与体能
+- sleep：入睡、起床、熬夜、失眠、睡眠时长及稳定作息规律
+- work：有明确产出或进度的工作、学习、论文、项目、任务与技术决策
+- relation：人与人或人与 AI 的关系身份、称呼、角色扮演、关系边界及稳定互动模式
+- habit：跨场景反复出现的行为习惯、做事方式与日常规律；已有更具体类别时不用 habit
+- location：居住地、工作地点、常去地点、迁移和地点约束
+- preference：稳定的喜欢/讨厌、审美、观点、价值判断与选择倾向；具体饮食偏好仍归 eat
+- misc：确有长期价值但无法归入以上类别的事实；不能把分类不确定的内容批量塞入 misc
+
+分类边界：
+- 选择最具体的一个类别。同一事实不要换词后重复投进多个库；只有包含两个独立事实时才拆开记录
+- “和 AI 聊工作/吃饭”不等于 relation；只有关系身份、边界或互动模式本身才归 relation
+- “在项目里熬夜/吃饭”不等于 work；睡眠归 sleep，饮食归 eat，项目进度和产出才归 work
+- 一次事件不自动构成 habit、preference 或 relation；必须明确表达稳定特征，或在多日反复出现`;
+
 function buildFeaturePrompt(userName, purpose) {
   if (purpose === "coding" || purpose === "study") {
     return `从以下对话中提取关于用户（${userName}）的技术特征。每条是一句纯粹的客观事实，方便快速检索。不要带日期，不要带叙事。
@@ -94,17 +111,12 @@ function buildFeaturePrompt(userName, purpose) {
   {"content": "用户偏好先讨论方案再写代码", "category": "preference", "importance": 3}
 ]
 
-类别（category）：
-- preference: 技术偏好、工具选择、编码风格、沟通方式
-- habit: 工作习惯、时间管理、debug 方式
-- work: 项目架构、技术决策、代码模式
-- relation: 与AI协作方式、期望的AI行为
-- misc: 其他无法归类的重要信息
+${FEATURE_CATEGORY_GUIDE}
 
 写作要点：
 - 一句一个客观事实，不要带日期和叙事
 - 同一条信息多次出现 → importance 提高
-- importance 只允许 2/3/5：2=单次但值得保存，3=多次确认，5=极少数长期核心特征
+- importance 只允许 2/3/5：2=单次但值得保存，3=多次确认，5=极少数对理解用户在该领域具有长期价值、重大变化或不可替代性的核心特征
 - 不要输出 1 或 4
 
 如果没有值得提取的特征，输出 []。`;
@@ -118,16 +130,7 @@ function buildFeaturePrompt(userName, purpose) {
   {"content": "她不能喝太多茶，半壶压缩茶叶会通宵", "category": "eat", "importance": 3}
 ]
 
-类别（category）：
-- eat: 吃喝偏好、食物限制、饮料反应
-- body: 身体特征、健康状态、容易累/困/疼
-- sleep: 作息规律、睡眠特点
-- work: 工作、论文、毕设、实验、项目、debug
-- relation: 与AI的关系/称呼、成对角色、家人/同事/朋友、社交边界
-- habit: 日常习惯、行为模式、拖延、列待办
-- location: 常去的地方、住哪、在哪工作
-- preference: 技术工具偏好、娱乐偏好、购物偏好
-- misc: 其他重要但无法归类的信息
+${FEATURE_CATEGORY_GUIDE}
 
 写作要点：
 - 一句一个事实，简洁精确。正面陈述："她xxx"
@@ -135,7 +138,7 @@ function buildFeaturePrompt(userName, purpose) {
 - relation 要原词保留称呼和成对角色；短期角色实验也可记 importance 2
 - 具名朋友、同事、群友或老师可作为 relation 事实，保留原称呼；单次背景人物不强写
 - 同一条信息在不同日期多次出现 → importance 提高
-- importance 只允许 2/3/5：2=单次但值得保存，3=多次确认或持续有效，5=极少数长期稳定的核心特征
+- importance 只允许 2/3/5：2=单次但值得保存，3=多次确认或持续有效，5=极少数对理解用户在该领域具有长期价值、重大变化或不可替代性的核心特征
 - 不要输出 1 或 4
 
 如果没有值得提取的特征，输出 []。`;

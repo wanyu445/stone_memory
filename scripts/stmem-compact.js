@@ -5,7 +5,7 @@ const { getThreadDir, listThreadIds, loadConfig } = require("../src/config");
 const { MemoryStore } = require("../src/storage/memory-store");
 const { MemoryCompressor } = require("../src/services/memory-compressor");
 const { buildCompressionPlan } = require("../src/services/compression-planner");
-const { selectEarliestWeek, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
+const { rankCompressionWeeks, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
 
 const args = process.argv.slice(2);
 const value = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
@@ -37,7 +37,8 @@ async function main() {
 
     for (let count = 0; count < maxWeeks; count++) {
       const context = buildLatestPlan(store, memoryDir);
-      const week = selectEarliestWeek(context.plan.decisions, weekDays);
+      const rankedWeeks = rankCompressionWeeks(context.plan.decisions, context.feelings, weekDays);
+      const week = rankedWeeks[0];
       if (!week) break;
       const estimate = estimateWeekCharacters(week, context.feelings);
       const report = {
@@ -47,6 +48,13 @@ async function main() {
         keep: week.keep.length,
         coarse: week.coarse.length,
         routes: countBy(week.decisions, "route"),
+        rank: week.rank,
+        eligibleWeeks: rankedWeeks.length,
+        totalCharacters: week.totalCharacters,
+        coarseCharacters: week.coarseCharacters,
+        keepCharacters: week.keepCharacters,
+        anchorCharacters: week.anchorCharacters,
+        compressibleRatio: week.compressibleRatio,
         candidateTerms: context.plan.candidateTerms,
         allDailyDecisions: context.plan.summary,
         keepExamples: week.keep.slice(0, 5).map(decisionExample),
@@ -115,7 +123,8 @@ function print(result, json) {
   console.log(`当前可注入字符量：${result.currentChars}`);
   if (!result.reports.length) return console.log("没有需要 coarse 的 daily feelings，或尚未超过自动触发阈值。");
   for (const row of result.reports) {
-    console.log(`\n${row.from} ~ ${row.to}：候选 ${row.candidates}，keep ${row.keep}，coarse ${row.coarse}`);
+    console.log(`\n${row.from} ~ ${row.to}：候选周排名 ${row.rank}/${row.eligibleWeeks}，keep ${row.keep}，coarse ${row.coarse}`);
+    console.log(`  可压缩字符占比：${(row.compressibleRatio * 100).toFixed(1)}%（${row.coarseCharacters}/${row.totalCharacters}），锚点字符 ${row.anchorCharacters}`);
     console.log(`  摘要反筛后进入拟合的 term：${row.candidateTerms}`);
     console.log(`  路由：${Object.entries(row.routes).map(([key, count]) => `${key}=${count}`).join("；")}`);
     console.log(`  窗口字符：${row.windowCharacters.before} → 预计 ${row.windowCharacters.estimatedAfter}`);

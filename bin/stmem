@@ -19,8 +19,8 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem feature-evidence [--thread <id>]        回查 archive 与 feelings 的词频证据
   stmem compress [--thread <id>] [--before 日期]  dry-run 压缩 daily feelings
   stmem compress --thread <id> --apply          写入 coarse_summary 并切换为 coarse
-  stmem compact [--thread <id>]                 按最早一周生成生命周期压缩 dry-run
-  stmem compact --thread <id> --apply           原子压缩最早一周的 coarse 候选
+  stmem compact [--thread <id>]                 对低风险高收益周生成压缩 dry-run
+  stmem compact --thread <id> --apply           原子压缩排名第一周的 coarse 候选
   stmem lifecycle [--thread <id>] [--action 类型]  feeling 生命周期只读报告
   stmem term-timeline --thread <id> --terms <词列表>  archive 曲线与 feeling 小点
   stmem import --source <json|jsonl|sqlite>       预览导入映射（加 --apply 写入）

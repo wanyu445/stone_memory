@@ -1,22 +1,44 @@
 const DAY_MS = 86400000;
 
-function selectEarliestWeek(decisions, days = 7) {
-  const rows = [...(decisions || [])]
-    .filter(row => row.sourceDate)
-    .sort((a, b) => a.sourceDate.localeCompare(b.sourceDate) || a.feelingId.localeCompare(b.feelingId));
-  if (!rows.length) return null;
-  const firstCompressible = rows.find(row => row.action === "compress_coarse");
-  if (!firstCompressible) return null;
-  const from = firstCompressible.sourceDate;
-  const to = addDays(from, Math.max(1, days) - 1);
-  const selected = rows.filter(row => row.sourceDate >= from && row.sourceDate <= to);
-  return {
-    from,
-    to,
-    decisions: selected,
-    keep: selected.filter(row => row.action === "keep_daily"),
-    coarse: selected.filter(row => row.action === "compress_coarse"),
-  };
+function rankCompressionWeeks(decisions, feelings = [], days = 7, ratio = 0.45) {
+  const rows = [...(decisions || [])].filter(row => row.sourceDate);
+  const allDates = (feelings || []).map(row => row.source_date || row.sourceDate).filter(Boolean);
+  const anchorDate = [...allDates, ...rows.map(row => row.sourceDate)].sort()[0] || null;
+  if (!anchorDate) return [];
+  const weekSize = Math.max(1, days);
+  const groups = new Map();
+  for (const row of rows) {
+    const index = Math.max(0, Math.floor(daysBetween(anchorDate, row.sourceDate) / weekSize));
+    if (!groups.has(index)) groups.set(index, []);
+    groups.get(index).push(row);
+  }
+  return [...groups.entries()].map(([index, group]) => {
+    const from = addDays(anchorDate, index * weekSize);
+    const to = addDays(from, weekSize - 1);
+    const selected = group.sort((a, b) => a.sourceDate.localeCompare(b.sourceDate) || a.feelingId.localeCompare(b.feelingId));
+    const keep = selected.filter(row => row.action === "keep_daily");
+    const coarse = selected.filter(row => row.action === "compress_coarse");
+    const totalCharacters = selected.reduce((sum, row) => sum + String(row.content || "").length, 0);
+    const coarseCharacters = coarse.reduce((sum, row) => sum + String(row.content || "").length, 0);
+    const keepCharacters = totalCharacters - coarseCharacters;
+    const anchorCharacters = selected.filter(row => row.route === "anchor")
+      .reduce((sum, row) => sum + String(row.content || "").length, 0);
+    const week = { from, to, decisions: selected, keep, coarse };
+    const estimate = estimateWeekCharacters(week, feelings, ratio);
+    return {
+      ...week,
+      totalCharacters,
+      coarseCharacters,
+      keepCharacters,
+      anchorCharacters,
+      compressibleRatio: totalCharacters ? coarseCharacters / totalCharacters : 0,
+      estimatedSaving: estimate.estimatedSaving,
+    };
+  }).filter(week => week.coarse.length > 0)
+    .sort((left, right) => right.compressibleRatio - left.compressibleRatio
+      || right.estimatedSaving - left.estimatedSaving
+      || left.from.localeCompare(right.from))
+    .map((week, index) => ({ ...week, rank: index + 1 }));
 }
 
 function measureInjectedCharacters(feelings) {
@@ -48,4 +70,8 @@ function addDays(date, days) {
   return value.toISOString().slice(0, 10);
 }
 
-module.exports = { selectEarliestWeek, measureInjectedCharacters, estimateWeekCharacters, addDays };
+function daysBetween(from, to) {
+  return Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS);
+}
+
+module.exports = { rankCompressionWeeks, measureInjectedCharacters, estimateWeekCharacters, addDays, daysBetween };

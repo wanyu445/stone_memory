@@ -3,20 +3,44 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { selectEarliestWeek, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
+const { rankCompressionWeeks, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
 const { MemoryStore } = require("../src/storage/memory-store");
 
-test("earliest week starts at first compressible feeling and includes seven calendar days", () => {
-  const week = selectEarliestWeek([
-    { feelingId: "kept-old", sourceDate: "2026-06-01", action: "keep_daily" },
-    { feelingId: "first", sourceDate: "2026-06-10", action: "compress_coarse" },
-    { feelingId: "kept", sourceDate: "2026-06-12", action: "keep_daily" },
-    { feelingId: "later", sourceDate: "2026-06-17", action: "compress_coarse" },
+test("ranks stable seven-day buckets by compressible character ratio, saving, then age", () => {
+  const feelings = [
+    { id: "anchor", source_date: "2026-06-01", content: "x" },
+    { id: "a-coarse", source_date: "2026-06-02", content: "a".repeat(80) },
+    { id: "a-keep", source_date: "2026-06-03", content: "k".repeat(20) },
+    { id: "b-coarse", source_date: "2026-06-09", content: "b".repeat(90) },
+    { id: "b-keep", source_date: "2026-06-10", content: "k".repeat(10) },
+    { id: "c-coarse", source_date: "2026-06-16", content: "c".repeat(90) },
+    { id: "c-keep", source_date: "2026-06-17", content: "k".repeat(10) },
+  ];
+  const decisions = feelings.slice(1).map(row => ({
+    feelingId: row.id, sourceDate: row.source_date, content: row.content,
+    action: row.id.endsWith("keep") ? "keep_daily" : "compress_coarse",
+    route: row.id === "c-keep" ? "anchor" : "fact",
+  }));
+  const ranked = rankCompressionWeeks(decisions, feelings, 7, 0.5);
+  assert.deepEqual(ranked.map(row => row.from), ["2026-06-08", "2026-06-15", "2026-06-01"]);
+  assert.equal(ranked[0].compressibleRatio, 0.9);
+  assert.equal(ranked[0].estimatedSaving, 45);
+  assert.equal(ranked[1].anchorCharacters, 10);
+});
+
+test("week boundaries stay anchored to full history after an older feeling becomes coarse", () => {
+  const feelings = [
+    { id: "old", source_date: "2026-04-15", summary_mode: "coarse", content: "old" },
+    { id: "next", source_date: "2026-04-16", summary_mode: "daily", content: "next" },
+    { id: "later", source_date: "2026-04-22", summary_mode: "daily", content: "later" },
+  ];
+  const ranked = rankCompressionWeeks([
+    { feelingId: "next", sourceDate: "2026-04-16", content: "next", action: "compress_coarse" },
+    { feelingId: "later", sourceDate: "2026-04-22", content: "later", action: "compress_coarse" },
+  ], feelings);
+  assert.deepEqual(ranked.map(row => [row.from, row.to]), [
+    ["2026-04-15", "2026-04-21"], ["2026-04-22", "2026-04-28"],
   ]);
-  assert.equal(week.from, "2026-06-10");
-  assert.equal(week.to, "2026-06-16");
-  assert.deepEqual(week.decisions.map(row => row.feelingId), ["first", "kept"]);
-  assert.deepEqual(week.coarse.map(row => row.feelingId), ["first"]);
 });
 
 test("character measurement uses the currently injected representation", () => {

@@ -107,7 +107,7 @@ switch (cmd) {
 function ensureWatcher() {
   const { spawn } = require("child_process");
   const pidFile = path.join(os.homedir(), ".stone_memory", "watcher.pid");
-  const watcherScript = path.join(SCRIPTS, "watcher.js");
+  const watcherScript = path.join(SCRIPTS, "watcher-supervisor.js");
 
   if (!fs.existsSync(watcherScript)) return;
 

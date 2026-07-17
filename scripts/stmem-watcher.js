@@ -22,7 +22,8 @@ const OFF_FLAG = path.join(STONE, ".watcher-off");
 const ARCHIVE_OFF_FLAG = path.join(STONE, ".archive-off");
 const MINER_OFF_FLAG = path.join(STONE, ".miner-off");
 const PID_FILE = path.join(STONE, "watcher.pid");
-const WATCHER_SCRIPT = path.join(__dirname, "watcher.js");
+const WORKERS_FILE = path.join(STONE, "watcher-workers.json");
+const WATCHER_SCRIPT = path.join(__dirname, "watcher-supervisor.js");
 
 function getWatcherPid() {
   try { return parseInt(fs.readFileSync(PID_FILE, "utf8"), 10); } catch { return null; }
@@ -90,5 +91,13 @@ switch (subcmd) {
     lines.push(flagStatus(OFF_FLAG, "  总开关"));
     lines.push(flagStatus(ARCHIVE_OFF_FLAG, "  archive 同步"));
     lines.push(flagStatus(MINER_OFF_FLAG, "  自动挖掘"));
+    if (alive) {
+      try {
+        const state = JSON.parse(fs.readFileSync(WORKERS_FILE, "utf8"));
+        const workers = Object.entries(state.workers || {});
+        lines.push(`  线程 workers: ${workers.length}`);
+        for (const [threadId, worker] of workers) lines.push(`    ${threadId}: pid ${worker.pid}`);
+      } catch { lines.push("  线程 workers: 正在启动"); }
+    }
     console.log(lines.join("\n"));
 }

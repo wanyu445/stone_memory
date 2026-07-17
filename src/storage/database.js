@@ -135,12 +135,21 @@ function openDatabase(memoryDir) {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
-  db.exec(SCHEMA);
-  migrateColumns(db);
-  removeVersionTables(db);
-  db.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
-    .run(SCHEMA_VERSION, new Date().toISOString());
+  // 所有正式线程共享一个 SQLite；per-thread watcher 可并发做模型调用，
+  // 短写事务由 SQLite 串行。忙等待不应误计为 miner 语义失败。
+  db.pragma("busy_timeout = 30000");
+  let currentVersion = 0;
+  try { currentVersion = db.prepare("SELECT MAX(version) version FROM schema_migrations").get()?.version || 0; }
+  catch {}
+  // 多个 per-thread workers 共享数据库。正常连接不得重复争抢 schema DDL；
+  // 只有新库或版本升级时才执行建表、列迁移和旧表清理。
+  if (currentVersion < SCHEMA_VERSION) {
+    db.exec(SCHEMA);
+    migrateColumns(db);
+    removeVersionTables(db);
+    db.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+      .run(SCHEMA_VERSION, new Date().toISOString());
+  }
   return db;
 }
 

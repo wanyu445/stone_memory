@@ -187,7 +187,7 @@ async function main() {
 
 function startWatcher() {
   const { spawn } = require("child_process");
-  const watcherScript = path.join(__dirname, "watcher.js");
+  const watcherScript = path.join(__dirname, "watcher-supervisor.js");
   const pidFile = path.join(STONE, "watcher.pid");
 
   if (!fs.existsSync(watcherScript)) return;

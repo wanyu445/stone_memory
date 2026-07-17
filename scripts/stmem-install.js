@@ -45,7 +45,7 @@ function linkCLI() {
 }
 
 function startBackgroundWatcher() {
-  const watcherScript = path.join(PROJECT, "scripts", "watcher.js");
+  const watcherScript = path.join(PROJECT, "scripts", "watcher-supervisor.js");
   if (!fs.existsSync(watcherScript)) return false;
 
   if (IS_WIN) {

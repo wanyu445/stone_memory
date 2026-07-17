@@ -227,7 +227,7 @@ stmem term-timeline --thread <线程ID> --terms 外卖 --json
 stmem term-timeline --thread <线程ID> --terms 老公,论文,爱你
 ```
 
-输出只展示证据，不自动分类曲线，也不产生生命周期状态变化。JSON 中的 `timeline` 包含所选范围内的零值日期，方便前端直接绘制连续曲线；`baseline` 给出全时段日均、活跃日均和活跃日占比，`intersections` 给出两两及全词集合的同日、同消息和同 feeling 重合。
+输出只读，不产生生命周期状态变化。JSON 中的 `timeline` 包含所选范围内的零值日期，方便前端直接绘制连续曲线；`baseline` 给出全时段日均、活跃日均和活跃日占比，`intersections` 给出两两及全词集合的同日、同消息和同 feeling 重合。relation 词还会输出 `relation` 阶段报告，区分 forming、experimental、established、retired、revived，以及 continuous、episodic 等曲线形状；高亲和度成对角色会单独报告。
 
 ### 线程重建
 

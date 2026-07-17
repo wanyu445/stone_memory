@@ -204,7 +204,7 @@ stmem compress --thread <线程ID> --before 2026-06-01 --apply
 
 `--apply` 必须同时提供 `--before`、`--ids` 或 `--all`。应用后完整 `content` 不变，只写入完整时间前缀开头的 `coarse_summary`，并将 `summary_mode` 切换为 `coarse`。
 
-正式的生命周期压缩入口是周级 `compact`。它先用仍为 `daily` 的 feelings 反筛 relation/work terms，再将历史 coarse feeling 点作为完整曲线证据重算 relation/work/fact 路由。默认只展示最早连续 7 天；只有整周模型结果全部成功，才在一个事务中写入所有 coarse 候选：
+正式的生命周期压缩入口是周级 `compact`。它先用仍为 `daily` 的 feelings 反筛 relation/work terms，再将历史 coarse feeling 点作为完整曲线证据重算 relation/work/fact 路由。所有 feelings 按完整历史起点分成稳定的 7 天桶，再按可压缩字符占比、预计释放字符量和日期排序；默认展示排名第一的低风险高收益周。只有整周模型结果全部成功，才在一个事务中写入所有 coarse 候选：
 
 ```bash
 stmem compact --thread <线程ID>                         # dry-run，不调用模型
@@ -215,7 +215,7 @@ stmem compact --thread <线程ID> --auto --apply \
   --max-chars 70000 --stop-chars 60000                  # 超水位后逐周处理
 ```
 
-`compact` 每周写入后按实际注入文本重新测量容量；已是 coarse 的 feeling 不会再次调用模型。event/retain 锚点始终保持 daily。`--auto` 只有当前字符量高于 `--max-chars` 才启动，并在低于 `--stop-chars` 后停止。archive 词频仍供时间轴展示，但生命周期拟合只使用摘要点。
+排名只消费 planner 已经产生的 keep/coarse，不重新发明 importance 权重：先比较 `coarseCharacters / totalCharacters`，再比较预计节省量，完全相同时优先更早的周。`compact` 每周写入后按实际注入纯文本重新测量容量并重新规划、重新排名；已是 coarse 的 feeling 不会再次调用模型。event/retain 锚点始终保持 daily。`--auto` 只有当前字符量高于 `--max-chars` 才启动，并在低于 `--stop-chars` 后停止。archive 词频仍供时间轴展示，但生命周期拟合只使用摘要点。
 
 ### 生命周期 dry-run
 

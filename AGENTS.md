@@ -1,6 +1,6 @@
 # Stone Memory 当前状态与后续计划
 
-更新日期：2026-07-15。本文用于 compact 后继续工作，优先级高于根据旧对话重新推断架构。不要再次引入已经否定的设计。
+更新日期：2026-07-17。本文用于 compact 后继续工作，优先级高于根据旧对话重新推断架构。不要再次引入已经否定的设计。
 
 ## 用户的核心偏好
 
@@ -9,7 +9,7 @@
 - SQLite 是正式数据源；JSON/JSONL 只保留必要的运行时 archive/full 兼容用途。
 - 用户不要求“什么都记住”。没有进入清洗后 features 的普通内容（例如炸鸡）可以不参与本轮生命周期分析。
 - 人工查看和纠错是可选操作，不是自动流水线的审批关卡。用户修改 feature 或规则后重跑即可。
-- 保留两种人工锚点：retain 原文锚点用于 rebuild 保留真实对话；event 事件锚点用于标记长期关键事件，作为生命周期保护和主 Agent 巡检信号。事件锚点不再绑定旧月摘要功能。
+- 保留两种人工锚点：retain 原文锚点用于 rebuild 保留真实对话；event 事件锚点用于标记长期关键事件，作为生命周期保护和主 Agent 巡检信号。两种锚点对应的 feeling 都直接排除出自动压缩候选，无视 relation/work/fact 的阶段和 importance 规则；只有用户从 `retain-config.json` 移除锚点后，下一次完整重算才重新进入压缩范围，不写入永久豁免状态。事件锚点不再绑定旧月摘要功能。
 
 ## 已确认的数据职责
 
@@ -109,7 +109,7 @@ stmem feature-evidence --thread <id> --json
 
 仅为 broadness 服务的 `protected`、`hasPrivateTermContext` 字段和断言也已删除。完整 `npm test` 已恢复全绿。
 
-## 时间曲线与当前下一步（严格按顺序）
+## 时间曲线与已确认模型
 
 旧 `lifecycle` 的固定天数阈值只保留为早期实验，不得用于写库或作为正式压缩决策。正式方向是：每个 feature 概念回查 archive 形成逐日曲线，在曲线上叠加 feeling、importance 与锚点；category 提供不同的正常生命周期形状先验，而不是统一过期时间。
 
@@ -118,6 +118,33 @@ stmem feature-evidence --thread <id> --json
 多词联合时间轴与 relation 第一版阶段分类已经实现。relation 输出 forming / experimental / established / retired / revived，并区分 continuous 与 episodic；成对角色仅在同消息亲和度足够高时成立，避免把“老公+论文”等普通共现误判成角色配对。019 回归结果：老公、爱你为 established/continuous；少爷—女仆为 established/episodic_pair；神父—修女为 retired_pair。该结果只读，不得直接修改摘要状态。
 
 曲线、category、importance 和原文必须交叉验证。曲线负责定位候选时段，不能单独决定摘要去留；尤其不能因为“论文”字面出现在 importance 5 feeling 中就认定论文是核心主题。完成联合证据层并用“通宵+茶叶”“老公+外卖”“老公+论文+爱你”抽查前，不实现自动 hidden。
+
+relation 与 work 已完成第一版真实语料校准。relation 区分形成、稳定重复、阶段复现、复活和退出历史，默认保守。work 不再强行生成开题报告→小论文→毕设→中期检查→学术海报这类全局项目弧；只保留可验证的局部 signature node，周窗口内的事实合并交给 compressor。relation 的代表事件主要由 event anchor 明确保护，算法不根据单条 importance 擅自选“语义代表”。自动计划先看关系阶段，再按阶段段落统计每日 importance 5 数量，最高密度日优先 keep；不能按每个关系词各算峰值。importance 5 是日期密度信号，不再逐条无条件 keep。forming、experimental、revived 暂时保守保留，已 established/retired 的非峰值摘要可以 coarse，4–5 coarse 时仍由 compressor 保留核心感受。最终自动决策保持简单，只输出 `keep` 或 `coarse`，不引入 review 队列。
+
+relation 接管权随生命周期变化，不是永久高于其他 category。历史上形成过连续平台的词保留 established 身份；最近降为零星出现时标记为 `post_plateau`，不能误判成普通 episodic。forming、真正的 revival、关系阶段 importance 5 密度峰值与 event anchor 由 relation 接管；stable repeat、post-plateau 单次 callback 和 retired 普通回调把摘要所有权让给 work/eat/habit/body/sleep/fact。长间隔后单独出现一次不算 revival，至少形成一个重新聚集的小 episode 才夺回 relation 接管权。例如“老公叫我吃糖醋排骨”在平台后按饮食事实处理，而新的身份确认或关系信号集中复现仍由 relation 处理。
+
+work lifecycle 与 relation 一样只用 feeling 日期拟合，archive 词频不参与项目阶段判断。work feature term 必须先命中 feeling 才能进入模型；仅在 archive 出现的新任务不能被判断为 forming 或自动 keep。019 中“学术海报”目前没有任何 feeling，因此不得进入当前项目弧；开题报告/小论文/毕设和中期检查已有 feeling 证据。项目连接使用同 feature、同 feeling 等摘要级证据，不再用 archive 同消息或局部窗口单独建组。
+
+work 项目证据按条件信息密度筛选，不维护“普通词/特殊词”名单。单词可以很宽泛，但词对若在至少 2 条 feelings 中重复共同出现，并具有足够 overlap（当前 0.35）或 lift（当前 3），可以形成局部 signature node；例如单独的“系统、报告”都很散，二者组合只有在共同摘要显著收窄语境时才成立。高信息边不得再做 connected-component 传递闭包，否则真实局部边会把所有 work 串成超级项目。当前每组共同 feeling 证据形成独立 signature node，同一词可属于多个 node；node 之间只有以后验证出真实时间交接证据才允许串成项目弧。
+signature node 的时间轴只统计构成该签名的共同 feeling IDs，不能取成员词的全部 feelings；否则宽泛成员会把一个两天的技术报告节点虚假扩成数十天。单词未形成合格签名时可以保留为 singleton node，使用自身 feeling 时间轴。
+已验证“共享边界 feeling + 时间单向推进”仍不能可靠建立 node transition：019 的 290 个节点产生了 821 条嵌套假边，同一 feeling 只能证明多个签名同处一个事件，不能证明任务先后。因此当前不生成全局 work 项目弧或 transition；局部 signature node 用于压缩证据，具体周窗口内的工作事实合并由现有 compressor 根据完整摘要完成。
+relation 接管的 feeling 仍参与 work 时间轴和 signature 建模，但从 work compression plan 中排除，不受任何 work keep/coarse 规则影响。work compression plan 最终只让 event/retain 锚点强制 keep；其余 work feelings 全部允许 coarse。高信息节点首日、importance 5 密度峰值和实验性 transition bridge 仍作为可解释元数据提供给 compressor/前端，但不改变 action。不再逐条保护 importance 5，不因 term 为 forming 全保留，也不设置“最近两周 keep”，因为周级 compact 从最早日期逐步推进，本来不会处理最新区间。importance 4–5 coarse 仍保留项目转折和核心感受，完整 content 永久存在；hidden 后续另行设计。
+work term 现记录各 category 的 feature 支持数与 purity。高信息 signature 至少要包含一个 `workPurity >= 0.5` 的项目核心；低纯度跨库词仍参与 feeling 匹配和共同签名，但不能独立建节点。共同支持按不同日期数计算，同一天的重复 feelings 只算一个事件日。019 接入后合格 work links 从 324 降到 106，节点从 290 降到 251；purity 校准曾将非 relation work 建议收敛为 keep 3、coarse 42，随后按用户确认的激进 work 策略，这 3 条非锚点项目摘要也改为 coarse，节点证据仅用于压缩合并提示。
+purity 使保守 transition dry-run 从 821 条降至 34 条；再要求两端为多词节点、核心不完全相同、桥接日前后均有历史后降至 34 条，加入共享项目身份词及双方各有新核心后为 28 条。质量显著提高，但仍混有同一项目内部标签展开和方向不可靠的问题，因此 transition 继续只做实验，不进入正式 work plan。
+
+## Compact 后的下一步（严格按顺序）
+
+决策层已经完成；每日证据缓存、summary-first term 入口、relation/work/fact routing、锚点保护和 API/subagent compressor 均已有实现。下一阶段不要继续发明生命周期变量，直接实现周级 compact 执行器：
+
+1. 提供统一 planner：读取仍为 `daily` 的 feelings，基于最新完整证据重算 relation/work/fact 二元决策；relation-owned feeling 可参与 work 建模但不受 work 规则影响。
+2. 提供 `dry-run`，按最早周展示候选数、keep/coarse、预计/实际字符量，不写数据库。
+3. 手动 compact 与超过摘要文本内存阈值的自动 compact 共用同一执行器；从最早一周开始，只把 `compress_coarse` feelings 送入现有 API/subagent compressor。
+4. 一周全部成功后才原子写入 `coarse_summary`；任何一条失败都不写半周结果。event/retain 锚点永远跳过。
+5. 每周成功后按实际注入文本重新测量容量；仍高于停止水位才继续下一周。已经 coarse 的 feelings 不重复调用，仍为 daily 的 feelings 下次随最新曲线重算。
+6. 先在 019 做端到端 dry-run 和小批 apply 验证，再开放自动阈值触发。
+7. 本阶段不做前端、运行报告表或 `hidden`。完整 `content` 永久保留；hidden 后续单独研究。
+
+实现时不要把缓存覆盖范围误当成分析范围：已统计的历史日期可以复用，但所有尚未 coarse 的 feelings 都要放回最新完整时间轴解释。已经被处理的旧周无需重新调用 compressor，不代表它们之后的曲线证据被生命周期计算忽略。
 
 ## 旧生命周期实验（仅供历史参考）
 

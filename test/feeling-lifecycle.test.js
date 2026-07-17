@@ -27,15 +27,19 @@ test("lifecycle applies importance and time rules without touching unmatched fee
   assert.equal(rows[4].ageDays, 75);
 });
 
-test("event anchors protect a feeling while retain anchors remain visible evidence", () => {
-  const [row] = analyzeFeelingLifecycle({
+test("event and retain anchors both exclude feelings from automatic compression", () => {
+  const [eventRow] = analyzeFeelingLifecycle({
     referenceDate: "2026-07-15",
     feelingEvidence: [feeling("anchor", 2, "2026-05-01", "2026-05-02")],
-    eventAnchorIds: ["anchor"], retainAnchorIds: ["anchor"],
+    eventAnchorIds: ["anchor"],
   });
-  assert.equal(row.action, "event_protected");
-  assert.equal(row.eventAnchor, true);
-  assert.equal(row.retainAnchor, true);
+  assert.equal(eventRow.action, "event_protected");
+  const [retainRow] = analyzeFeelingLifecycle({
+    referenceDate: "2026-07-15",
+    feelingEvidence: [feeling("anchor", 2, "2026-05-01", "2026-05-02")],
+    retainAnchorIds: ["anchor"],
+  });
+  assert.equal(retainRow.action, "retain_protected");
 });
 
 test("summary counts actions and estimated coarse savings", () => {

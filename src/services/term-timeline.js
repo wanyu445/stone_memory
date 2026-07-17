@@ -1,6 +1,6 @@
 const { normalizeTerm } = require("./feature-phrase-extractor");
 
-function buildTermTimeline({ requestedTerms, extractedTerms, feelings, messages, anchors = {}, from = null, to = null }) {
+function buildTermTimeline({ requestedTerms, extractedTerms, feelings, messages, dailyStats = null, anchors = {}, from = null, to = null }) {
   const eventAnchors = new Set(Object.keys(anchors.eventAnchors || {}));
   const retainAnchors = new Set(Object.keys(anchors.retain || {}));
   const allDates = messages.map(row => row.date).filter(Boolean).sort();
@@ -11,16 +11,27 @@ function buildTermTimeline({ requestedTerms, extractedTerms, feelings, messages,
     const sources = (extractedTerms || []).filter(row => row.normalizedTerm === normalizedTerm);
     const categories = [...new Set(sources.map(row => row.category).filter(Boolean))].sort();
     const featureIds = [...new Set(sources.flatMap(row => row.featureIds || []))];
+    const categorySupport = Object.fromEntries(categories.map(category => [category,
+      new Set(sources.filter(row => row.category === category).flatMap(row => row.featureIds || [])).size]));
     const daily = new Map();
     for (const date of enumerateDates(rangeStart, rangeEnd)) daily.set(date, { date, messageCount: 0, occurrenceCount: 0 });
-    for (const message of messages || []) {
-      if (!message.date || (rangeStart && message.date < rangeStart) || (rangeEnd && message.date > rangeEnd)) continue;
-      const count = countOccurrences(normalizeTerm(message.text), normalizedTerm);
-      if (!count) continue;
-      if (!daily.has(message.date)) daily.set(message.date, { date: message.date, messageCount: 0, occurrenceCount: 0 });
-      const point = daily.get(message.date);
-      point.messageCount++;
-      point.occurrenceCount += count;
+    const cached = dailyStats && dailyStats.filter(row => row.normalizedTerm === normalizedTerm);
+    if (cached) {
+      for (const row of cached) {
+        const date = row.sourceDate || row.date;
+        if (!date || (rangeStart && date < rangeStart) || (rangeEnd && date > rangeEnd)) continue;
+        daily.set(date, { date, messageCount: row.messageCount || 0, occurrenceCount: row.occurrenceCount || 0 });
+      }
+    } else {
+      for (const message of messages || []) {
+        if (!message.date || (rangeStart && message.date < rangeStart) || (rangeEnd && message.date > rangeEnd)) continue;
+        const count = countOccurrences(normalizeTerm(message.text), normalizedTerm);
+        if (!count) continue;
+        if (!daily.has(message.date)) daily.set(message.date, { date: message.date, messageCount: 0, occurrenceCount: 0 });
+        const point = daily.get(message.date);
+        point.messageCount++;
+        point.occurrenceCount += count;
+      }
     }
     const feelingPoints = (feelings || []).filter(feeling => {
       const date = feeling.source_date || feeling.sourceDate;
@@ -45,6 +56,9 @@ function buildTermTimeline({ requestedTerms, extractedTerms, feelings, messages,
       normalizedTerm,
       categories,
       featureIds,
+      categorySupport,
+      categoryPurity: Object.fromEntries(categories.map(category => [category,
+        featureIds.length ? (categorySupport[category] || 0) / featureIds.length : 0])),
       from: rangeStart,
       to: rangeEnd,
       messageCount: active.reduce((sum, row) => sum + row.messageCount, 0),
@@ -83,6 +97,7 @@ function buildCooccurrenceSignatures({ termTimelines, messages, feelings, anchor
     const sameMessages = (messages || []).filter(message => inRange(message.date, rangeStart, rangeEnd))
       .filter(message => containsAll(message.text, normalizedTerms))
       .map(message => ({ date: message.date, timestamp: message.timestamp || null, text: message.text }));
+    const sameWindows = localCooccurrenceWindows(messages, normalizedTerms, rangeStart, rangeEnd);
     const sameFeelings = (feelings || []).filter(feeling => inRange(feeling.source_date || feeling.sourceDate, rangeStart, rangeEnd))
       .filter(feeling => containsAll(feeling.content, normalizedTerms))
       .map(feeling => ({
@@ -96,8 +111,27 @@ function buildCooccurrenceSignatures({ termTimelines, messages, feelings, anchor
         terms: rows.map(row => ({ term: row.term, categories: row.categories })),
         content: feeling.content,
       }));
-    return { terms: labels, normalizedTerms, sameDays, sameMessages, sameFeelings };
+    return { terms: labels, normalizedTerms, sameDays, sameMessages, sameWindows, sameFeelings };
   });
+}
+
+function localCooccurrenceWindows(messages, normalizedTerms, from, to, windowMs = 30 * 60 * 1000) {
+  const rows = (messages || []).filter(message => inRange(message.date, from, to) && Number.isFinite(Date.parse(message.timestamp)))
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  const windows = [];
+  for (let left = 0; left < rows.length; left++) {
+    for (let right = left + 1; right < rows.length; right++) {
+      const gapMs = Date.parse(rows[right].timestamp) - Date.parse(rows[left].timestamp);
+      if (gapMs > windowMs) break;
+      if (!containsAll(`${rows[left].text}\n${rows[right].text}`, normalizedTerms)) continue;
+      windows.push({
+        fromTimestamp: rows[left].timestamp, toTimestamp: rows[right].timestamp, gapMinutes: Math.round(gapMs / 60000),
+        texts: [rows[left].text, rows[right].text],
+      });
+      break;
+    }
+  }
+  return windows;
 }
 
 function deduplicateTerms(rows) {
@@ -148,4 +182,4 @@ function enumerateDates(from, to) {
   return dates;
 }
 
-module.exports = { buildTermTimeline, buildCooccurrenceSignatures, countOccurrences, enumerateDates };
+module.exports = { buildTermTimeline, buildCooccurrenceSignatures, localCooccurrenceWindows, countOccurrences, enumerateDates };

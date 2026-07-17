@@ -132,17 +132,27 @@ relation 接管的 feeling 仍参与 work 时间轴和 signature 建模，但从
 work term 现记录各 category 的 feature 支持数与 purity。高信息 signature 至少要包含一个 `workPurity >= 0.5` 的项目核心；低纯度跨库词仍参与 feeling 匹配和共同签名，但不能独立建节点。共同支持按不同日期数计算，同一天的重复 feelings 只算一个事件日。019 接入后合格 work links 从 324 降到 106，节点从 290 降到 251；purity 校准曾将非 relation work 建议收敛为 keep 3、coarse 42，随后按用户确认的激进 work 策略，这 3 条非锚点项目摘要也改为 coarse，节点证据仅用于压缩合并提示。
 purity 使保守 transition dry-run 从 821 条降至 34 条；再要求两端为多词节点、核心不完全相同、桥接日前后均有历史后降至 34 条，加入共享项目身份词及双方各有新核心后为 28 条。质量显著提高，但仍混有同一项目内部标签展开和方向不可靠的问题，因此 transition 继续只做实验，不进入正式 work plan。
 
-## Compact 后的下一步（严格按顺序）
+## 周级 Compact 当前状态与下一步
 
-决策层已经完成；每日证据缓存、summary-first term 入口、relation/work/fact routing、锚点保护和 API/subagent compressor 均已有实现。下一阶段不要继续发明生命周期变量，直接实现周级 compact 执行器：
+周级执行器已经实现为 `stmem compact`：
 
-1. 提供统一 planner：读取仍为 `daily` 的 feelings，基于最新完整证据重算 relation/work/fact 二元决策；relation-owned feeling 可参与 work 建模但不受 work 规则影响。
-2. 提供 `dry-run`，按最早周展示候选数、keep/coarse、预计/实际字符量，不写数据库。
-3. 手动 compact 与超过摘要文本内存阈值的自动 compact 共用同一执行器；从最早一周开始，只把 `compress_coarse` feelings 送入现有 API/subagent compressor。
-4. 一周全部成功后才原子写入 `coarse_summary`；任何一条失败都不写半周结果。event/retain 锚点永远跳过。
-5. 每周成功后按实际注入文本重新测量容量；仍高于停止水位才继续下一周。已经 coarse 的 feelings 不重复调用，仍为 daily 的 feelings 下次随最新曲线重算。
-6. 先在 019 做端到端 dry-run 和小批 apply 验证，再开放自动阈值触发。
-7. 本阶段不做前端、运行报告表或 `hidden`。完整 `content` 永久保留；hidden 后续单独研究。
+- 统一 planner 只用仍为 `daily` 的 feelings 反筛 relation/work terms；普通 fact 不建立生命周期。历史 coarse feelings 仍作为完整摘要曲线证据参与重算，但不会再次送模型。
+- relation 资格判断只接收 relation category 的时间轴，避免 eat/body/misc 高频词被误拟合成关系；同一 term 的全部 category support/purity 仍保留。
+- relation/work 的共同签名由 feeling 倒排索引构建，不再为所有词对重复扫描 archive。archive 逐日曲线仅用于证据展示和前端。
+- 默认从最早 `compress_coarse` feeling 起取连续 7 天；更早的永久 keep/anchor 不会让执行器每次卡在同一旧周。
+- dry-run 展示候选 term 数、keep/coarse、路由、样本和预计字符量，不调用模型。
+- apply 只把 coarse 候选分批送 API/subagent；全部返回并通过日期时间校验后，使用 `applyCoarseWeek` 单事务写入。任何缺失、重复、状态竞争或模型失败都会整周不写。
+- `--auto --apply --max-chars N --stop-chars M` 与手动模式共用执行器；每周成功后按实际 daily/coarse 注入文本重测，低于停止水位即停止。
+- API 请求每次最多 180 秒，保留原有三次重试，防止后台 compact 无限挂起。
+
+019 已完成真实验证：完整 dry-run 将 1306 个跨库去重词收敛为 535 个命中 daily 且属于 relation/work 的建模 term；590 条 daily decisions 为 keep 142、coarse 448。最早 2026-04-15～04-21 一周为 keep 18、coarse 61，其中 6 条锚点受保护。随后以 `--week-days 1` 对 2026-04-15 做小批 apply：9 条中 keep 3、coarse 6，6 条全部原子写入成功，注入字符量 67196 → 66773，完整 content 均保留，日期时间前缀和 importance 4–5 核心感受抽查通过。
+
+下一步不要继续增加生命周期变量：
+
+1. 观察下一周 dry-run 在已存在 coarse 历史点后的重算结果，确认不会重复调用 2026-04-15 的 6 条。
+2. 给 watcher/配置增加显式的容量阈值开关；没有用户配置时绝不自动调用模型。
+3. 再连续压一到两个小窗口，记录真实压缩率和失败恢复行为后，才启用常驻自动 compact。
+4. 本阶段仍不做前端、运行报告表或 `hidden`。完整 `content` 永久保留；hidden 后续单独研究。
 
 实现时不要把缓存覆盖范围误当成分析范围：已统计的历史日期可以复用，但所有尚未 coarse 的 feelings 都要放回最新完整时间轴解释。已经被处理的旧周无需重新调用 compressor，不代表它们之后的曲线证据被生命周期计算忽略。
 

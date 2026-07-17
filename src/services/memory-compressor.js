@@ -66,22 +66,31 @@ class MemoryCompressor {
   }
 
   async _compressViaApi(prompt) {
-    const { apiKey, baseUrl = "https://api.deepseek.com", model: rawModel = "deepseek-chat" } = this.apiConfig;
+    const { apiKey, baseUrl = "https://api.deepseek.com", model: rawModel = "deepseek-chat",
+      requestTimeoutMs = 180000 } = this.apiConfig;
     const model = rawModel.replace(/\[\d+[km]\]/i, "");
     const system = fs.readFileSync(OPS_FILE, "utf8");
     let lastError;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model,
-            messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
-            temperature: 0.2,
-            max_tokens: Math.max(1000, feelingsTokenBudget(prompt)),
-          }),
-        });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+        let response;
+        try {
+          response = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify({
+              model,
+              messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+              temperature: 0.2,
+              max_tokens: Math.max(1000, feelingsTokenBudget(prompt)),
+            }),
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
         if (!response.ok) {
           const detail = await response.text().catch(() => "");
           throw new Error(`API ${response.status}: ${detail.slice(0, 200)}`);

@@ -5,6 +5,7 @@ const { buildRelationCompressionPlan } = require("./relation-compression-plan");
 const { buildWorkLifecycles } = require("./work-lifecycle");
 const { buildWorkCompressionPlan } = require("./work-compression-plan");
 const { buildCompressionRouting, summarizeCompressionRouting } = require("./compression-routing");
+const { buildCategoryProfile, buildSecondaryCorePlan } = require("./category-profile");
 
 function buildCompressionPlan({ features = [], feelings = [], messages = [], dailyStats = null, anchors = {} }) {
   const dailyFeelings = feelings.filter(row => (row.summary_mode || row.summaryMode || "daily") === "daily");
@@ -34,10 +35,12 @@ function buildCompressionPlan({ features = [], feelings = [], messages = [], dai
     relationFeelingIds: relation.compressionPlan.filter(row => row.takeover).map(row => row.feelingId),
     anchors,
   });
+  const categoryProfile = buildCategoryProfile({ features, feelings });
+  const secondaryCorePlan = buildSecondaryCorePlan(categoryProfile, dailyFeelings);
   const decisions = buildCompressionRouting({
     feelings: dailyFeelings,
     relationPlan: relation.compressionPlan,
-    workPlan: work.compressionPlan,
+    secondaryCorePlan,
     anchors,
   });
   return {
@@ -48,6 +51,9 @@ function buildCompressionPlan({ features = [], feelings = [], messages = [], dai
     termTimelines,
     relation,
     work,
+    categoryProfile: { primaryCategory: categoryProfile.primaryCategory,
+      secondaryCategory: categoryProfile.secondaryCategory, categories: categoryProfile.categories },
+    secondaryCorePlan,
   };
 }
 

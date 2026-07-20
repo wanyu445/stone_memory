@@ -7,15 +7,13 @@ const { buildFeelingIntersections } = require("./compression-planner");
 
 function buildHiddenPlan({ features = [], feelings = [], messages = [], anchors = {}, afterDays = 90 }) {
   const profile = buildCategoryProfile({ features, feelings });
-  const relationTerms = new Set(extractFeatureTerms(features).filter(row => row.category === "relation")
-    .map(row => row.normalizedTerm));
   const eventAnchors = new Set(Object.keys(anchors.eventAnchors || {}));
   const retainAnchors = new Set(Object.keys(anchors.retain || {}));
   const userMessages = (messages || []).filter(row => (row.role || row.type) === "user");
   const referenceDate = userMessages.map(messageDate).filter(Boolean).sort().at(-1) || null;
   const normalizedMessages = userMessages.map(row => ({ date: messageDate(row), text: normalizeTerm(row.text) }));
   const relationTakeover = buildRelationTakeover({ features, feelings, messages: userMessages, anchors });
-  const secondaryDisplacement = buildSecondaryDisplacement({ feelings, profile, normalizedMessages, ignoredTerms: relationTerms });
+  const secondaryDisplacement = buildSecondaryDisplacement({ feelings, profile, normalizedMessages });
   const decisions = [];
 
   for (const feeling of feelings || []) {
@@ -43,10 +41,9 @@ function buildHiddenPlan({ features = [], feelings = [], messages = [], anchors 
       decisions.push({ ...base, action: "keep_coarse", reason: "第一版只自动隐藏 importance 1–3" });
       continue;
     }
-    const storedTerms = parseTerms(feeling.coarse_terms ?? feeling.coarseTerms);
-    const coreTerms = filterEvidenceTerms(storedTerms, relationTerms);
+    const coreTerms = parseTerms(feeling.coarse_terms ?? feeling.coarseTerms);
     if (!coreTerms.length) {
-      decisions.push({ ...base, coreTerms: storedTerms, action: "keep_coarse", reason: "没有 relation 身份词之外的事实核心词证据" });
+      decisions.push({ ...base, action: "keep_coarse", reason: "没有 compressor 核心词证据" });
       continue;
     }
     const evidence = coreTerms.map(term => {
@@ -94,14 +91,14 @@ function buildRelationTakeover({ features, feelings, messages, anchors }) {
     .map(row => [row.feelingId, row]));
 }
 
-function buildSecondaryDisplacement({ feelings, profile, normalizedMessages, ignoredTerms = new Set() }) {
+function buildSecondaryDisplacement({ feelings, profile, normalizedMessages }) {
   const result = new Map();
   const category = profile.secondaryCategory;
   if (!category) return result;
   const rows = (feelings || []).filter(row => (row.summary_mode || row.summaryMode) === "coarse"
     && profile.matchesByFeeling.get(row.id)?.includes(category))
     .map(row => ({ row, date: row.source_date || row.sourceDate,
-      terms: filterEvidenceTerms(parseTerms(row.coarse_terms ?? row.coarseTerms), ignoredTerms) }))
+      terms: parseTerms(row.coarse_terms ?? row.coarseTerms) }))
     .filter(item => item.date && item.terms.length)
     .sort((left, right) => left.date.localeCompare(right.date) || left.row.id.localeCompare(right.row.id));
   const stats = new Map();
@@ -136,10 +133,6 @@ function buildSecondaryDisplacement({ feelings, profile, normalizedMessages, ign
   return result;
 }
 
-function filterEvidenceTerms(terms, ignoredNormalizedTerms) {
-  return (terms || []).filter(term => !ignoredNormalizedTerms.has(normalizeTerm(term)));
-}
-
 function activeMessageDays(messages, terms, from) {
   const normalizedTerms = terms.map(normalizeTerm).filter(term => term.length >= 2);
   return new Set((messages || []).filter(row => row.date >= from
@@ -163,4 +156,4 @@ function daysBetween(from, to) {
 }
 
 module.exports = { buildHiddenPlan, buildRelationTakeover, buildSecondaryDisplacement,
-  filterEvidenceTerms, parseTerms, daysBetween, activeMessageDays };
+  parseTerms, daysBetween, activeMessageDays };

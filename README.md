@@ -271,6 +271,18 @@ stmem watcher miner off     # 关掉自动挖掘
 stmem watcher miner on      # 打开自动挖掘
 ```
 
+自动压缩默认关闭。需要时在对应线程配置中显式加入纯摘要文本水位；worker 启动及新一天挖掘成功后检查一次，超过 `maxChars` 才调用现有周级 compact，并逐周压到 `stopChars` 以下：
+
+```json
+"autoCompact": {
+  "enabled": true,
+  "maxChars": 70000,
+  "stopChars": 60000
+}
+```
+
+容量只计算实际注入的 feelings 文本：daily 使用 `content`，coarse 使用 `coarse_summary`，hidden 计 0；不计算 features、archive、JSON 和元数据。配置缺失、关闭或水位非法时不会调用模型。
+
 ## 配置
 
 ### stmem.json

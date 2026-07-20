@@ -22,6 +22,7 @@ const { execFile, execSync } = require("child_process");
 const { loadConfig, getCfg, getThreadDir, listThreadIds } = require("../src/config");
 const { listJsonlRecursive } = require("../src/lib/archive-paths");
 const { shouldAttempt } = require("../src/services/mining-state");
+const { resolveAutoCompactConfig } = require("../src/services/auto-compact-config");
 const { ingestThreadFile: ingestSharedThreadFile } = require("../src/services/thread-ingest");
 const { MemoryStore } = require("../src/storage/memory-store");
 const LOG_DIR = path.join(os.homedir(), ".stone_memory", "logs");
@@ -117,6 +118,34 @@ async function runMining(tid, dateStr) {
     log(`[${tid}] 挖掘 ${dateStr} 失败: ${err.message}`);
     return false;
   }
+}
+
+function runAutoCompact(tid) {
+  const config = resolveAutoCompactConfig(loadConfig()[tid]);
+  if (config.error) {
+    log(`[${tid}] 自动 compact 未启用：${config.error}`);
+    return Promise.resolve(false);
+  }
+  if (!config.enabled) return Promise.resolve(false);
+
+  const scriptPath = path.join(__dirname, "stmem-compact.js");
+  const compactArgs = [scriptPath, "--thread", tid, "--auto", "--apply",
+    "--max-chars", String(config.maxChars), "--stop-chars", String(config.stopChars)];
+  log(`[${tid}] 检查自动 compact：触发 ${config.maxChars}，停止 ${config.stopChars}`);
+  return new Promise(resolve => {
+    execFile(process.execPath, compactArgs, {
+      encoding: "utf8", cwd: path.dirname(__dirname), windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        log(`[${tid}] 自动 compact 失败: ${(stderr || err.message).trim().slice(0, 500)}`);
+        resolve(false);
+        return;
+      }
+      const summary = (stdout || "").trim().split("\n").filter(Boolean).slice(-2).join(" | ");
+      log(`[${tid}] 自动 compact 完成${summary ? `: ${summary}` : ""}`);
+      resolve(true);
+    });
+  });
 }
 
 function detectThreadFormat(filePath) {
@@ -241,7 +270,7 @@ async function checkAndMine(tid) {
 
   await checkImports(tid);
   const archiveDates = scanArchiveDates(tid);
-  if (!archiveDates.length) return;
+  if (!archiveDates.length) return false;
   const miningState = loadMiningState(tid);
   const bjToday = beijingToday();
 
@@ -249,12 +278,15 @@ async function checkAndMine(tid) {
 
   const pending = archiveDates.filter(d => d < bjToday && shouldAttempt(miningState, d, readArchiveDay(tid, d)));
 
+  let minedAny = false;
   if (pending.length > 0 && !minerOff) {
     log(`[${tid}] 发现 ${pending.length} 天待挖掘: ${pending.join(", ")}`);
     for (const dateStr of pending) {
-      await runMining(tid, dateStr);
+      if (await runMining(tid, dateStr)) minedAny = true;
     }
   }
+
+  return minedAny;
 
 }
 
@@ -304,6 +336,7 @@ async function main() {
   log(`归档模式: 文件变化实时同步；兜底巡检: ${intervalSec}s`);
 
   const fileWatchers = once ? [] : threadIds.map(watchThreadFile).filter(Boolean);
+  const compactChecked = new Set();
 
   while (true) {
     // 暂停标志检查
@@ -315,7 +348,11 @@ async function main() {
       try {
         // 启动时同步一次，之后这里只承担低频漏事件兜底。
         await flushSync(tid);
-        await checkAndMine(tid);
+        const minedAny = await checkAndMine(tid);
+        if (!compactChecked.has(tid) || minedAny) {
+          compactChecked.add(tid);
+          await runAutoCompact(tid);
+        }
       } catch (err) {
         log(`[${tid}] 轮询出错: ${err.message}`);
       }

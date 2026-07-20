@@ -43,9 +43,20 @@ function validateCompressionResult(feelings, raw) {
     const expectedPrefix = temporalPrefix(original?.content);
     if (!expectedPrefix) throw new Error(`原 feeling 缺少完整日期时间前缀: ${id}`);
     if (!coarseSummary.startsWith(expectedPrefix)) throw new Error(`压缩结果没有原样保留日期时间前缀: ${id}`);
+    const coreTerms = validateCoreTerms(row?.coreTerms, id);
     seen.add(id);
-    return { id, coarseSummary };
+    return { id, coarseSummary, coreTerms };
   });
+}
+
+function validateCoreTerms(raw, id) {
+  const generic = new Set(["事情", "感觉", "感受", "聊天", "喜欢", "觉得", "以后", "重要", "状态", "时间", "内容", "话题"]);
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 3) throw new Error(`压缩结果核心词数量无效: ${id}`);
+  const terms = [...new Set(raw.map(term => String(term || "").trim()).filter(Boolean))];
+  if (terms.length < 1 || terms.length > 3 || terms.some(term => term.length < 2 || term.length > 24 || generic.has(term))) {
+    throw new Error(`压缩结果核心词无效: ${id}`);
+  }
+  return terms;
 }
 
 class MemoryCompressor {
@@ -115,4 +126,4 @@ function feelingsTokenBudget(prompt) {
   return Math.min(8000, Math.max(1000, Math.ceil(prompt.length / 2)));
 }
 
-module.exports = { MemoryCompressor, buildCompressionPrompt, validateCompressionResult, compressionRows, temporalPrefix };
+module.exports = { MemoryCompressor, buildCompressionPrompt, validateCompressionResult, validateCoreTerms, compressionRows, temporalPrefix };

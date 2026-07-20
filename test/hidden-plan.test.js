@@ -40,6 +40,20 @@ test("a relation word does not block hidden after relation yields a low-importan
   assert.equal(plan.decisions[0].action, "hide");
 });
 
+test("stable relation identity terms are ignored as dormancy evidence for an ordinary fact", () => {
+  const row = feeling({ content: "1月1日，晚上九点。她拿 Grok 和老公比较。",
+    coarse_summary: "1月1日，晚上九点。她拿 Grok 和老公比较。", coarse_terms: '["Grok","老公"]' });
+  const plan = buildHiddenPlan({
+    features: [{ id: "r", category: "relation", content: "她称 AI 为老公", importance: 5 }],
+    feelings: [row], messages: [
+      { type: "user", sourceDate: "2026-01-01", text: "Grok 和老公不一样" },
+      { type: "user", sourceDate: "2026-05-01", text: "老公今天在吗" },
+    ], afterDays: 90,
+  });
+  assert.equal(plan.decisions[0].action, "hide");
+  assert.deepEqual(plan.decisions[0].evidence.map(item => item.term), ["Grok"]);
+});
+
 test("never auto-hides anchors, relation, high importance, or legacy coarse without terms", () => {
   const rows = [
     feeling({ id: "anchor" }),

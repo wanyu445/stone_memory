@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { rankCompressionWeeks, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
+const { rankCompressionWeeks, buildCompressionWindow, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
 const { MemoryStore } = require("../src/storage/memory-store");
 
 test("ranks stable seven-day buckets by compressible character ratio, saving, then age", () => {
@@ -41,6 +41,20 @@ test("week boundaries stay anchored to full history after an older feeling becom
   assert.deepEqual(ranked.map(row => [row.from, row.to]), [
     ["2026-04-15", "2026-04-21"], ["2026-04-22", "2026-04-28"],
   ]);
+});
+
+test("builds an exact user-selected compression window independent of ranked bucket boundaries", () => {
+  const feelings = [
+    { id: "before", source_date: "2026-06-30", content: "before" },
+    { id: "a", source_date: "2026-07-01", content: "aaaa" },
+    { id: "b", source_date: "2026-07-03", content: "bbbb" },
+    { id: "after", source_date: "2026-07-04", content: "after" },
+  ];
+  const decisions = feelings.map(row => ({ feelingId: row.id, sourceDate: row.source_date,
+    content: row.content, action: "compress_coarse", route: "fact" }));
+  const window = buildCompressionWindow(decisions, feelings, "2026-07-01", "2026-07-03");
+  assert.deepEqual(window.decisions.map(row => row.feelingId), ["a", "b"]);
+  assert.equal(window.coarseCharacters, 8);
 });
 
 test("character measurement uses the currently injected representation", () => {

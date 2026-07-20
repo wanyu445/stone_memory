@@ -41,6 +41,26 @@ function rankCompressionWeeks(decisions, feelings = [], days = 7, ratio = 0.45) 
     .map((week, index) => ({ ...week, rank: index + 1 }));
 }
 
+function buildCompressionWindow(decisions, feelings = [], from, to, ratio = 0.45) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || "") || !/^\d{4}-\d{2}-\d{2}$/.test(to || "") || to < from) {
+    throw new Error("精确压缩窗口需要合法的 --from/--to，且 to 不能早于 from");
+  }
+  const selected = (decisions || []).filter(row => row.sourceDate >= from && row.sourceDate <= to)
+    .sort((a, b) => a.sourceDate.localeCompare(b.sourceDate) || a.feelingId.localeCompare(b.feelingId));
+  const keep = selected.filter(row => row.action === "keep_daily");
+  const coarse = selected.filter(row => row.action === "compress_coarse");
+  const totalCharacters = selected.reduce((sum, row) => sum + String(row.content || "").length, 0);
+  const coarseCharacters = coarse.reduce((sum, row) => sum + String(row.content || "").length, 0);
+  const week = { from, to, decisions: selected, keep, coarse };
+  const estimate = estimateWeekCharacters(week, feelings, ratio);
+  return { ...week, totalCharacters, coarseCharacters,
+    keepCharacters: totalCharacters - coarseCharacters,
+    anchorCharacters: selected.filter(row => row.route === "anchor")
+      .reduce((sum, row) => sum + String(row.content || "").length, 0),
+    compressibleRatio: totalCharacters ? coarseCharacters / totalCharacters : 0,
+    estimatedSaving: estimate.estimatedSaving, rank: 1 };
+}
+
 function measureInjectedCharacters(feelings) {
   return (feelings || []).reduce((total, row) => {
     const mode = row.summary_mode || row.summaryMode || "daily";
@@ -77,4 +97,4 @@ function daysBetween(from, to) {
   return Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS);
 }
 
-module.exports = { rankCompressionWeeks, measureInjectedCharacters, estimateWeekCharacters, addDays, daysBetween };
+module.exports = { rankCompressionWeeks, buildCompressionWindow, measureInjectedCharacters, estimateWeekCharacters, addDays, daysBetween };

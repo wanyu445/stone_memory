@@ -210,6 +210,7 @@ stmem compress --thread <线程ID> --before 2026-06-01 --apply
 stmem compact --thread <线程ID>                         # dry-run，不调用模型
 stmem compact --thread <线程ID> --week-days 1           # 小批 dry-run
 stmem compact --thread <线程ID> --apply --api            # 原子处理最早一周
+stmem compact --thread <线程ID> --from 2026-07-01 --to 2026-07-03 --apply --api  # 精确窗口
 stmem compact --thread <线程ID> --apply --weeks 2        # 最多依次处理两周
 stmem compact --thread <线程ID> --auto --apply \
   --max-chars 70000 --stop-chars 60000                  # 超水位后逐周处理

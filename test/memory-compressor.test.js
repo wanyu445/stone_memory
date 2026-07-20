@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const { buildCompressionPrompt, validateCompressionResult, temporalPrefix } = require("../src/services/memory-compressor");
 const { MemoryStore } = require("../src/storage/memory-store");
+const { MemoryCompressor } = require("../src/services/memory-compressor");
 
 test("compression prompt carries ids, content, dates, and historical importance", () => {
   const prompt = buildCompressionPrompt([{ id: "f1", source_date: "2026-06-01", importance: 4,
@@ -66,4 +67,18 @@ test("applying compression preserves full content and switches injection to coar
   assert.equal(row.coarse_summary, "6月1日，晚上九点。她作出长期承诺，我很安心。");
   assert.equal(row.summary_mode, "coarse");
   assert.equal(row.coarse_terms, '["长期承诺"]');
+});
+
+test("compressor retries a whole batch when model output fails core term validation", async () => {
+  const compressor = new MemoryCompressor({ threadId: "thread" });
+  let attempts = 0;
+  compressor._compressViaSubagent = () => {
+    attempts++;
+    return attempts === 1
+      ? [{ id: "f1", coarseSummary: "6月1日，晚上九点。她想看小王子。", coreTerms: [] }]
+      : [{ id: "f1", coarseSummary: "6月1日，晚上九点。她想看小王子。", coreTerms: ["小王子"] }];
+  };
+  const result = await compressor.compress([{ id: "f1", content: "6月1日，晚上九点。她说想看《小王子》。" }]);
+  assert.equal(attempts, 2);
+  assert.deepEqual(result[0].coreTerms, ["小王子"]);
 });

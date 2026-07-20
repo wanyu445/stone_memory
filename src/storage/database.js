@@ -3,7 +3,7 @@ const path = require("path");
 const Database = require("better-sqlite3");
 const { resolveDatabasePath } = require("./database-location");
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS feelings (
   content TEXT NOT NULL,
   summary_mode TEXT NOT NULL DEFAULT 'daily' CHECK(summary_mode IN ('daily','coarse','hidden')),
   coarse_summary TEXT,
+  coarse_terms TEXT,
   importance INTEGER NOT NULL CHECK(importance BETWEEN 1 AND 5),
   source TEXT NOT NULL CHECK(source IN ('auto','remine','targeted','manual','import')),
   source_thread TEXT,
@@ -161,6 +162,7 @@ function migrateColumns(db) {
   const feelingColumns = new Set(db.pragma("table_info(feelings)").map(column => column.name));
   if (!feelingColumns.has("summary_mode")) db.exec("ALTER TABLE feelings ADD COLUMN summary_mode TEXT NOT NULL DEFAULT 'daily' CHECK(summary_mode IN ('daily','coarse','hidden'))");
   if (!feelingColumns.has("coarse_summary")) db.exec("ALTER TABLE feelings ADD COLUMN coarse_summary TEXT");
+  if (!feelingColumns.has("coarse_terms")) db.exec("ALTER TABLE feelings ADD COLUMN coarse_terms TEXT");
   const threadColumns = new Set(db.pragma("table_info(threads)").map(column => column.name));
   if (!threadColumns.has("parent_thread_id")) db.exec("ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id)");
   if (!threadColumns.has("memories_flow_to_parent")) db.exec("ALTER TABLE threads ADD COLUMN memories_flow_to_parent INTEGER NOT NULL DEFAULT 1 CHECK(memories_flow_to_parent IN (0,1))");

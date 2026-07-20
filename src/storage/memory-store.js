@@ -268,14 +268,14 @@ class MemoryStore {
 
   applyCoarseSummaries(rows) {
     const update = this.db.prepare(`UPDATE feelings
-      SET coarse_summary=?,summary_mode='coarse',updated_at=?
+      SET coarse_summary=?,coarse_terms=?,summary_mode='coarse',updated_at=?
       WHERE id=? AND thread_id=?`);
     return this.db.transaction(items => {
       const now = new Date().toISOString();
       let updated = 0;
       for (const row of items || []) {
         if (!row?.id || !row?.coarseSummary) continue;
-        updated += update.run(row.coarseSummary, now, row.id, this.threadId).changes;
+        updated += update.run(row.coarseSummary, JSON.stringify(row.coreTerms || []), now, row.id, this.threadId).changes;
       }
       return updated;
     })(rows);
@@ -285,17 +285,30 @@ class MemoryStore {
     const items = rows || [];
     if (!items.length) return 0;
     const update = this.db.prepare(`UPDATE feelings
-      SET coarse_summary=?,summary_mode='coarse',updated_at=?
+      SET coarse_summary=?,coarse_terms=?,summary_mode='coarse',updated_at=?
       WHERE id=? AND thread_id=? AND summary_mode='daily'`);
     return this.db.transaction(values => {
       const now = new Date().toISOString();
       for (const row of values) {
-        if (!row?.id || !row?.coarseSummary) throw new Error("整周压缩结果包含空 id 或空摘要");
-        const result = update.run(row.coarseSummary, now, row.id, this.threadId);
+        if (!row?.id || !row?.coarseSummary || !row?.coreTerms?.length) throw new Error("整周压缩结果包含空 id、空摘要或空核心词");
+        const result = update.run(row.coarseSummary, JSON.stringify(row.coreTerms), now, row.id, this.threadId);
         if (result.changes !== 1) throw new Error(`整周原子写入失败，feeling 已变化或不存在: ${row.id}`);
       }
       return values.length;
     })(items);
+  }
+
+  applyHiddenFeelings(ids) {
+    const update = this.db.prepare(`UPDATE feelings SET summary_mode='hidden',updated_at=?
+      WHERE id=? AND thread_id=? AND summary_mode='coarse'`);
+    return this.db.transaction(values => {
+      const now = new Date().toISOString();
+      for (const feelingId of values || []) {
+        const result = update.run(now, feelingId, this.threadId);
+        if (result.changes !== 1) throw new Error(`hidden 原子写入失败，feeling 已变化或不存在: ${feelingId}`);
+      }
+      return values.length;
+    })(ids || []);
   }
 
   exportLegacy() {
@@ -306,7 +319,7 @@ class MemoryStore {
     const feelings = this.listFeelings().map(row => ({
       id: row.id, seq: row.seq, sourceDate: row.source_date, eventTime: row.event_time,
       content: row.content, type: "feeling", importance: row.importance,
-      summaryMode: row.summary_mode, coarseSummary: row.coarse_summary,
+      summaryMode: row.summary_mode, coarseSummary: row.coarse_summary, coarseTerms: parseJsonArray(row.coarse_terms),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }));
     writeJsonlAtomic(path.join(feelingsDir, "days.jsonl"), feelings);
@@ -414,6 +427,13 @@ function readJsonl(file) {
     return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => {
       try { return JSON.parse(line); } catch { return null; }
     }).filter(Boolean);
+  } catch { return []; }
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 }
 

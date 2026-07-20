@@ -66,7 +66,8 @@ test("whole-week coarse writes roll back when any feeling is no longer daily", (
   insert.run("a", "t", "2026-07-01", null, "1", "full a", "daily", 2, "manual", now, now);
   insert.run("b", "t", "2026-07-02", null, "2", "full b", "coarse", 2, "manual", now, now);
   assert.throws(() => store.applyCoarseWeek([
-    { id: "a", coarseSummary: "short a" }, { id: "b", coarseSummary: "short b" },
+    { id: "a", coarseSummary: "short a", coreTerms: ["项目甲"] },
+    { id: "b", coarseSummary: "short b", coreTerms: ["项目乙"] },
   ]), /原子写入失败/);
   assert.equal(store.db.prepare("SELECT summary_mode FROM feelings WHERE id='a'").get().summary_mode, "daily");
   store.close();

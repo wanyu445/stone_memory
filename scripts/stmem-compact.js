@@ -5,7 +5,7 @@ const { getThreadDir, listThreadIds, loadConfig } = require("../src/config");
 const { MemoryStore } = require("../src/storage/memory-store");
 const { MemoryCompressor } = require("../src/services/memory-compressor");
 const { buildCompressionPlan } = require("../src/services/compression-planner");
-const { rankCompressionWeeks, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
+const { rankCompressionWeeks, buildCompressionWindow, measureInjectedCharacters, estimateWeekCharacters } = require("../src/services/weekly-compact");
 
 const args = process.argv.slice(2);
 const value = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
@@ -20,6 +20,10 @@ async function main() {
   const maxWeeks = automatic ? Infinity : positiveNumber(value("--weeks"), 1);
   const maxChars = optionalNumber(value("--max-chars"));
   const stopChars = optionalNumber(value("--stop-chars")) ?? maxChars;
+  const from = value("--from");
+  const to = value("--to");
+  if ((from && !to) || (!from && to)) throw new Error("精确窗口必须同时提供 --from 和 --to");
+  if (automatic && from) throw new Error("--auto 不能与精确 --from/--to 同时使用");
   if (automatic && (!apply || maxChars == null || stopChars == null)) {
     throw new Error("--auto 需要同时提供 --apply、--max-chars 和可选的 --stop-chars");
   }
@@ -38,8 +42,11 @@ async function main() {
     for (let count = 0; count < maxWeeks; count++) {
       const context = buildLatestPlan(store, memoryDir);
       const rankedWeeks = rankCompressionWeeks(context.plan.decisions, context.feelings, weekDays);
-      const week = rankedWeeks[0];
+      const week = from
+        ? buildCompressionWindow(context.plan.decisions, context.feelings, from, to)
+        : rankedWeeks[0];
       if (!week) break;
+      if (!week.coarse.length) break;
       const estimate = estimateWeekCharacters(week, context.feelings);
       const report = {
         from: week.from,
@@ -49,7 +56,7 @@ async function main() {
         coarse: week.coarse.length,
         routes: countBy(week.decisions, "route"),
         rank: week.rank,
-        eligibleWeeks: rankedWeeks.length,
+        eligibleWeeks: from ? 1 : rankedWeeks.length,
         totalCharacters: week.totalCharacters,
         coarseCharacters: week.coarseCharacters,
         keepCharacters: week.keepCharacters,

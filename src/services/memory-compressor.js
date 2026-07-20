@@ -67,11 +67,21 @@ class MemoryCompressor {
 
   async compress(feelings) {
     if (!feelings?.length) return [];
-    const prompt = buildCompressionPrompt(feelings);
-    const raw = this.apiConfig.apiKey
-      ? await this._compressViaApi(prompt)
-      : this._compressViaSubagent(prompt);
-    return validateCompressionResult(feelings, raw);
+    const basePrompt = buildCompressionPrompt(feelings);
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const prompt = attempt === 0 ? basePrompt
+        : `${basePrompt}\n\n上一次输出未通过校验：${lastError.message}。请重新输出完整数组，确保每条都有 1～3 个具体 coreTerms。`;
+      try {
+        const raw = this.apiConfig.apiKey
+          ? await this._compressViaApi(prompt)
+          : this._compressViaSubagent(prompt);
+        return validateCompressionResult(feelings, raw);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
   }
 
   _compressViaSubagent(prompt) {

@@ -21,6 +21,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem compress --thread <id> --apply          写入 coarse_summary 并切换为 coarse
   stmem compact [--thread <id>]                 对低风险高收益周生成压缩 dry-run
   stmem compact --thread <id> --apply           原子压缩排名第一周的 coarse 候选
+  stmem compact --thread <id> --from 日期 --to 日期 --apply  原子压缩精确日期窗口
   stmem hidden [--thread <id>] [--after-days N]  预览非核心 coarse 的长期沉寂候选
   stmem hidden --thread <id> --apply             将候选原子切换为 hidden
   stmem lifecycle [--thread <id>] [--action 类型]  feeling 生命周期只读报告

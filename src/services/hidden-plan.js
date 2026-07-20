@@ -8,6 +8,7 @@ function buildHiddenPlan({ features = [], feelings = [], messages = [], anchors 
   const userMessages = (messages || []).filter(row => (row.role || row.type) === "user");
   const referenceDate = userMessages.map(messageDate).filter(Boolean).sort().at(-1) || null;
   const normalizedMessages = userMessages.map(row => ({ date: messageDate(row), text: normalizeTerm(row.text) }));
+  const secondaryDisplacement = buildSecondaryDisplacement({ feelings, profile, normalizedMessages });
   const decisions = [];
 
   for (const feeling of feelings || []) {
@@ -24,7 +25,10 @@ function buildHiddenPlan({ features = [], feelings = [], messages = [], anchors 
       continue;
     }
     if (profile.secondaryCategory && categories.includes(profile.secondaryCategory)) {
-      decisions.push({ ...base, action: "keep_coarse", reason: `当前副核心 ${profile.secondaryCategory} 暂不自动 hidden` });
+      const displaced = secondaryDisplacement.get(feeling.id);
+      decisions.push({ ...base, coreTerms: parseTerms(feeling.coarse_terms ?? feeling.coarseTerms),
+        action: displaced ? "hide" : "keep_coarse",
+        reason: displaced?.reason || `当前副核心 ${profile.secondaryCategory} 尚未被新高信息主线替代` });
       continue;
     }
     if (base.importance > 3) {
@@ -60,6 +64,53 @@ function buildHiddenPlan({ features = [], feelings = [], messages = [], anchors 
     secondaryCategory: profile.secondaryCategory, decisions };
 }
 
+function buildSecondaryDisplacement({ feelings, profile, normalizedMessages }) {
+  const result = new Map();
+  const category = profile.secondaryCategory;
+  if (!category) return result;
+  const rows = (feelings || []).filter(row => (row.summary_mode || row.summaryMode) === "coarse"
+    && profile.matchesByFeeling.get(row.id)?.includes(category))
+    .map(row => ({ row, date: row.source_date || row.sourceDate, terms: parseTerms(row.coarse_terms ?? row.coarseTerms) }))
+    .filter(item => item.date && item.terms.length)
+    .sort((left, right) => left.date.localeCompare(right.date) || left.row.id.localeCompare(right.row.id));
+  const stats = new Map();
+  for (const item of rows) for (const term of item.terms) {
+    if (!stats.has(term)) stats.set(term, { term, rows: [], dates: new Set(), firstSeen: item.date });
+    const stat = stats.get(term);
+    stat.rows.push(item);
+    stat.dates.add(item.date);
+    if (item.date < stat.firstSeen) stat.firstSeen = item.date;
+  }
+  // 新主线必须由同一个具体核心词支撑至少 3 条、跨至少 2 天；取最近一次站稳的新主线。
+  const established = [...stats.values()].filter(stat => stat.rows.length >= 3 && stat.dates.size >= 2)
+    .sort((left, right) => right.firstSeen.localeCompare(left.firstSeen) || right.rows.length - left.rows.length);
+  const newest = established[0];
+  if (!newest) return result;
+  const boundary = newest.firstSeen;
+  const hasOlderLine = rows.some(item => item.date < boundary && !item.terms.includes(newest.term));
+  const newArchiveDays = activeMessageDays(normalizedMessages, [newest.term], boundary);
+  if (!hasOlderLine || newArchiveDays.size < 2) return result;
+
+  for (const item of rows) {
+    if (item.date >= boundary || item.terms.includes(newest.term)) continue;
+    // 旧摘要任一核心词仍在新主线形成后跨多日出现，就说明旧主线没有真正让位。
+    const oldDays = activeMessageDays(normalizedMessages, item.terms, boundary);
+    if (oldDays.size > 1) continue;
+    // 新边形成后还有 coarse 明确沿用旧词，也不隐藏旧线。
+    const laterCoarseUsesOldTerm = rows.some(later => later.date >= boundary
+      && later.terms.some(term => item.terms.includes(term)));
+    if (laterCoarseUsesOldTerm) continue;
+    result.set(item.row.id, { reason: `${category} 新主线“${newest.term}”已站稳，旧核心词在此后几乎消失` });
+  }
+  return result;
+}
+
+function activeMessageDays(messages, terms, from) {
+  const normalizedTerms = terms.map(normalizeTerm).filter(term => term.length >= 2);
+  return new Set((messages || []).filter(row => row.date >= from
+    && normalizedTerms.some(term => row.text.includes(term))).map(row => row.date));
+}
+
 function parseTerms(value) {
   if (Array.isArray(value)) return value.map(String).map(term => term.trim()).filter(Boolean);
   try {
@@ -76,4 +127,4 @@ function daysBetween(from, to) {
   return Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
 }
 
-module.exports = { buildHiddenPlan, parseTerms, daysBetween };
+module.exports = { buildHiddenPlan, buildSecondaryDisplacement, parseTerms, daysBetween, activeMessageDays };

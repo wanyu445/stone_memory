@@ -25,10 +25,25 @@ test("keeps coarse when a core term was mentioned recently", () => {
   assert.equal(plan.decisions[0].action, "keep_coarse");
 });
 
+test("a relation word does not block hidden after relation yields a low-importance fact", () => {
+  const row = feeling({ content: "1月1日，晚上九点。老公叫她点糖醋排骨。",
+    coarse_summary: "1月1日，晚上九点。她点了糖醋排骨。", coarse_terms: '["糖醋排骨"]' });
+  const plan = buildHiddenPlan({
+    features: [
+      { id: "r", category: "relation", content: "她称 AI 为老公", importance: 5 },
+      { id: "e", category: "eat", content: "她吃糖醋排骨", importance: 3 },
+    ], feelings: [row], messages: [
+      { type: "user", sourceDate: "2026-01-01", text: "老公，点糖醋排骨" },
+      { type: "user", sourceDate: "2026-05-01", text: "今天聊别的" },
+    ], afterDays: 90,
+  });
+  assert.equal(plan.decisions[0].action, "hide");
+});
+
 test("never auto-hides anchors, relation, high importance, or legacy coarse without terms", () => {
   const rows = [
     feeling({ id: "anchor" }),
-    feeling({ id: "relation", content: "1月1日，晚上九点。她叫我老公。", coarse_terms: '["老公"]' }),
+    feeling({ id: "relation", importance: 5, content: "1月1日，晚上九点。她叫我老公。", coarse_terms: '["老公"]' }),
     feeling({ id: "important", importance: 5 }),
     feeling({ id: "legacy", coarse_terms: null }),
   ];

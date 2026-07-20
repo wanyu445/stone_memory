@@ -70,3 +70,50 @@ test("does not auto-hide the current sustained secondary core", () => {
   assert.equal(plan.secondaryCategory, "preference");
   assert.ok(plan.decisions.every(row => row.action === "keep_coarse"));
 });
+
+test("secondary core hides an old line only after a new high-information line displaces it", () => {
+  const oldRows = [0, 1].map(index => feeling({ id: `old-${index}`, source_date: `2026-01-0${index + 1}`,
+    importance: 5, content: "1月1日，晚上九点。她研究存在主义。", coarse_terms: '["存在主义"]' }));
+  const newRows = [
+    ["new-1", "2026-03-01"], ["new-2", "2026-03-02"], ["new-3", "2026-03-02"],
+  ].map(([id, date]) => feeling({ id, source_date: date, importance: 5,
+    content: "3月1日，晚上九点。她开始持续研究斯多葛主义。", coarse_terms: '["斯多葛主义"]' }));
+  const plan = buildHiddenPlan({
+    features: [
+      { id: "old-feature", category: "preference", content: "她思考存在主义", importance: 5 },
+      { id: "new-feature", category: "preference", content: "她思考斯多葛主义", importance: 5 },
+      { id: "sleep-feature", category: "sleep", content: "她经常熬夜", importance: 3 },
+    ],
+    feelings: [...oldRows, ...newRows, ...Array.from({ length: 5 }, (_, index) => ({
+      id: `background-${index}`, source_date: `2026-02-0${index + 1}`, summary_mode: "daily",
+      importance: 3, content: "2月1日，晚上十一点。她又熬夜了。",
+    }))],
+    messages: [
+      { type: "user", sourceDate: "2026-01-01", text: "存在主义很有意思" },
+      { type: "user", sourceDate: "2026-03-01", text: "开始看斯多葛主义" },
+      { type: "user", sourceDate: "2026-03-02", text: "继续聊斯多葛主义" },
+    ],
+  });
+  assert.equal(plan.secondaryCategory, "preference");
+  assert.ok(plan.decisions.filter(row => row.feelingId.startsWith("old-")).every(row => row.action === "hide"));
+  assert.ok(plan.decisions.filter(row => row.feelingId.startsWith("new-")).every(row => row.action === "keep_coarse"));
+});
+
+test("secondary core keeps the old line when no replacement line has stood up", () => {
+  const rows = [0, 1, 2, 3, 4].map(index => feeling({ id: `old-${index}`,
+    source_date: index ? "2026-01-08" : "2026-01-01", importance: 5,
+    content: "1月1日，晚上九点。她研究存在主义。", coarse_terms: '["存在主义"]' }));
+  const background = Array.from({ length: 5 }, (_, index) => ({ id: `sleep-${index}`,
+    source_date: `2026-02-${String(1 + index * 3).padStart(2, "0")}`, summary_mode: "daily",
+    importance: 3, content: "2月1日，晚上十一点。她又熬夜了。" }));
+  const profilePlan = buildHiddenPlan({
+    features: [
+      { id: "p", category: "preference", content: "她思考存在主义", importance: 5 },
+      { id: "s", category: "sleep", content: "她经常熬夜", importance: 3 },
+    ], feelings: [...rows, ...background], messages: [
+      { type: "user", sourceDate: "2026-01-01", text: "存在主义" },
+      { type: "user", sourceDate: "2026-06-01", text: "最近没聊工作或哲学" },
+    ] });
+  assert.equal(profilePlan.secondaryCategory, "preference");
+  assert.ok(profilePlan.decisions.every(row => row.action !== "hide"));
+});

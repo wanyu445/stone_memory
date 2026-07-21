@@ -75,6 +75,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .field small { color: var(--muted); line-height: 1.5; }
 .field input, .field select { width: 100%; min-height: 50px; padding: 0 15px; color: var(--pine-950); background: var(--leaf-50); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .field input:hover, .field select:hover { border-color: var(--moss-300); }
+.secret-input { position: relative; }
+.secret-input input { padding-right: 52px; }
+.secret-input button { position: absolute; right: 5px; top: 5px; display: grid; place-items: center; width: 40px; height: 40px; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 9px; }
+.secret-input button:hover { color: var(--pine-800); background: var(--moss-100); }
+.secret-input svg { width: 20px; height: 20px; }
 .field-error { min-height: 18px; margin-top: -2px; color: var(--danger) !important; }
 .wizard-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; }
 
@@ -153,10 +158,16 @@ td.context { min-width: 320px; max-width: 460px; line-height: 1.5; }
 .select-row { display: grid; grid-template-columns: 24px 150px 82px minmax(0,1fr); gap: 12px; align-items: start; padding: 13px 0; border-top: 1px solid #edf0eb; }
 .select-row input { width: 18px; height: 18px; accent-color: var(--pine-700); }
 .select-row time, .select-row .role { color: var(--muted); font-size: 12px; }
+.tool-row .role { max-width: 15ch; overflow-wrap: anywhere; word-break: break-all; }
 .select-row .context { max-height: 6.2em; overflow: auto; white-space: pre-wrap; line-height: 1.55; font-size: 13px; }
 .tool-row { grid-template-columns: 24px 150px 130px minmax(0,1fr); }
 .integrity { padding: 16px 18px; margin: 18px 0; border-radius: var(--radius-md); background: var(--moss-100); line-height: 1.6; }
 .integrity.warning { color: #713f2b; background: #fff3dd; }
+.action-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.action-card { min-height: 150px; padding: 22px; text-align: left; color: var(--pine-950); background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-md); transition: .18s ease; }
+.action-card:hover { transform: translateY(-2px); border-color: var(--moss-300); box-shadow: 0 10px 28px rgba(41,85,64,.08); }
+.action-card strong { display: block; margin-bottom: 9px; font-size: 17px; }
+.action-card span { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .rebuild-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 18px; }
 .rebuild-footer .actions { display: flex; gap: 10px; }
 .toast { position: fixed; z-index: 50; left: 50%; bottom: 28px; max-width: min(480px, calc(100% - 32px)); padding: 12px 18px; color: white; background: var(--pine-950); border-radius: 12px; box-shadow: var(--shadow); opacity: 0; transform: translate(-50%, 12px); pointer-events: none; transition: .2s ease; }
@@ -185,6 +196,7 @@ td.context { min-width: 320px; max-width: 460px; line-height: 1.5; }
   .select-row .context { grid-column: 2; }
   .rebuild-footer { align-items: stretch; flex-direction: column; }
   .rebuild-footer .actions { flex-direction: column; }
+  .action-grid { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

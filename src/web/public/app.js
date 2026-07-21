@@ -211,7 +211,9 @@ async function renderSettings(library) {
     </div><div class="wizard-actions"><span></span><button class="primary" type="submit">保存设置</button></div></form>`;
     const miner = card.querySelector("#setting-miner"), apiFields = card.querySelector("#setting-api-fields");
     const renderApiSettings = () => {
-      apiFields.innerHTML = miner.value === "api" ? `<div class="field-grid"><div class="field"><label for="setting-provider">API 厂商</label><input id="setting-provider" name="apiProvider" value="${escapeHtml(config.apiProvider || "deepseek")}" required></div><div class="field"><label for="setting-key">API Key</label><input id="setting-key" name="apiKey" type="password" value="" placeholder="${config.hasApiKey ? "已保存；留空则不修改" : "请输入 API Key"}"><small>读取设置时永不返回现有 Key。</small></div><div class="field full"><label for="setting-base">Base URL</label><input id="setting-base" name="baseUrl" value="${escapeHtml(config.baseUrl || "")}"></div></div>` : "";
+      apiFields.innerHTML = miner.value === "api" ? `<div class="field-grid"><div class="field"><label for="setting-provider">API 厂商</label><input id="setting-provider" name="apiProvider" value="${escapeHtml(config.apiProvider || "deepseek")}" required></div><div class="field"><label for="setting-key">API Key</label><div class="secret-input"><input id="setting-key" name="apiKey" type="password" value="${escapeHtml(config.apiKey || "")}" required><button type="button" id="toggle-key" aria-label="显示 API Key" title="显示 API Key"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.7"/></svg></button></div><small>Key 只在本机页面显示和保存。</small></div><div class="field full"><label for="setting-base">Base URL</label><input id="setting-base" name="baseUrl" value="${escapeHtml(config.baseUrl || "")}"></div></div>` : "";
+      const toggle = apiFields.querySelector("#toggle-key"), keyInput = apiFields.querySelector("#setting-key");
+      if (toggle) toggle.onclick = () => { const visible = keyInput.type === "text"; keyInput.type = visible ? "password" : "text"; toggle.setAttribute("aria-label", visible ? "显示 API Key" : "隐藏 API Key"); toggle.title = visible ? "显示 API Key" : "隐藏 API Key"; };
     };
     miner.onchange = renderApiSettings; renderApiSettings();
     card.querySelector("#settings-form").onsubmit = async event => {
@@ -238,12 +240,31 @@ const rebuildState = { windowDays: 3, toolPairs: 30, page: 1, toolPage: 1, tab: 
 async function renderRebuild(library) {
   document.querySelectorAll(".side-nav button").forEach(button => button.classList.toggle("active", button.dataset.view === "rebuild"));
   const main = document.querySelector("#workspace-main");
-  main.innerHTML = `<div class="dashboard-head"><div><p class="eyebrow">线程生命周期</p><h1>线程重建</h1><p class="lead">选择要带进新线程的近期对话与工具调用链。取消勾选即永久裁剪。</p></div></div><section class="section-card"><div class="rebuild-controls"><div class="field"><label for="window-days">保留最近对话</label><input id="window-days" type="number" min="1" max="365" value="${rebuildState.windowDays}"><small>天</small></div><div class="field"><label for="tool-pairs">保留工具调用</label><input id="tool-pairs" type="number" min="0" max="500" value="${rebuildState.toolPairs}"><small>组</small></div><button class="secondary" id="refresh-plan">更新预览</button></div><div id="integrity"></div><div class="tab-row"><button data-tab="messages" class="active">近期对话</button><button data-tab="tools">工具链</button></div><div id="selection-list"><div class="empty">正在读取活动线程…</div></div><div class="integrity warning">取消勾选的内容会从活动线程、archive 和既有 full 重建源中永久删除，无法恢复。已有摘要不会自动修改；如需移除摘要，请在记忆页将其设为 hidden。</div><div class="rebuild-footer"><div id="selection-summary"></div><div class="actions"><button class="secondary" id="check-thread">检查并修复</button><button class="primary" id="apply-rebuild">永久裁剪并重建</button></div></div></section>`;
-  document.querySelector("#refresh-plan").onclick = () => { rebuildState.windowDays = Number(document.querySelector("#window-days").value) || 3; rebuildState.toolPairs = Number(document.querySelector("#tool-pairs").value) || 30; rebuildState.page = 1; rebuildState.toolPage = 1; loadRebuildPreview(library); };
-  document.querySelectorAll("[data-tab]").forEach(button => button.onclick = () => { rebuildState.tab = button.dataset.tab; document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("active", item === button)); renderRebuildRows(library); });
+  main.innerHTML = `<div class="dashboard-head"><div><p class="eyebrow">线程生命周期</p><h1>线程重建</h1><p class="lead">直接重建、检查线程，或者在需要时精确裁剪近期对话。</p></div></div><section class="section-card"><div class="action-grid"><button class="action-card" id="quick-rebuild"><strong>一键线程重建</strong><span>使用设置中的默认天数和工具链数量，直接执行 rebuild --apply。</span></button><button class="action-card" id="check-thread"><strong>检查 / 修复线程</strong><span>检查 Claude UUID 或 Codex session、工具调用配对；发现问题后自动修复并复查。</span></button><button class="action-card" id="open-trim"><strong>裁剪对话</strong><span>展开近期对话和工具链，取消勾选后永久裁剪并重建。</span></button></div><div id="integrity"></div></section>`;
+  try { const config = await api(`/api/libraries/${encodeURIComponent(library.threadId)}/settings`); rebuildState.windowDays = config.windowDays; rebuildState.toolPairs = config.keepToolPairs; } catch {}
+  document.querySelector("#quick-rebuild").onclick = event => quickRebuild(library, event.currentTarget);
   document.querySelector("#check-thread").onclick = () => checkAndRepair(library);
+  document.querySelector("#open-trim").onclick = () => renderTrimWorkbench(library);
+  await showIntegrity(library, false);
+}
+
+async function renderTrimWorkbench(library) {
+  const main = document.querySelector("#workspace-main");
+  main.innerHTML = `<div class="dashboard-head"><div><p class="eyebrow">永久裁剪</p><h1>选择保留的对话</h1><p class="lead">默认全部保留；取消勾选的内容会永久消失。</p></div><button class="ghost" id="back-rebuild">返回</button></div><section class="section-card"><div class="rebuild-controls"><div class="field"><label for="window-days">保留最近对话</label><input id="window-days" type="number" min="1" max="365" value="${rebuildState.windowDays}"><small>天</small></div><div class="field"><label for="tool-pairs">保留工具调用</label><input id="tool-pairs" type="number" min="0" max="500" value="${rebuildState.toolPairs}"><small>组</small></div><button class="secondary" id="refresh-plan">更新预览</button></div><div class="tab-row"><button data-tab="messages" class="active">近期对话</button><button data-tab="tools">工具链</button></div><div id="selection-list"><div class="empty">正在读取活动线程…</div></div><div class="integrity warning">取消勾选的内容会从活动线程、archive 和既有 full 重建源中永久删除，无法恢复。已有摘要不会自动修改；如需移除摘要，请在记忆页将其设为 hidden。</div><div class="rebuild-footer"><div id="selection-summary"></div><div class="actions"><button class="primary" id="apply-rebuild">永久裁剪并重建</button></div></div></section>`;
+  document.querySelector("#back-rebuild").onclick = () => renderRebuild(library);
+  document.querySelector("#refresh-plan").onclick = () => { rebuildState.windowDays = Number(document.querySelector("#window-days").value) || 3; rebuildState.toolPairs = Math.max(0, Number(document.querySelector("#tool-pairs").value) || 0); rebuildState.page = 1; rebuildState.toolPage = 1; loadRebuildPreview(library); };
+  document.querySelectorAll("[data-tab]").forEach(button => button.onclick = () => { rebuildState.tab = button.dataset.tab; document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("active", item === button)); renderRebuildRows(library); });
   document.querySelector("#apply-rebuild").onclick = () => applyRebuild(library);
-  await loadRebuildPreview(library); await showIntegrity(library, false);
+  await loadRebuildPreview(library);
+}
+
+async function quickRebuild(library, button) {
+  button.disabled = true; const original = button.innerHTML; button.innerHTML = `<strong>正在重建线程…</strong><span>请保持本地服务运行。</span>`;
+  try {
+    await api(`/api/libraries/${encodeURIComponent(library.threadId)}/rebuild/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ windowDays: rebuildState.windowDays, toolPairs: rebuildState.toolPairs, excludedMessages: [], excludedTools: [] }) });
+    showToast("线程重建完成"); await showIntegrity(library, false);
+  } catch (error) { showToast(error.message, "error"); }
+  button.disabled = false; button.innerHTML = original;
 }
 
 async function loadRebuildPreview(library) {
@@ -287,8 +308,8 @@ async function showIntegrity(library, repair) {
 
 async function checkAndRepair(library) {
   const check = await showIntegrity(library, false); if (!check || check.healthy) { showToast("线程结构完整"); return; }
-  const button = document.querySelector("#check-thread"); button.disabled = true; button.textContent = "正在备份并修复…";
-  await showIntegrity(library, true); button.disabled = false; button.textContent = "再次检查";
+  const button = document.querySelector("#check-thread"), original = button.innerHTML; button.disabled = true; button.innerHTML = `<strong>正在备份并修复…</strong><span>修复后会自动重新检查。</span>`;
+  await showIntegrity(library, true); button.disabled = false; button.innerHTML = original;
 }
 
 async function applyRebuild(library) {

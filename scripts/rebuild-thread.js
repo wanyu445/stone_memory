@@ -23,6 +23,7 @@ const { FullArchive } = require("../src/services/memory-archive");
 const { getCfg, getThreadDir } = require("../src/config");
 const { resolveDateFile, listDateFiles } = require("../src/lib/archive-paths");
 const { readFeelings: readDatabaseFeelings, readMessages } = require("../src/storage/memory-reader");
+const { itemKey, loadRebuildPlan } = require("../src/services/rebuild-workbench");
 
 let THREAD_BASE = null;
 let FULL_ARCHIVE = null;
@@ -302,7 +303,7 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
 
 // ---- 主流程 ----
 
-function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverride = null) {
+function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverride = null, plan = loadRebuildPlan()) {
   // === 加载 ===
   console.log("[rebuild] Loading injectable feelings (daily/coarse; hidden excluded)...");
   const allFeelings = loadInjectableFeelings();
@@ -364,6 +365,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
       }
     }
   }
+  for (const id of plan.excludedTools) preservedToolIds.delete(id);
   console.log(`[rebuild] Window: ${windowDays} days (cutoff: ${cutoffDate}), tool chains: ${pairCount} pairs, ${preservedToolIds.size} tool IDs`);
 
   // 按 cutoff 分 feelings
@@ -553,6 +555,11 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
     const msg = messages[mi];
     const d = msgDate(msg);
     if (!d || d < cutoffDate || (msg.type === "system" || msg.type === "attachment")) continue;
+    const content = msg.message?.content;
+    const selectableText = typeof content === "string" ? content.trim() : Array.isArray(content)
+      ? content.filter(block => block.type === "text" || block.type === "thinking").map(block => block.text || "").filter(Boolean).join("\n").trim()
+      : "";
+    if (selectableText && plan.excludedMessages.has(itemKey(msg.timestamp, msg.type, selectableText))) continue;
     outputCleanMessage(msg, emit, stats, preservedToolIds);
   }
 
@@ -618,13 +625,15 @@ function main() {
   const threadIdx = args.indexOf("--thread");
   const windowIdx = args.indexOf("--window");
   const toolPairsIdx = args.indexOf("--tool-pairs");
+  const planIdx = args.indexOf("--plan");
   const threadId = threadIdx >= 0 ? args[threadIdx + 1] : null;
   const windowDays = windowIdx >= 0
     ? parseInt(args[windowIdx + 1], 10) || DEFAULT_WINDOW_DAYS
     : DEFAULT_WINDOW_DAYS;
   const toolPairsOverride = toolPairsIdx >= 0
-    ? parseInt(args[toolPairsIdx + 1], 10) || null
+    ? Math.max(0, parseInt(args[toolPairsIdx + 1], 10) || 0)
     : null;
+  const plan = loadRebuildPlan(planIdx >= 0 ? args[planIdx + 1] : null);
 
   initThreadPaths(threadId);
   const OUTPUT_SUFFIX = ".rebuilt";
@@ -659,12 +668,12 @@ function main() {
   const outputFile = inputFile.replace(/\.jsonl$/, `${OUTPUT_SUFFIX}.jsonl`);
 
   if (dryRun && !apply) {
-    rebuildThread(inputFile, outputFile, true, windowDays, toolPairsOverride);
+    rebuildThread(inputFile, outputFile, true, windowDays, toolPairsOverride, plan);
     console.log("\n[rebuild] Use --apply to write.");
     return;
   }
 
-  rebuildThread(inputFile, outputFile, false, windowDays, toolPairsOverride);
+  rebuildThread(inputFile, outputFile, false, windowDays, toolPairsOverride, plan);
   console.log(`\n[rebuild] Done — thread replaced.`);
 }
 

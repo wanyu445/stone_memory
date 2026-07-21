@@ -19,9 +19,9 @@ for (const tid of threads) {
   const featureCount = store.listFeatures().length;
   store.close();
 
-  console.log(`  ${tid}`);
   const label = getCfg("label", tid, tid);
-  console.log(`  线程: ${tid}${label !== tid ? ` (${label})` : ""}`);
+  console.log(`  ${label}`);
+  console.log(`    对应线程: ${tid}`);
   console.log(`    AI: ${getCfg("ai", tid)}  用户: ${getCfg("user", tid)} (${getCfg("userGender", tid, "female")})`);
   console.log(`    runtime: ${getCfg("runtime", tid)} | purpose: ${getCfg("purpose", tid)}`);
   console.log(`    sessionDir: ${getCfg("sessionDir", tid)}`);

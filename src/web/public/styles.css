@@ -98,6 +98,7 @@ td.context { min-width: 320px; max-width: 460px; line-height: 1.5; }
 
 .check-card { display: flex; align-items: flex-start; gap: 14px; padding: 18px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--leaf-50); }
 .check-card input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--pine-700); }
+.check-card.full { grid-column: 1 / -1; }
 .check-card strong { display: block; margin-bottom: 5px; }
 .check-card span { color: var(--muted); font-size: 14px; line-height: 1.55; }
 .summary-box { margin-bottom: 24px; padding: 18px; background: var(--moss-100); border-radius: var(--radius-md); }

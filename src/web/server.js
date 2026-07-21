@@ -23,6 +23,21 @@ function runStmem(args, { timeout = 10 * 60 * 1000 } = {}) {
   return (result.stdout || "").trim();
 }
 
+function publicThreadSettings(threadId) {
+  const config = loadConfig(), entry = config[threadId];
+  if (!entry) throw new Error(`记忆库不存在：${threadId}`);
+  return {
+    threadId, libraryName: entry.label || threadId, ai: entry.ai || "", user: entry.user || "",
+    userGender: entry.userGender || "unspecified", runtime: entry.runtime || "claude", purpose: entry.purpose || "accompany",
+    sessionDir: entry.sessionDir || "", minerMode: entry.minerMode || "subagent", apiProvider: entry.apiProvider || "",
+    baseUrl: entry.apiProvider ? (config.apiKeys?.[entry.apiProvider]?.baseUrl || "") : "",
+    hasApiKey: !!(entry.apiProvider && config.apiKeys?.[entry.apiProvider]?.key),
+    windowDays: entry.windowDays ?? 3, keepToolPairs: entry.keepToolPairs ?? 30,
+    automaticFullMining: entry.automaticFullMining !== false,
+    automaticMemoryMaintenance: entry.automaticMemoryMaintenance !== false,
+  };
+}
+
 function json(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body) });
@@ -135,6 +150,24 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && overviewMatch) {
     const data = overview(decodeURIComponent(overviewMatch[1]));
     return data ? json(res, 200, data) : error(res, 404, "记忆库不存在");
+  }
+
+  const settingsMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/settings$/);
+  if (settingsMatch) {
+    const threadId = decodeURIComponent(settingsMatch[1]);
+    if (req.method === "GET") return json(res, 200, publicThreadSettings(threadId));
+    if (req.method === "PATCH") {
+      const body = await readJson(req);
+      const current = publicThreadSettings(threadId);
+      const input = { ...current, ...body, threadId, runtime: current.runtime, purpose: current.purpose };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-web-config-"));
+      const file = path.join(dir, "config.json");
+      fs.writeFileSync(file, JSON.stringify(input), { encoding: "utf8", mode: 0o600 });
+      try {
+        runStmem(["init", "--thread", threadId, "--batch-file", file]);
+        return json(res, 200, { success: true, config: publicThreadSettings(threadId) });
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    }
   }
 
   const rebuildMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/rebuild\/(preview|apply|check|repair)$/);

@@ -40,6 +40,8 @@ function createThread(input, { allowExisting = false } = {}) {
   const config = loadConfig();
   validateThreadInput(input, config, { allowExisting });
   const existing = config[input.threadId] || {};
+  if (allowExisting && existing.runtime && input.runtime !== existing.runtime) throw new Error("运行时暂不支持直接迁移");
+  if (allowExisting && existing.purpose && input.purpose !== existing.purpose) throw new Error("用途暂不支持直接迁移");
   const libraryName = String(input.libraryName).trim();
   const threadId = String(input.threadId).trim();
   const entry = {
@@ -51,8 +53,8 @@ function createThread(input, { allowExisting = false } = {}) {
     purpose: input.purpose,
     sessionDir: input.runtime === "codex" ? path.join(os.homedir(), ".codex", "sessions") : String(input.sessionDir || "").trim(),
     minerMode: input.minerMode,
-    windowDays: Number(input.windowDays) || 3,
-    keepToolPairs: Number(input.keepToolPairs) || 30,
+    windowDays: Math.max(1, Number(input.windowDays) || 3),
+    keepToolPairs: input.keepToolPairs === undefined || input.keepToolPairs === "" ? 30 : Math.max(0, Number(input.keepToolPairs) || 0),
     automaticFullMining: input.automaticFullMining !== false,
     automaticMemoryMaintenance: input.automaticMemoryMaintenance !== false,
   };

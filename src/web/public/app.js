@@ -177,12 +177,60 @@ async function openLibrary(threadId) {
 
 function workspace(data) {
   const counts = data.counts;
-  app.innerHTML = `<section class="workspace"><div class="shell workspace-grid"><aside class="sidebar"><a class="back-link" href="#">← 返回记忆库</a><h2 class="side-title">${escapeHtml(data.libraryName)}</h2><nav class="side-nav" aria-label="记忆库导航"><button class="active" data-view="overview">概览</button><button disabled title="即将接入">记忆</button><button disabled title="即将接入">时间轴</button><button data-view="rebuild">线程重建</button><button disabled title="即将接入">设置</button></nav></aside><main id="workspace-main"><div class="dashboard-head"><div><p class="eyebrow">Stone Memory</p><h1>${escapeHtml(data.libraryName)}</h1><div class="status-line"><span class="status-dot"></span>${data.attention ? escapeHtml(data.attention) : "记忆运行正常"}</div></div>${stoneSvg("mini-stone")}</div>
+  app.innerHTML = `<section class="workspace"><div class="shell workspace-grid"><aside class="sidebar"><a class="back-link" href="#">← 返回记忆库</a><h2 class="side-title">${escapeHtml(data.libraryName)}</h2><nav class="side-nav" aria-label="记忆库导航"><button class="active" data-view="overview">概览</button><button disabled title="即将接入">记忆</button><button disabled title="即将接入">时间轴</button><button data-view="rebuild">线程重建</button><button data-view="settings">设置</button></nav></aside><main id="workspace-main"><div class="dashboard-head"><div><p class="eyebrow">Stone Memory</p><h1>${escapeHtml(data.libraryName)}</h1><div class="status-line"><span class="status-dot"></span>${data.attention ? escapeHtml(data.attention) : "记忆运行正常"}</div></div>${stoneSvg("mini-stone")}</div>
     <div class="stats-grid"><div class="stat"><strong>${counts.daily}</strong><span>完整摘要</span></div><div class="stat"><strong>${counts.coarse}</strong><span>精简摘要</span></div><div class="stat"><strong>${counts.hidden}</strong><span>已隐藏</span></div><div class="stat"><strong>${counts.features}</strong><span>记忆特征</span></div></div>
     <section class="section-card"><h2>最近记住的事</h2>${data.recent.length ? data.recent.map(item => `<article class="memory-row"><div class="memory-time">${escapeHtml(item.sourceDate)} ${escapeHtml(item.eventTime || "")}</div><p>${escapeHtml(item.content)}</p><span class="badge">importance ${item.importance}</span><span class="badge">${escapeHtml(item.summaryMode)}</span></article>`).join("") : `<div class="empty">还没有摘要。导入对话后，第一次挖掘会让记忆在这里出现。</div>`}</section></main></div></section>`;
   document.querySelector(".back-link").onclick = event => { event.preventDefault(); lobby(); };
   document.querySelector('[data-view="rebuild"]').onclick = () => renderRebuild(data);
+  document.querySelector('[data-view="settings"]').onclick = () => renderSettings(data);
   document.querySelector('[data-view="overview"]').onclick = () => workspace(data);
+}
+
+async function renderSettings(library) {
+  document.querySelectorAll(".side-nav button").forEach(button => button.classList.toggle("active", button.dataset.view === "settings"));
+  const main = document.querySelector("#workspace-main");
+  main.innerHTML = `<div class="dashboard-head"><div><p class="eyebrow">记忆库配置</p><h1>设置</h1><p class="lead">这里展示并编辑创建记忆库时填写的 init 配置。</p></div></div><section class="section-card"><div class="empty">正在读取设置…</div></section>`;
+  try {
+    const config = await api(`/api/libraries/${encodeURIComponent(library.threadId)}/settings`);
+    const card = main.querySelector(".section-card");
+    card.innerHTML = `<form id="settings-form"><div class="field-grid">
+      <div class="field full"><label for="setting-libraryName">记忆库名字</label><input id="setting-libraryName" name="libraryName" value="${escapeHtml(config.libraryName)}" required><small>控制台和记忆库大厅显示的名称；不能与其他记忆库重名。</small></div>
+      <div class="field full"><label for="setting-threadId">对应线程名</label><input id="setting-threadId" value="${escapeHtml(config.threadId)}" disabled><small>底层绑定标识，创建后不可修改。</small></div>
+      <div class="field"><label for="setting-ai">AI 名字</label><input id="setting-ai" name="ai" value="${escapeHtml(config.ai)}" required></div>
+      <div class="field"><label for="setting-user">用户名字</label><input id="setting-user" name="user" value="${escapeHtml(config.user)}" required></div>
+      <div class="field"><label for="setting-gender">用户性别</label><select id="setting-gender" name="userGender"><option value="unspecified" ${config.userGender === "unspecified" ? "selected" : ""}>不指定</option><option value="female" ${config.userGender === "female" ? "selected" : ""}>女性</option><option value="male" ${config.userGender === "male" ? "selected" : ""}>男性</option></select></div>
+      <div class="field"><label for="setting-miner">挖掘方式</label><select id="setting-miner" name="minerMode"><option value="subagent" ${config.minerMode === "subagent" ? "selected" : ""}>本地 Subagent</option><option value="api" ${config.minerMode === "api" ? "selected" : ""}>API</option></select></div>
+      <div class="field"><label>运行时</label><input value="${escapeHtml(config.runtime)}" disabled><small>涉及目录迁移，暂不在设置页修改。</small></div>
+      <div class="field"><label>用途</label><input value="${escapeHtml(config.purpose)}" disabled><small>涉及目录迁移，暂不在设置页修改。</small></div>
+      <div class="field full"><label for="setting-session">线程文件目录</label><input id="setting-session" name="sessionDir" value="${escapeHtml(config.sessionDir)}" ${config.runtime === "codex" ? "disabled" : "required"}><small>${config.runtime === "codex" ? "Codex 固定使用 ~/.codex/sessions。" : "Claude 活动线程 JSONL 所在目录，必须是绝对路径。"}</small></div>
+      <div id="setting-api-fields" class="field full"></div>
+      <div class="field"><label for="setting-window">默认保留对话天数</label><input id="setting-window" name="windowDays" type="number" min="1" max="365" value="${config.windowDays}"></div>
+      <div class="field"><label for="setting-tools">默认保留工具链组数</label><input id="setting-tools" name="keepToolPairs" type="number" min="0" max="500" value="${config.keepToolPairs}"></div>
+      <label class="check-card full"><input type="checkbox" name="automaticFullMining" ${config.automaticFullMining ? "checked" : ""}><span><strong>自动挖掘全量对话</strong>处理尚未挖掘的历史日期。</span></label>
+      <label class="check-card full"><input type="checkbox" name="automaticMemoryMaintenance" ${config.automaticMemoryMaintenance ? "checked" : ""}><span><strong>自动执行记忆挖掘 / 压缩</strong>监听新对话并在超过水位后压缩。</span></label>
+    </div><div class="wizard-actions"><span></span><button class="primary" type="submit">保存设置</button></div></form>`;
+    const miner = card.querySelector("#setting-miner"), apiFields = card.querySelector("#setting-api-fields");
+    const renderApiSettings = () => {
+      apiFields.innerHTML = miner.value === "api" ? `<div class="field-grid"><div class="field"><label for="setting-provider">API 厂商</label><input id="setting-provider" name="apiProvider" value="${escapeHtml(config.apiProvider || "deepseek")}" required></div><div class="field"><label for="setting-key">API Key</label><input id="setting-key" name="apiKey" type="password" value="" placeholder="${config.hasApiKey ? "已保存；留空则不修改" : "请输入 API Key"}"><small>读取设置时永不返回现有 Key。</small></div><div class="field full"><label for="setting-base">Base URL</label><input id="setting-base" name="baseUrl" value="${escapeHtml(config.baseUrl || "")}"></div></div>` : "";
+    };
+    miner.onchange = renderApiSettings; renderApiSettings();
+    card.querySelector("#settings-form").onsubmit = async event => {
+      event.preventDefault();
+      const form = event.currentTarget, button = form.querySelector("button[type=submit]");
+      const values = Object.fromEntries(new FormData(form).entries());
+      values.windowDays = Number(values.windowDays); values.keepToolPairs = Number(values.keepToolPairs);
+      values.automaticFullMining = form.elements.automaticFullMining.checked;
+      values.automaticMemoryMaintenance = form.elements.automaticMemoryMaintenance.checked;
+      button.disabled = true; button.textContent = "正在保存…";
+      try {
+        const result = await api(`/api/libraries/${encodeURIComponent(library.threadId)}/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(values) });
+        library.libraryName = result.config.libraryName;
+        document.querySelector(".side-title").textContent = result.config.libraryName;
+        await loadLibraries(); showToast("设置已保存");
+      } catch (error) { showToast(error.message, "error"); }
+      button.disabled = false; button.textContent = "保存设置";
+    };
+  } catch (error) { main.querySelector(".section-card").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 }
 
 const rebuildState = { windowDays: 3, toolPairs: 30, page: 1, toolPage: 1, tab: "messages", excludedMessages: new Set(), excludedTools: new Set(), preview: null };

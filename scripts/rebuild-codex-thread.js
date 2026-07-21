@@ -22,6 +22,7 @@ const {
 } = require("../src/services/thread-rebuilder");
 const { getCfg, getThreadDir } = require("../src/config");
 const { readMessages } = require("../src/storage/memory-reader");
+const { itemKey, loadRebuildPlan } = require("../src/services/rebuild-workbench");
 
 const CODEX_DIR = path.join(os.homedir(), ".codex", "sessions");
 const DEFAULT_WINDOW_DAYS = 3;
@@ -86,9 +87,11 @@ function main() {
   const threadIdx = args.indexOf("--thread");
   const windowIdx = args.indexOf("--window");
   const toolPairsIdx = args.indexOf("--tool-pairs");
+  const planIdx = args.indexOf("--plan");
   const threadId = threadIdx >= 0 ? args[threadIdx + 1] : null;
   const windowDays = windowIdx >= 0 ? parseInt(args[windowIdx + 1]) || DEFAULT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS;
-  const keepPairs = toolPairsIdx >= 0 ? parseInt(args[toolPairsIdx + 1]) || 40 : 40;
+  const keepPairs = toolPairsIdx >= 0 ? Math.max(0, parseInt(args[toolPairsIdx + 1]) || 0) : 40;
+  const plan = loadRebuildPlan(planIdx >= 0 ? args[planIdx + 1] : null);
 
   if (!threadId) { console.log("用法: --thread <id> [--window N] [--tool-pairs N] [--apply]"); return; }
 
@@ -169,6 +172,7 @@ function main() {
     pairCount++;
     preservedCallIds.add(callId);
   }
+  for (const id of plan.excludedTools) preservedCallIds.delete(id);
   console.log(`[codex-rebuild] Tool chains: ${pairCount} pairs preserved`);
 
   // === 构建消息列表（只保留 user/assistant + function_call I/O） ===
@@ -294,6 +298,7 @@ function main() {
   function emitMessage(m, extraCallIds = []) {
     if (!m) return;
     const text = m.text || "";
+    if (plan.excludedMessages.has(itemKey(m.timestamp, m.type, text))) return;
     // 跳过旧规则注入（会被 rules/ 重新注入）
     if (text.includes("<!-- stmem-rule:")) { stats.systemDropped++; return; }
     // 系统注入过滤

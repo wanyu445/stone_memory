@@ -33,9 +33,12 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem mine [--thread <id>] --date <日期> --force   直接重挖并覆盖当天结果
   stmem rebuild --thread <id> [--window N] [--tool-pairs N]  预览重建
   stmem rebuild --thread <id> --apply           实际写入
+  stmem rebuild --thread <id> --check           检查活动线程结构完整性
+  stmem rebuild --thread <id> --repair          备份并修复可恢复的线程断链
   stmem watcher [on|off]                        watcher 总开关启停
   stmem watcher archive [on|off]                watcher 自动挖掘对话开关
   stmem watcher miner [on|off]                  watcher 自动挖掘摘要+特征开关
+  stmem web [--port 4173]                       启动本地记忆管理前端
   stmem db [status|migrate|migrate-all|export] [--thread <id>]  数据库管理
 
 所有 --thread 可省略，默认取第一个已配置线程。
@@ -101,6 +104,9 @@ switch (cmd) {
     break;
   case "watcher":
     require(path.join(SCRIPTS, "stmem-watcher"));
+    break;
+  case "web":
+    require(path.join(SCRIPTS, "stmem-web"));
     break;
   case "db":
     require(path.join(SCRIPTS, "stmem-db"));

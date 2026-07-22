@@ -35,6 +35,8 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem rebuild --thread <id> --apply           实际写入
   stmem rebuild --thread <id> --check           检查活动线程结构完整性
   stmem rebuild --thread <id> --repair          备份并修复可恢复的线程断链
+  stmem rules list|import|update|delete|enable|disable --thread <id>  管理人设/规则
+  stmem memory update|anchor --thread <id> --batch-file <json>  编辑摘要与锚点
   stmem watcher [on|off]                        watcher 总开关启停
   stmem watcher archive [on|off]                watcher 自动挖掘对话开关
   stmem watcher miner [on|off]                  watcher 自动挖掘摘要+特征开关
@@ -83,6 +85,12 @@ switch (cmd) {
     break;
   case "rebuild":
     require(path.join(SCRIPTS, "stmem-rebuild"));
+    break;
+  case "rules":
+    require(path.join(SCRIPTS, "stmem-rules"));
+    break;
+  case "memory":
+    require(path.join(SCRIPTS, "stmem-memory"));
     break;
   case "status":
     require(path.join(SCRIPTS, "stmem-status"));

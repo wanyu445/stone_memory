@@ -28,7 +28,7 @@ function validateThreadInput(input, config = loadConfig(), { allowExisting = fal
     key !== input.threadId && !GLOBAL_KEYS.has(key) && item && typeof item === "object" && normalizeName(item.label || key) === wanted);
   if (duplicate) throw new Error(`已经存在名为“${String(input.libraryName).trim()}”的记忆库`);
   if (!["claude", "codex"].includes(input.runtime)) throw new Error("运行时必须是 claude 或 codex");
-  if (input.runtime === "claude" && !String(input.sessionDir || "").trim()) throw new Error("Claude 需要填写线程文件目录");
+  if (!String(input.sessionDir || "").trim()) throw new Error("需要填写线程文件搜索目录");
   if (!["api", "subagent"].includes(input.minerMode)) throw new Error("挖掘模式必须是 api 或 subagent");
 }
 
@@ -51,10 +51,13 @@ function createThread(input, { allowExisting = false } = {}) {
     label: libraryName,
     runtime: input.runtime,
     purpose: input.purpose,
-    sessionDir: input.runtime === "codex" ? path.join(os.homedir(), ".codex", "sessions") : String(input.sessionDir || "").trim(),
+    sessionDir: String(input.sessionDir || "").trim(),
     minerMode: input.minerMode,
     windowDays: Math.max(1, Number(input.windowDays) || 3),
     keepToolPairs: input.keepToolPairs === undefined || input.keepToolPairs === "" ? 30 : Math.max(0, Number(input.keepToolPairs) || 0),
+    contextWindowTokens: input.contextWindowTokens === undefined || input.contextWindowTokens === ""
+      ? (existing.contextWindowTokens || null)
+      : (Math.max(0, Number(input.contextWindowTokens) || 0) || null),
     automaticFullMining: input.automaticFullMining !== false,
     automaticMemoryMaintenance: input.automaticMemoryMaintenance !== false,
   };
@@ -86,7 +89,7 @@ function createThread(input, { allowExisting = false } = {}) {
   const store = new MemoryStore({ memoryDir: path.join(root, "memory"), threadId });
   store.registerThread({ runtime: entry.runtime, purpose: entry.purpose, label: entry.label });
   store.close();
-  const searchRoot = entry.runtime === "codex" ? path.join(os.homedir(), ".codex", "sessions") : entry.sessionDir;
+  const searchRoot = entry.sessionDir;
   function hasSession(dir) {
     if (!dir || !fs.existsSync(dir)) return false;
     return fs.readdirSync(dir, { withFileTypes: true }).some(item => item.isDirectory()

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { ensureDateFile, resolveDateFile, migrateFlatFiles } = require("../lib/archive-paths");
 const { MemoryStore } = require("../storage/memory-store");
 
@@ -7,6 +8,10 @@ function dateKeyFromTs(timestamp) {
   const ms = new Date(timestamp || "").getTime();
   if (!Number.isFinite(ms)) return null;
   return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function rawRecordKey(row) {
+  return crypto.createHash("sha256").update(JSON.stringify(row)).digest("hex");
 }
 
 /** 规范化对话仓库：唯一实现为 SQLite messages。 */
@@ -78,6 +83,35 @@ class FullArchive {
     return written;
   }
 
+  /** watcher 实时补写、rebuild 前兜底；逐条去重，不用最大时间戳猜测是否已保存。 */
+  archiveNewFullBatch(messages) {
+    const grouped = new Map();
+    for (const message of Array.isArray(messages) ? messages : [messages]) {
+      const date = dateKeyFromTs(message?.timestamp);
+      if (!date) continue;
+      if (!grouped.has(date)) grouped.set(date, []);
+      grouped.get(date).push(message);
+    }
+    let written = 0;
+    for (const [date, rows] of grouped) {
+      const existing = new Set();
+      try {
+        for (const line of fs.readFileSync(resolveDateFile(this.fullDir, date), "utf8").split("\n").filter(Boolean)) {
+          try { existing.add(rawRecordKey(JSON.parse(line))); } catch {}
+        }
+      } catch {}
+      const pending = [];
+      for (const row of rows) {
+        const key = rawRecordKey(row);
+        if (existing.has(key)) continue;
+        existing.add(key);
+        pending.push(row);
+      }
+      if (pending.length) written += this.archiveFullBatch(pending);
+    }
+    return written;
+  }
+
   getFullLastTimestamp(date) {
     try {
       const lines = fs.readFileSync(resolveDateFile(this.fullDir, date), "utf8").split("\n").filter(Boolean);
@@ -89,4 +123,4 @@ class FullArchive {
   }
 }
 
-module.exports = { MemoryArchive, FullArchive, dateKeyFromTs };
+module.exports = { MemoryArchive, FullArchive, dateKeyFromTs, rawRecordKey };

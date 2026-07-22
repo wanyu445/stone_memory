@@ -71,9 +71,8 @@ async function interactiveInit(threadId) {
   const userGender = await askRequired(rl, "用户性别 (male/female)", existing.userGender);
   const runtime = await askRequired(rl, "运行时 (claude/codex)", existing.runtime);
   const purpose = await askRequired(rl, "用途 (accompany/coding/study)", existing.purpose);
-  const sessionDir = runtime === "claude"
-    ? await askRequired(rl, "线程文件目录（绝对路径）", existing.sessionDir)
-    : path.join(os.homedir(), ".codex", "sessions");
+  const defaultSessionDir = runtime === "codex" ? path.join(os.homedir(), ".codex", "sessions") : existing.sessionDir;
+  const sessionDir = await askRequired(rl, "线程文件搜索目录（会递归查找）", existing.sessionDir || defaultSessionDir);
   const minerMode = await askRequired(rl, "挖掘模式 (api/subagent)", existing.minerMode || "subagent");
   let apiProvider = existing.apiProvider || "", apiKey = "", baseUrl = "";
   if (minerMode === "api") {
@@ -122,6 +121,13 @@ async function main() {
   console.log(`   AI: ${tc.ai}  用户: ${tc.user}`);
   console.log(`   运行时: ${tc.runtime}  用途: ${tc.purpose}`);
   console.log(`   路径: ${tc.directory}${sessionWarn}`);
+
+  // 全局开关只作为总闸；任一线程明确启用自动任务时打开总闸，
+  // 实际是否挖掘仍由 watcher 逐线程读取 automatic* 配置决定。
+  if (tc.automaticFullMining || tc.automaticMemoryMaintenance) {
+    try { fs.rmSync(path.join(STONE, ".watcher-off"), { force: true }); } catch {}
+    try { fs.rmSync(path.join(STONE, ".miner-off"), { force: true }); } catch {}
+  }
 
   // 自动启动 watcher
   startWatcher();

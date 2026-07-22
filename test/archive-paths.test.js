@@ -48,6 +48,20 @@ test("FullArchive writes only recursive raw backup", t => {
   assert.equal(fs.existsSync(path.join(memoryDir, "archive", "full", "2026", "05", "2026-05-12.jsonl")), true);
 });
 
+test("FullArchive incrementally backs up rebuild input with Beijing date grouping", t => {
+  const memoryDir = tempDir(t);
+  const archive = new FullArchive(memoryDir);
+  const first = { timestamp: "2026-05-12T15:59:00Z", value: "first" };
+  const nextDay = { timestamp: "2026-05-12T16:01:00Z", value: "next-day" };
+  assert.equal(archive.archiveNewFullBatch([first, nextDay]), 2);
+  assert.equal(archive.archiveNewFullBatch([first, nextDay]), 0);
+  const lateOlderRecord = { timestamp: "2026-05-12T01:00:00Z", value: "late-but-older" };
+  assert.equal(archive.archiveNewFullBatch([lateOlderRecord]), 1);
+  assert.equal(archive.archiveNewFullBatch([lateOlderRecord]), 0);
+  assert.equal(fs.existsSync(path.join(memoryDir, "archive", "full", "2026", "05", "2026-05-12.jsonl")), true);
+  assert.equal(fs.existsSync(path.join(memoryDir, "archive", "full", "2026", "05", "2026-05-13.jsonl")), true);
+});
+
 test("recursive import discovery includes nested jsonl files", t => {
   const root = tempDir(t);
   const nested = path.join(root, "a", "b");

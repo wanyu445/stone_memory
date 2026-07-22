@@ -25,6 +25,9 @@ const { shouldAttempt } = require("../src/services/mining-state");
 const { resolveAutoCompactConfig } = require("../src/services/auto-compact-config");
 const { ingestThreadFile: ingestSharedThreadFile } = require("../src/services/thread-ingest");
 const { MemoryStore } = require("../src/storage/memory-store");
+const { findThreadSessionFile } = require("../src/lib/thread-session-file");
+const { latestContextUsage } = require("../src/lib/thread-context-usage");
+const { updateContextUsage } = require("../src/services/rebuild-log");
 const LOG_DIR = path.join(os.homedir(), ".stone_memory", "logs");
 let workerLockDir = null;
 
@@ -213,7 +216,7 @@ function syncFromThread(tid) {
 const syncStates = new Map();
 
 function getSyncState(tid) {
-  if (!syncStates.has(tid)) syncStates.set(tid, { running: false, dirty: false, timer: null });
+  if (!syncStates.has(tid)) syncStates.set(tid, { running: false, dirty: false, timer: null, latestArchiveDate: null });
   return syncStates.get(tid);
 }
 
@@ -227,6 +230,18 @@ async function flushSync(tid) {
       state.dirty = false;
       if (!fs.existsSync(path.join(os.homedir(), ".stone_memory", ".archive-off"))) {
         await syncFromThread(tid);
+      }
+      const latestArchiveDate = scanArchiveDates(tid).at(-1) || null;
+      const dateChanged = state.latestArchiveDate && latestArchiveDate && state.latestArchiveDate !== latestArchiveDate;
+      state.latestArchiveDate = latestArchiveDate;
+      if (dateChanged) {
+        log(`[${tid}] SQLite 对话日期已推进到 ${latestArchiveDate}，按 mining state 检查待挖日期`);
+        await checkAndMine(tid);
+      }
+      const config = loadConfig()[tid] || {};
+      if (config.automaticFullMining === true) {
+        const usage = latestContextUsage(findThreadSessionFile(config.sessionDir, tid), config.runtime || "claude");
+        if (usage) updateContextUsage(tid, usage);
       }
     }
   } finally {
@@ -250,14 +265,19 @@ function watchThreadFile(tid) {
     log(`[${tid}] 无法实时监听：sessionDir 不存在 (${sessionDir || "未配置"})`);
     return null;
   }
-  const targetName = `${tid}.jsonl`;
+  const targetFile = findThreadSessionFile(sessionDir, tid);
+  if (!targetFile) {
+    log(`[${tid}] 无法实时监听：在 ${sessionDir} 中没有递归找到对应线程文件`);
+    return null;
+  }
+  const targetDir = path.dirname(targetFile), targetName = path.basename(targetFile);
   try {
     // 监听父目录而不是文件本身，兼容 rebuild/编辑器用 rename 原子替换文件。
-    const watcher = fs.watch(sessionDir, { persistent: true }, (_eventType, filename) => {
+    const watcher = fs.watch(targetDir, { persistent: true }, (_eventType, filename) => {
       if (!filename || path.basename(String(filename)) === targetName) scheduleSync(tid);
     });
     watcher.on("error", err => log(`[${tid}] 文件监听异常，将依靠巡检兜底: ${err.message}`));
-    log(`[${tid}] 实时监听: ${path.join(sessionDir, targetName)}`);
+    log(`[${tid}] 实时监听: ${targetFile}`);
     return watcher;
   } catch (err) {
     log(`[${tid}] 文件监听启动失败，将依靠巡检兜底: ${err.message}`);
@@ -273,10 +293,22 @@ async function checkAndMine(tid) {
   if (!archiveDates.length) return false;
   const miningState = loadMiningState(tid);
   const bjToday = beijingToday();
+  const threadConfig = loadConfig()[tid] || {};
+  const fullMining = threadConfig.automaticFullMining === true;
+  const maintenance = threadConfig.automaticMemoryMaintenance === true;
+  if (!fullMining && !maintenance) return false;
 
   const minerOff = fs.existsSync(path.join(STOP, ".miner-off"));
 
-  const pending = archiveDates.filter(d => d < bjToday && shouldAttempt(miningState, d, readArchiveDay(tid, d)));
+  let createdDate = bjToday;
+  const store = new MemoryStore({ memoryDir: path.join(getThreadDir(tid), "memory"), threadId: tid });
+  try {
+    const createdAt = store.getThread()?.created_at;
+    if (createdAt) createdDate = new Date(new Date(createdAt).getTime() + 8 * 3600 * 1000).toISOString().slice(0,10);
+  } finally { store.close(); }
+  const pending = archiveDates.filter(d => d < bjToday
+    && (fullMining || (maintenance && d >= createdDate))
+    && shouldAttempt(miningState, d, readArchiveDay(tid, d)));
 
   let minedAny = false;
   if (pending.length > 0 && !minerOff) {
@@ -349,7 +381,8 @@ async function main() {
         // 启动时同步一次，之后这里只承担低频漏事件兜底。
         await flushSync(tid);
         const minedAny = await checkAndMine(tid);
-        if (!compactChecked.has(tid) || minedAny) {
+        const maintenance = loadConfig()[tid]?.automaticMemoryMaintenance === true;
+        if (maintenance && (!compactChecked.has(tid) || minedAny)) {
           compactChecked.add(tid);
           await runAutoCompact(tid);
         }

@@ -1,10 +1,11 @@
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const crypto = require("crypto");
 const { getCfg, getThreadDir } = require("../config");
 const { MemoryStore } = require("../storage/memory-store");
 const { listDateFiles } = require("../lib/archive-paths");
+const { findThreadSessionFile } = require("../lib/thread-session-file");
+const { dateKeyFromTs } = require("./memory-archive");
 
 function itemKey(timestamp, role, text) {
   return crypto.createHash("sha256").update(`${timestamp || ""}\0${role || ""}\0${text || ""}`).digest("hex").slice(0, 24);
@@ -19,19 +20,14 @@ function readJsonl(file) {
   return { rows, malformed };
 }
 
-function findFile(dir, threadId) {
-  if (!dir || !fs.existsSync(dir)) return null;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const file = path.join(dir, entry.name);
-    if (entry.isDirectory()) { const found = findFile(file, threadId); if (found) return found; }
-    if (entry.isFile() && entry.name.endsWith(".jsonl") && entry.name.includes(threadId) && !entry.name.includes(".rebuilt")) return file;
-  }
-  return null;
+function sessionFile(threadId, runtime) {
+  const root = getCfg("sessionDir", threadId);
+  return findThreadSessionFile(root, threadId);
 }
 
-function sessionFile(threadId, runtime) {
-  const root = runtime === "codex" ? path.join(os.homedir(), ".codex", "sessions") : getCfg("sessionDir", threadId);
-  return findFile(root, threadId);
+function missingSessionMessage(threadId) {
+  const root = getCfg("sessionDir", threadId);
+  return `无法重建：在配置的线程文件目录中没有找到线程 ${threadId}。请前往设置修改线程文件目录，或检查对应文件是否存在（当前目录：${root || "未配置"}）`;
 }
 
 function textFromBlocks(content, types) {
@@ -60,7 +56,7 @@ function inspectClaude(rows, cutoff, toolLimit) {
       tools.push({ id: block.id, timestamp: row.timestamp, name: block.name || "tool", context: JSON.stringify(block.input || {}).slice(0, 500), output: String(outputs.get(block.id) || "").slice(0, 500) });
     }
   }
-  return { items, tools: tools.slice(-toolLimit) };
+  return { items: items.reverse(), tools: toolLimit > 0 ? tools.slice(-toolLimit).reverse() : [] };
 }
 
 function inspectCodex(rows, cutoff, toolLimit) {
@@ -78,19 +74,48 @@ function inspectCodex(rows, cutoff, toolLimit) {
       id: row.payload.call_id, timestamp: row.timestamp, name: row.payload.name || "function", context: String(row.payload.arguments || "").slice(0, 500), output: String(outputs.get(row.payload.call_id) || "").slice(0, 500),
     });
   }
-  return { items, tools: tools.slice(-toolLimit) };
+  return { items: items.reverse(), tools: toolLimit > 0 ? tools.slice(-toolLimit).reverse() : [] };
 }
 
-function cutoffDate(days) { return new Date(Date.now() - Math.max(1, days) * 86400000).toISOString().slice(0, 10); }
+function conversationDates(rows, runtime) {
+  const dates = new Set();
+  for (const row of rows) {
+    let role, text;
+    if (runtime === "codex") {
+      if (row.type !== "response_item" || row.payload?.type !== "message") continue;
+      role = row.payload.role;
+      text = textFromBlocks(row.payload.content, ["input_text", "output_text"]);
+    } else {
+      role = row.type;
+      text = textFromBlocks(row.message?.content, ["text", "thinking"]);
+    }
+    if (!["user", "assistant"].includes(role) || !text) continue;
+    if (text.includes("<!-- stmem-rule:") || text.includes("<memory_context>")) continue;
+    const date = dateKeyFromTs(row.timestamp);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) dates.add(date);
+  }
+  return [...dates].sort();
+}
+
+function conversationWindow(rows, runtime, windowDays) {
+  const dates = conversationDates(rows, runtime);
+  const activeDates = dates.slice(-Math.max(1, windowDays));
+  const fallback = new Date().toISOString().slice(0, 10);
+  return { cutoff: activeDates[0] || fallback, referenceDate: activeDates.at(-1) || fallback, activeDates };
+}
+
+function latestConversationDate(rows, runtime) {
+  return conversationDates(rows, runtime).at(-1) || null;
+}
 
 function buildRebuildPreview(threadId, { windowDays = 3, toolPairs = 30 } = {}) {
   const runtime = getCfg("runtime", threadId, "claude");
   const file = sessionFile(threadId, runtime);
-  if (!file) throw new Error("没有找到对应的活动线程文件");
+  if (!file) throw new Error(missingSessionMessage(threadId));
   const { rows, malformed } = readJsonl(file);
-  const cutoff = cutoffDate(windowDays);
+  const { cutoff, referenceDate, activeDates } = conversationWindow(rows, runtime, windowDays);
   const result = runtime === "codex" ? inspectCodex(rows, cutoff, toolPairs) : inspectClaude(rows, cutoff, toolPairs);
-  return { threadId, runtime, file, windowDays, toolPairs, cutoff, malformed, ...result };
+  return { threadId, runtime, file, windowDays, toolPairs, referenceDate, cutoff, activeDates, malformed, ...result };
 }
 
 function checkClaude(rows, threadId) {
@@ -117,7 +142,7 @@ function checkCodex(rows, threadId) {
 
 function checkThreadIntegrity(threadId) {
   const runtime = getCfg("runtime", threadId, "claude"), file = sessionFile(threadId, runtime);
-  if (!file) throw new Error("没有找到对应的活动线程文件");
+  if (!file) throw new Error(missingSessionMessage(threadId));
   const { rows, malformed } = readJsonl(file);
   const details = runtime === "codex" ? checkCodex(rows, threadId) : checkClaude(rows, threadId);
   const issues = malformed + Object.entries(details).filter(([key]) => !["threadId", "runtime"].includes(key)).reduce((sum, [, value]) => sum + value, 0);
@@ -214,7 +239,7 @@ function permanentlyTrimThread(threadId, { excludedMessages = [], excludedTools 
   const messageSet = new Set(excludedMessages), toolSet = new Set(excludedTools);
   if (!messageSet.size && !toolSet.size) return { removedMessages: 0, removedTools: 0, archiveMessages: 0, fullRecords: 0 };
   const runtime = getCfg("runtime", threadId, "claude"), file = sessionFile(threadId, runtime);
-  if (!file) throw new Error("没有找到对应的活动线程文件");
+  if (!file) throw new Error(missingSessionMessage(threadId));
   const current = readJsonl(file);
   if (current.malformed) throw new Error("活动线程包含损坏 JSON，永久裁剪前请先检查并修复");
   const trimmed = trimRows(current.rows, runtime, messageSet, toolSet);
@@ -246,4 +271,4 @@ function permanentlyTrimThread(threadId, { excludedMessages = [], excludedTools 
   return { removedMessages: trimmed.removedMessages, removedTools: trimmed.removedTools, archiveMessages, fullRecords };
 }
 
-module.exports = { itemKey, buildRebuildPreview, checkThreadIntegrity, repairThreadIntegrity, loadRebuildPlan, permanentlyTrimThread, trimRows, sessionFile };
+module.exports = { itemKey, inspectClaude, inspectCodex, conversationDates, conversationWindow, latestConversationDate, buildRebuildPreview, checkThreadIntegrity, repairThreadIntegrity, loadRebuildPlan, permanentlyTrimThread, trimRows, sessionFile };

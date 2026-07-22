@@ -10,7 +10,9 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const Database = require("better-sqlite3");
 const { loadConfig, getThreadDir, listThreadIds } = require("../src/config");
+const { resolveDatabasePath } = require("../src/storage/database-location");
 
 const STONE = path.join(os.homedir(), ".stone_memory");
 const cfgFile = path.join(STONE, "stmem.json");
@@ -54,6 +56,21 @@ function main() {
   if (fs.existsSync(threadDir)) {
     fs.rmSync(threadDir, { recursive: true, force: true });
     console.log("已删除目录: " + threadDir);
+  }
+
+  // SQLite 已是所有线程共享的正式数据源；删除记忆库时必须同步清理该线程的行。
+  const dbPath = resolveDatabasePath(path.join(threadDir, "memory"));
+  if (fs.existsSync(dbPath)) {
+    const db = new Database(dbPath);
+    try {
+      db.transaction(() => {
+        db.prepare("UPDATE threads SET parent_thread_id=NULL WHERE parent_thread_id=?").run(tid);
+        for (const table of ["messages", "mining_day_state", "notifications", "feelings", "features", "mining_jobs", "term_daily_stats"])
+          db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(tid);
+        db.prepare("DELETE FROM threads WHERE id=?").run(tid);
+      })();
+      console.log("已从共享数据库移除线程数据");
+    } finally { db.close(); }
   }
 
   // 从 config 移除

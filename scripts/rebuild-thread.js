@@ -19,11 +19,11 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 
-const { FullArchive } = require("../src/services/memory-archive");
+const { FullArchive, dateKeyFromTs } = require("../src/services/memory-archive");
 const { getCfg, getThreadDir } = require("../src/config");
 const { resolveDateFile, listDateFiles } = require("../src/lib/archive-paths");
 const { readFeelings: readDatabaseFeelings, readMessages } = require("../src/storage/memory-reader");
-const { itemKey, loadRebuildPlan } = require("../src/services/rebuild-workbench");
+const { itemKey, conversationWindow, loadRebuildPlan } = require("../src/services/rebuild-workbench");
 
 let THREAD_BASE = null;
 let FULL_ARCHIVE = null;
@@ -170,34 +170,28 @@ function loadFullMessages() {
   } catch (err) {
     console.error(`[rebuild] full/ load error: ${err.message}`);
   }
+  // full 是按天增量追加的原始备份；迟到记录和 rebuild 前补扫会写在文件末尾，
+  // 文件物理顺序不等于真实对话顺序。稳定按时间戳排序后再重建。
+  all.sort((a, b) => {
+    const left = new Date(a.timestamp || "").getTime();
+    const right = new Date(b.timestamp || "").getTime();
+    if (!Number.isFinite(left) && !Number.isFinite(right)) return 0;
+    if (!Number.isFinite(left)) return 1;
+    if (!Number.isFinite(right)) return -1;
+    return left - right;
+  });
   if (skipped > 0) console.warn(`[rebuild]   ⚠️ ${skipped} corrupted lines skipped in full/ archive`);
   return all;
 }
 
 function backupNewToFull(messages) {
-  const byDate = new Map();
-  for (const msg of messages) {
-    const ts = msg.timestamp;
-    if (!ts) continue;
-    const bjKey = FULL_ARCHIVE._beijingDateKey(ts);
-    if (!byDate.has(bjKey)) byDate.set(bjKey, []);
-    byDate.get(bjKey).push(msg);
-  }
-  let backed = 0;
-  for (const [dateKey, msgs] of byDate) {
-    const lastTs = FULL_ARCHIVE.getFullLastTimestamp(dateKey);
-    const newMsgs = lastTs ? msgs.filter((m) => (m.timestamp || "") > lastTs) : msgs;
-    if (newMsgs.length > 0) { FULL_ARCHIVE.archiveFullBatch(newMsgs); backed += newMsgs.length; }
-  }
-  return backed;
+  return FULL_ARCHIVE.archiveNewFullBatch(messages);
 }
 
 // ---- 过滤 ----
 
 function msgDate(msg) {
-  const ts = msg.timestamp;
-  if (!ts) return null;
-  return ts.slice(0, 10);
+  return dateKeyFromTs(msg.timestamp);
 }
 
 function extractRealBlocks(msg) {
@@ -250,8 +244,7 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
       if (content.includes("<!-- stmem-rule:")) { stats.systemDropped++; return; }
       if (isSystemInjection(content)) { stats.systemDropped++; return; }
       if (!content.trim()) return;
-      emitFn("user", content, { timestamp: msg.timestamp });
-      stats.windowMsg++;
+      if (emitFn("user", content, { timestamp: msg.timestamp })) stats.windowMsg++;
     } else if (Array.isArray(content)) {
       const textBlocks = content.filter((b) => b.type === "text");
       const toolBlocks = content.filter((b) => b.type === "tool_result");
@@ -262,8 +255,7 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
       if (emitBlocks.length === 0) return;
       const cleanBlocks = emitBlocks.filter(b => b.type !== "text" || !isSystemInjection(b.text || ""));
       if (cleanBlocks.length === 0) return;
-      emitFn("user", cleanBlocks, { timestamp: msg.timestamp });
-      stats.windowMsg++;
+      if (emitFn("user", cleanBlocks, { timestamp: msg.timestamp })) stats.windowMsg++;
       if (toolBlocks.length - keepToolResults.length > 0) stats.systemDropped += toolBlocks.length - keepToolResults.length;
     }
   } else if (msg.type === "assistant") {
@@ -271,8 +263,7 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
     if (typeof content === "string") {
       const text = content.trim();
       if (!text || text.startsWith("{\"action\":\"silent\"}")) return;
-      emitFn("assistant", [{ type: "text", text }], { timestamp: msg.timestamp });
-      stats.windowMsg++;
+      if (emitFn("assistant", [{ type: "text", text }], { timestamp: msg.timestamp })) stats.windowMsg++;
       return;
     }
     if (!Array.isArray(content)) return;
@@ -292,12 +283,12 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
     }
     if (droppedTool > 0) stats.systemDropped += droppedTool;
     if (clean.length === 0) return;
-    emitFn("assistant", clean, {
+    const emitted = emitFn("assistant", clean, {
       timestamp: msg.timestamp,
       model: msg.message?.model,
       stop_reason: msg.message?.stop_reason,
     });
-    stats.windowMsg++;
+    if (emitted) stats.windowMsg++;
   }
 }
 
@@ -330,10 +321,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   console.log(`[rebuild]   ${messages.length} messages from full`);
 
   // === 计算滚动窗口 ===
-  const now = new Date();
-  const cutoffDate = new Date(now.getTime() - windowDays * 24 * 3600 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  const { cutoff: cutoffDate } = conversationWindow(messages, "claude", windowDays);
 
   // === 保留工具调用对 (tool_use + tool_result)，遇到窗口外上下文截断 ===
   const preservedToolIds = new Set();
@@ -444,6 +432,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   console.log(`[rebuild]   ${retainFeelings.length} retainOriginal (from retain-config.json) → ${fragmentWindows.length} fragments, ${fragmentDates.size} dates`);
 
   // === 构建输出 ===
+  const now = new Date();
   const outputLines = [];
   let prevUuid = null;
   let stats = { memoryBlock: 0, windowMsg: 0, systemDropped: 0 };
@@ -492,20 +481,23 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   // 1. 注入 rules/ 下所有 .md 文件（标记: <!-- stmem-rule: <filename> -->）
   const RULE_MARKER = "<!-- stmem-rule:";
   let ruleCount = 0;
+  const injectedRuleNames = [];
   try {
     fs.mkdirSync(RULES_DIR, { recursive: true });
-    const ruleFiles = fs.readdirSync(RULES_DIR).filter((f) => f.endsWith(".md")).sort();
-    for (const f of ruleFiles) {
-      const text = fs.readFileSync(path.join(RULES_DIR, f), "utf8");
+    const { listRules } = require("../src/services/rule-store");
+    for (const { name: f, content: text, injected } of listRules(currentThreadId)) {
+      if (!injected) continue;
       if (!text.trim()) continue;
       emit("user", `${RULE_MARKER} ${f} -->\n${text}`);
       ruleCount++;
+      injectedRuleNames.push(f);
     }
   } catch {}
   if (ruleCount > 0) console.log(`[rebuild]   injected ${ruleCount} rules from rules/`);
 
   // 2. Pre-window: 记忆块 + 片段交替注入
   let pendingMemory = []; // 当前累积的记忆 feelings
+  let retainedMessages = 0;
 
   // 收集所有 pre-window 日期
   const allPreDates = new Set();
@@ -530,7 +522,9 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
           timestamp: entry.timestamp,
           message: { content: cleanText },
         };
+        const before = stats.windowMsg;
         outputCleanMessage(msg, emit, stats, preservedToolIds);
+        retainedMessages += stats.windowMsg - before;
       }
       // 该日期未被 retain 的 feelings → 进 pendingMemory (下一个记忆块)
       const dayNonRetain = preWindow.filter((f) => f.date === date && !retainIds.has(f.id));
@@ -610,6 +604,8 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
     console.log(`[rebuild]   backup: ${path.basename(bakPath)}`);
     // 原子替换 — 不依赖外部 mv
     fs.renameSync(outputPath, inputPath);
+    const triggerIdx=process.argv.indexOf("--trigger"),trigger=triggerIdx>=0?process.argv[triggerIdx+1]:"cli";
+    require("../src/services/rebuild-log").appendRebuildLog(currentThreadId,{status:"completed",runtime:"claude",trigger,threadFile:inputPath,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:originalSize,contextBytes:outputSize,outputLines:totalOutput});
     console.log(`\n[rebuild] ${(originalSize / 1024 / 1024).toFixed(2)} MB → ` +
       `${(outputSize / 1024 / 1024).toFixed(2)} MB ` +
       `(${((1 - outputSize / originalSize) * 100).toFixed(1)}% saved)`);
@@ -661,7 +657,7 @@ function main() {
   }
 
   if (!fs.existsSync(inputFile)) {
-    console.error(`File not found: ${inputFile}`);
+    console.error(`无法重建：在 ${SESSION_DIR} 中没有找到线程 ${threadId}。请修改线程文件目录或检查文件是否存在`);
     process.exit(1);
   }
 

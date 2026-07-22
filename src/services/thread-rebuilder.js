@@ -187,8 +187,11 @@ function buildMemoryBlocks(feelings) {
 
 // ---- 窗口计算 ----
 
-function computeCutoff(windowDays) {
-  return new Date(Date.now() - windowDays * 24 * 3600 * 1000).toISOString().slice(0, 10);
+function computeCutoff(windowDays, referenceDate = new Date().toISOString().slice(0, 10)) {
+  const reference = /^\d{4}-\d{2}-\d{2}$/.test(String(referenceDate || ""))
+    ? `${referenceDate}T00:00:00.000Z`
+    : referenceDate;
+  return new Date(new Date(reference).getTime() - windowDays * 24 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 module.exports = {

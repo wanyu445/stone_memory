@@ -13,18 +13,16 @@
  */
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const crypto = require("crypto");
-const { FullArchive } = require("../src/services/memory-archive");
+const { FullArchive, dateKeyFromTs } = require("../src/services/memory-archive");
 const {
   loadInjectableFeelings, loadRetainConfig,
-  buildFragmentWindows, buildMemoryBlocks, computeCutoff,
+  buildFragmentWindows, buildMemoryBlocks,
 } = require("../src/services/thread-rebuilder");
 const { getCfg, getThreadDir } = require("../src/config");
 const { readMessages } = require("../src/storage/memory-reader");
-const { itemKey, loadRebuildPlan } = require("../src/services/rebuild-workbench");
+const { itemKey, conversationWindow, loadRebuildPlan } = require("../src/services/rebuild-workbench");
 
-const CODEX_DIR = path.join(os.homedir(), ".codex", "sessions");
 const DEFAULT_WINDOW_DAYS = 3;
 
 function getFeelingsPaths(threadId) {
@@ -35,7 +33,7 @@ function getFeelingsPaths(threadId) {
 }
 
 function msgDate(ts) {
-  return (ts || "").slice(0, 10);
+  return dateKeyFromTs(ts);
 }
 
 /** 提取纯文本（input_text / output_text） */
@@ -88,18 +86,22 @@ function main() {
   const windowIdx = args.indexOf("--window");
   const toolPairsIdx = args.indexOf("--tool-pairs");
   const planIdx = args.indexOf("--plan");
+  const triggerIdx = args.indexOf("--trigger");
   const threadId = threadIdx >= 0 ? args[threadIdx + 1] : null;
   const windowDays = windowIdx >= 0 ? parseInt(args[windowIdx + 1]) || DEFAULT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS;
   const keepPairs = toolPairsIdx >= 0 ? Math.max(0, parseInt(args[toolPairsIdx + 1]) || 0) : 40;
   const plan = loadRebuildPlan(planIdx >= 0 ? args[planIdx + 1] : null);
+  const trigger = triggerIdx >= 0 ? args[triggerIdx + 1] : "cli";
 
   if (!threadId) { console.log("用法: --thread <id> [--window N] [--tool-pairs N] [--apply]"); return; }
+  const codexDir = getCfg("sessionDir", threadId);
+  if (!codexDir) { console.error("无法重建：未配置线程文件目录，请前往设置填写 Codex session 搜索目录"); process.exit(1); }
 
   // Windows：检查是否有待替换的 .rebuilt 文件（上次写入时文件被锁）
   if (process.platform === "win32") {
-    const rebuiltFile = path.join(CODEX_DIR, `${threadId}.rebuilt.jsonl`);
+    const rebuiltFile = path.join(codexDir, `${threadId}.rebuilt.jsonl`);
     if (fs.existsSync(rebuiltFile)) {
-      const targetFile = path.join(CODEX_DIR, `${threadId}.jsonl`);
+      const targetFile = path.join(codexDir, `${threadId}.jsonl`);
       try { fs.renameSync(rebuiltFile, targetFile); console.log(`[codex-rebuild] pending replace: ${rebuiltFile} → ${targetFile}`); } catch {}
     }
   }
@@ -115,10 +117,10 @@ function main() {
     }
     return null;
   }
-  let inputFile = path.join(CODEX_DIR, `${threadId}.jsonl`);
+  let inputFile = path.join(codexDir, `${threadId}.jsonl`);
   if (!fs.existsSync(inputFile)) {
-    inputFile = searchSessionFile(CODEX_DIR);
-    if (!inputFile) { console.error(`Not found: ${threadId} in ${CODEX_DIR}`); process.exit(1); }
+    inputFile = searchSessionFile(codexDir);
+    if (!inputFile) { console.error(`无法重建：在 ${codexDir} 中没有找到线程 ${threadId}。请修改线程文件目录或检查文件是否存在`); process.exit(1); }
   }
 
   console.log(`[codex-rebuild] Loading: ${inputFile}`);
@@ -137,20 +139,7 @@ function main() {
   // === 全量备份到 full/ ===
   const memoryDir = path.join(getThreadDir(threadId), "memory");
   const codexArchive = new FullArchive(memoryDir);
-  const byDate = new Map();
-  for (const msg of allMsgs) {
-    const ts = msg.timestamp;
-    if (!ts) continue;
-    const bjKey = codexArchive._beijingDateKey(ts);
-    if (!byDate.has(bjKey)) byDate.set(bjKey, []);
-    byDate.get(bjKey).push(msg);
-  }
-  let backed = 0;
-  for (const [dateKey, msgs] of byDate) {
-    const lastTs = codexArchive.getFullLastTimestamp(dateKey);
-    const newMsgs = lastTs ? msgs.filter((m) => (m.timestamp || "") > lastTs) : msgs;
-    if (newMsgs.length > 0) { codexArchive.archiveFullBatch(newMsgs); backed += newMsgs.length; }
-  }
+  const backed = codexArchive.archiveNewFullBatch(allMsgs);
   if (backed > 0) console.log(`[codex-rebuild] full backup: ${backed} new messages`);
 
   // === 工具链扫描（反向，保留最近 N 对 function_call） ===
@@ -213,7 +202,7 @@ function main() {
   }
 
   // === 窗口 ===
-  const cutoffDate = computeCutoff(windowDays);
+  const { cutoff: cutoffDate } = conversationWindow(allMsgs, "codex", windowDays);
   console.log(`[codex-rebuild] Window: ${windowDays} days (cutoff: ${cutoffDate})`);
 
   // === Feelings ===
@@ -279,17 +268,19 @@ function main() {
   const RULES_DIR = path.join(getThreadDir(threadId), "rules");
   const RULE_MARKER = "<!-- stmem-rule:";
   let ruleCount = 0;
+  const injectedRuleNames = [];
   try {
     fs.mkdirSync(RULES_DIR, { recursive: true });
-    const ruleFiles = fs.readdirSync(RULES_DIR).filter(f => f.endsWith(".md")).sort();
-    for (const f of ruleFiles) {
-      const text = fs.readFileSync(path.join(RULES_DIR, f), "utf8");
+    const { listRules } = require("../src/services/rule-store");
+    for (const { name: f, content: text, injected } of listRules(threadId)) {
+      if (!injected) continue;
       if (!text.trim()) continue;
       output.push(JSON.stringify({
         timestamp: now.toISOString(), type: "response_item",
         payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${RULE_MARKER} ${f} -->\n${text}` }] },
       }));
       ruleCount++;
+      injectedRuleNames.push(f);
     }
   } catch {}
   if (ruleCount > 0) console.log(`[codex-rebuild] injected ${ruleCount} rules from rules/`);
@@ -333,6 +324,7 @@ function main() {
   // 交替注入: 记忆块 ↔ 片段
   const preDates = [...new Set(preWindow.map(f => f.date))].sort();
   let pendingMemory = [];
+  let retainedMessages = 0;
   for (const date of preDates) {
     if (fragmentDates.has(date)) {
       if (pendingMemory.length > 0) {
@@ -360,6 +352,7 @@ function main() {
           payload: { type: "message", role: entry.type, content: [{ type: blockType, text: cleanText }] },
         }));
         stats.windowMsg++;
+        retainedMessages++;
       }
       const dayNonRetain = preWindow.filter(f => f.date === date && !retainIds.has(f.id));
       pendingMemory.push(...dayNonRetain);
@@ -397,6 +390,8 @@ function main() {
     // 写入（Windows 下如被锁则写 .rebuilt.jsonl 待下次替换）
     const outputFile = (process.platform === "win32") ? inputFile.replace(/\.jsonl$/, ".rebuilt.jsonl") : inputFile;
     fs.writeFileSync(outputFile, output.join("\n") + "\n", "utf8");
+    const contextBytes=fs.statSync(outputFile).size;
+    require("../src/services/rebuild-log").appendRebuildLog(threadId,{status:process.platform==="win32"?"pending_replace":"completed",runtime:"codex",trigger,threadFile:inputFile,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:Buffer.byteLength(raw),contextBytes,outputLines:totalOutput});
     console.log(`\n[codex-rebuild] ${totalOriginal} → ${totalOutput} lines (${((1 - totalOutput / totalOriginal) * 100).toFixed(1)}% saved)`);
     console.log(`  Memory blocks: ${stats.memoryBlock} | Messages: ${stats.windowMsg} | Function calls: ${stats.functionCall} | System dropped: ${stats.systemDropped}`);
   } else {

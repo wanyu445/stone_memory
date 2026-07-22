@@ -10,9 +10,11 @@ const fs = require("fs");
 const path = require("path");
 const { normalizeThreadMessage } = require("../src/lib/thread-message");
 const { parseThreadMessages, ingestMessages } = require("../src/services/thread-ingest");
+const { findThreadSessionFile } = require("../src/lib/thread-session-file");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../src/config");
 const { MemoryStore } = require("../src/storage/memory-store");
+const { FullArchive } = require("../src/services/memory-archive");
 
 const tid = process.argv.includes("--thread")
   ? process.argv[process.argv.indexOf("--thread") + 1]
@@ -22,10 +24,10 @@ if (!tid) { console.error("未指定线程，请用 --thread <id> 或先 stmem i
 const threadDir = getThreadDir(tid);
 const sessionDir = getCfg("sessionDir", tid);
 if (!sessionDir) { console.error("请在 stmem.json 中配置 sessionDir"); process.exit(1); }
-const threadFile = path.join(sessionDir, `${tid}.jsonl`);
+const threadFile = findThreadSessionFile(sessionDir, tid);
 
-if (!fs.existsSync(threadFile)) {
-  console.log(`线程文件不存在: ${threadFile}`);
+if (!threadFile) {
+  console.log(`线程文件不存在：无法在 ${sessionDir} 中递归找到 ${tid}。请修改线程文件目录或检查文件是否存在`);
   process.exit(1);
 }
 
@@ -119,8 +121,9 @@ for (const msg of newMessages) {
 
 // 统一 ingest 服务负责格式解析、北京时间分日、稳定哈希去重和乱序重排。
 const store = new MemoryStore({ memoryDir, threadId: tid });
-const ingestResult = ingestMessages(allMessages, { memoryStore: store, fullDir: path.join(memoryDir, "archive", "full") });
+const ingestResult = ingestMessages(allMessages, { memoryStore: store });
 store.close();
+const fullBacked = new FullArchive(memoryDir).archiveNewFullBatch(allMessages);
 const total = ingestResult.imported;
 
-console.log(`同步完成: +${total} 条 (${ingestResult.dates} 天)，最新 ${maxTimestamp}`);
+console.log(`同步完成: archive +${total} 条，full +${fullBacked} 条（${ingestResult.dates} 天），最新 ${maxTimestamp}`);

@@ -14,6 +14,7 @@ function main() {
   const windowIdx = args.indexOf("--window");
   const toolPairsIdx = args.indexOf("--tool-pairs");
   const planIdx = args.indexOf("--plan");
+  const triggerIdx = args.indexOf("--trigger");
 
   const { getCfg } = require("../src/config");
   if (!threadId) {
@@ -46,6 +47,7 @@ function main() {
   if (window) { spawnArgs.push("--window"); spawnArgs.push(String(window)); }
   if (toolPairs) { spawnArgs.push("--tool-pairs"); spawnArgs.push(String(toolPairs)); }
   if (plan) { spawnArgs.push("--plan"); spawnArgs.push(String(plan)); }
+  if (triggerIdx >= 0 && args[triggerIdx + 1]) { spawnArgs.push("--trigger"); spawnArgs.push(args[triggerIdx + 1]); }
 
   console.log(`[stmem] ${runtime} rebuild ${threadId}, window=${window}${toolPairs ? `, pairs=${toolPairs}` : ""}...`);
   const result = spawnSync(process.execPath, spawnArgs, { stdio: "inherit", cwd: path.dirname(__dirname) });

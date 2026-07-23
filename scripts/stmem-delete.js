@@ -58,7 +58,7 @@ function main() {
     console.log("已删除目录: " + threadDir);
   }
 
-  // SQLite 已是所有线程共享的正式数据源；删除记忆库时必须同步清理该线程的行。
+  // SQLite 已是所有线程共享的正式数据源；删除记忆体时必须同步清理该线程的行。
   const dbPath = resolveDatabasePath(path.join(threadDir, "memory"));
   if (fs.existsSync(dbPath)) {
     const db = new Database(dbPath);

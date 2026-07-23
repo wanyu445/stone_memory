@@ -18,7 +18,7 @@ function normalizeThreadMessage(msg) {
   }
   if (!text && msg.text) text = typeof msg.text === "string" ? msg.text : JSON.stringify(msg.text);
   if (!text) return null;
-  return { timestamp: msg.timestamp, type: role || "user", text: text.slice(0, 2000) };
+  return { timestamp: msg.timestamp, type: role || "user", text };
 }
 
 module.exports = { normalizeThreadMessage };

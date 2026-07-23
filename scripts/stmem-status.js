@@ -21,7 +21,7 @@ for (const tid of threads) {
 
   const label = getCfg("label", tid, tid);
   console.log(`  ${label}`);
-  console.log(`    对应线程: ${tid}`);
+  console.log(`    绑定线程: ${tid}`);
   console.log(`    AI: ${getCfg("ai", tid)}  用户: ${getCfg("user", tid)} (${getCfg("userGender", tid, "female")})`);
   console.log(`    runtime: ${getCfg("runtime", tid)} | purpose: ${getCfg("purpose", tid)}`);
   console.log(`    sessionDir: ${getCfg("sessionDir", tid)}`);

@@ -3,10 +3,59 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { MemoryMiner, normalizeNewImportance } = require("../src/services/memory-miner");
+const {
+  MemoryMiner,
+  normalizeNewImportance,
+  sortFeelingsChronologically,
+  feelingEventTime,
+} = require("../src/services/memory-miner");
 
 test("new mining normalizes importance to 2, 3, or 5", () => {
   assert.deepEqual([1, 2, 3, 4, 5, null].map(normalizeNewImportance), [2, 2, 3, 3, 5, 2]);
+});
+
+test("new feelings are stored in event-time order with unknown times stable at the end", () => {
+  const entries = [
+    { content: "7月4日，上午十点二十八分。十点发生的事。" },
+    { content: "7月4日，中午十二点二十三分。中午发生的事。" },
+    { content: "7月4日，早上八点五十三分。早上发生的事。" },
+    { content: "7月4日。没有明确时间的第一件事。" },
+    { content: "7月4日，晚上九点三十八分。晚上发生的事。" },
+    { content: "7月4日。没有明确时间的第二件事。" },
+  ];
+
+  assert.deepEqual(
+    sortFeelingsChronologically(entries).map(entry => entry.content),
+    [
+      entries[2].content,
+      entries[0].content,
+      entries[1].content,
+      entries[4].content,
+      entries[3].content,
+      entries[5].content,
+    ],
+  );
+});
+
+test("targeted mining uses existing feelings as tone examples and appends selected events", async t => {
+  const miner = minerFixture(t, [{ timestamp: "2026-06-12T01:00:00.000Z", text: "被选中的对话" }]);
+  miner.store.appendTargeted("2026-06-12", { feelings: [{ content: "6月12日，早上八点。已有摘要。", importance: 3 }] });
+  let received;
+  miner._extractViaSubagent = async (messages, prompt) => {
+    received = { messages, prompt };
+    return [{ content: "6月12日，上午九点。补挖出的事件。", importance: 3 }];
+  };
+
+  const result = await miner.mineTargeted("2026-06-12", miner.store.listMessages({ date: "2026-06-12" }));
+  assert.equal(received.messages.length, 1);
+  assert.match(received.prompt, /已有摘要/);
+  assert.match(received.prompt, /仅用于模仿叙述视角和语气/);
+  assert.equal(result.feelings.length, 1);
+  assert.equal(feelingEventTime(result.feelings[0], "2026-06-12"), "2026-06-12T01:00:00.000Z");
+  assert.deepEqual(miner.store.listFeelings({ date: "2026-06-12" }).map(row => row.content), [
+    "6月12日，早上八点。已有摘要。",
+    "6月12日，上午九点。补挖出的事件。",
+  ]);
 });
 
 function minerFixture(t, messages) {

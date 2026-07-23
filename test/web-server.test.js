@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { previewRows, paginate } = require("../src/web/server");
+const { previewRows, paginate, buildConversationCalendar, miningCommandArgs, targetedMiningCommandArgs } = require("../src/web/server");
 const { itemKey, inspectClaude, inspectCodex, conversationWindow, latestConversationDate, trimRows } = require("../src/services/rebuild-workbench");
 const { validateThreadInput } = require("../src/services/thread-setup");
 const { findThreadSessionFile } = require("../src/lib/thread-session-file");
@@ -39,6 +39,31 @@ test("rebuild workbench uses stable selection keys and paginates", () => {
   const result = paginate(Array.from({ length: 47 }, (_, index) => index), 3);
   assert.equal(result.totalPages, 3);
   assert.deepEqual(result.rows, [40, 41, 42, 43, 44, 45, 46]);
+});
+
+test("conversation calendar renders complete months newest first", () => {
+  const counts = [{ date: "2026-05-01", count: 8 }, { date: "2026-06-20", count: 205 }];
+  const calendar = buildConversationCalendar(counts, 1);
+  assert.equal(calendar.totalPages, 2);
+  assert.equal(calendar.month, "2026-06");
+  assert.equal(calendar.days.length, 30);
+  assert.deepEqual(calendar.days.find(day => day.date === "2026-06-20"), { date: "2026-06-20", count: 205 });
+  assert.deepEqual(calendar.days.find(day => day.date === "2026-06-03"), { date: "2026-06-03", count: 0 });
+  const older = buildConversationCalendar(counts, 2);
+  assert.equal(older.month, "2026-05");
+  assert.deepEqual(older.days[0], { date: "2026-05-01", count: 8 });
+});
+
+test("web mining reuses one existing single-date CLI command per selected day", () => {
+  assert.deepEqual(miningCommandArgs("thread-1", "2026-07-04", "api"), ["mine", "--thread", "thread-1", "--date", "2026-07-04", "--api"]);
+  assert.deepEqual(miningCommandArgs("thread-1", "2026-07-16", "subagent"), ["mine", "--thread", "thread-1", "--date", "2026-07-16", "--subagent"]);
+});
+
+test("web targeted mining goes through the CLI append command", () => {
+  assert.deepEqual(
+    targetedMiningCommandArgs("thread-1", "api", "/tmp/selection.json"),
+    ["mine", "--thread", "thread-1", "--targeted", "--batch-file", "/tmp/selection.json", "--api"],
+  );
 });
 
 test("rebuild preview shows the newest conversation and tool pair first", () => {

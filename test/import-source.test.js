@@ -16,6 +16,12 @@ test("generic mapping creates only canonical conversation fields", () => {
   assert.deepEqual(Object.keys(result.message), ["timestamp", "type", "text"]);
 });
 
+test("generic mapping preserves conversation text longer than 2000 characters", () => {
+  const text = "长".repeat(2500);
+  const result = mapGenericRow({ timestamp: "2026-05-12T10:00:00Z", role: "user", content: text });
+  assert.equal(result.message.text, text);
+});
+
 test("plain type fields use role normalization instead of native-format assumptions", () => {
   const root = tempDir();
   const sourceFile = path.join(root, "plain.jsonl");

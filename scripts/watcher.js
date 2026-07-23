@@ -267,7 +267,7 @@ function watchThreadFile(tid) {
   }
   const targetFile = findThreadSessionFile(sessionDir, tid);
   if (!targetFile) {
-    log(`[${tid}] 无法实时监听：在 ${sessionDir} 中没有递归找到对应线程文件`);
+    log(`[${tid}] 无法实时监听：在 ${sessionDir} 中没有递归找到绑定线程文件`);
     return null;
   }
   const targetDir = path.dirname(targetFile), targetName = path.basename(targetFile);

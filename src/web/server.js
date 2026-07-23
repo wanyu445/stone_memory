@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { URL } = require("url");
 const { loadConfig, listThreadIds, getThreadDir } = require("../config");
 const { readImportSource } = require("../services/import-source");
@@ -17,6 +17,7 @@ const { sessionFile } = require("../services/rebuild-workbench");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_UPLOAD = 512 * 1024 * 1024;
 const previews = new Map();
+const miningJobs = new Map();
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
 const STMEM_BIN = path.join(PROJECT_ROOT, "bin", "stmem");
 
@@ -27,9 +28,49 @@ function runStmem(args, { timeout = 10 * 60 * 1000 } = {}) {
   return (result.stdout || "").trim();
 }
 
+function runStmemAsync(args) {
+  return new Promise((resolve, reject) => {
+    const child=spawn(process.execPath,[STMEM_BIN,...args],{cwd:PROJECT_ROOT,stdio:["ignore","pipe","pipe"]});
+    let stdout="",stderr="";
+    child.stdout.on("data",chunk=>{stdout=(stdout+chunk).slice(-8000);});
+    child.stderr.on("data",chunk=>{stderr=(stderr+chunk).slice(-8000);});
+    child.once("error",reject);
+    child.once("close",code=>code===0?resolve(stdout.trim()):reject(new Error((stderr||stdout||`stmem ${args[0]} 失败`).trim())));
+  });
+}
+
+function miningDates(threadId) {
+  const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
+  try{return store.db.prepare(`SELECT m.source_date date,COUNT(*) messageCount,
+    COALESCE(s.status,'pending') status,COALESCE(s.feeling_count,0) feelingCount,
+    COALESCE(s.feature_count,0) featureCount,s.updated_at updatedAt,s.error_message errorMessage
+    FROM messages m LEFT JOIN mining_day_state s ON s.thread_id=m.thread_id AND s.source_date=m.source_date
+    WHERE m.thread_id=? GROUP BY m.source_date ORDER BY m.source_date DESC`).all(threadId);}
+  finally{store.close();}
+}
+
+function miningCommandArgs(threadId, date, mode) {
+  return ["mine","--thread",threadId,"--date",date,mode==="api"?"--api":"--subagent"];
+}
+
+function targetedMiningCommandArgs(threadId, mode, batchFile) {
+  return ["mine","--thread",threadId,"--targeted","--batch-file",batchFile,mode==="api"?"--api":"--subagent"];
+}
+
+async function executeMiningJob(job) {
+  job.status="running";job.startedAt=new Date().toISOString();
+  for(const date of job.dates){
+    job.currentDate=date;job.updatedAt=new Date().toISOString();
+    try{await runStmemAsync(miningCommandArgs(job.threadId,date,job.mode));job.results.push({date,status:"completed"});}
+    catch(error){job.results.push({date,status:"failed",error:String(error.message||error).slice(0,500)});}
+    job.completed=job.results.length;
+  }
+  job.currentDate=null;job.status=job.results.some(row=>row.status==="failed")?"completed_with_errors":"completed";job.completedAt=new Date().toISOString();job.updatedAt=job.completedAt;
+}
+
 function publicThreadSettings(threadId) {
   const config = loadConfig(), entry = config[threadId];
-  if (!entry) throw new Error(`记忆库不存在：${threadId}`);
+  if (!entry) throw new Error(`记忆体不存在：${threadId}`);
   return {
     threadId, libraryName: entry.label || threadId, ai: entry.ai || "", user: entry.user || "",
     userGender: entry.userGender || "unspecified", runtime: entry.runtime || "claude", purpose: entry.purpose || "accompany",
@@ -102,6 +143,26 @@ function paginate(items, page = 1, pageSize = 20) {
   return { page: current, pageSize, totalPages, total: items.length, rows: items.slice((current - 1) * pageSize, current * pageSize) };
 }
 
+function buildConversationCalendar(counts, page = 1) {
+  const byDate = new Map(counts.map(row => [row.date, Number(row.count) || 0]));
+  const dates = [...byDate.keys()].sort();
+  if (!dates.length) return { page: 1, totalPages: 1, month: null, leadingBlanks: 0, days: [] };
+  const firstMonth = dates[0].slice(0, 7), lastMonth = dates.at(-1).slice(0, 7);
+  const [firstYear, firstIndex] = firstMonth.split("-").map(Number);
+  const [lastYear, lastIndex] = lastMonth.split("-").map(Number);
+  const totalPages = (lastYear - firstYear) * 12 + lastIndex - firstIndex + 1;
+  const current = Math.min(Math.max(1, Number(page) || 1), totalPages);
+  const monthDate = new Date(Date.UTC(lastYear, lastIndex - current, 1));
+  const year = monthDate.getUTCFullYear(), monthIndex = monthDate.getUTCMonth();
+  const month = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+  const dayCount = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+  const days = Array.from({ length: dayCount }, (_, index) => {
+    const date = `${month}-${String(index + 1).padStart(2, "0")}`;
+    return { date, count: byDate.get(date) || 0 };
+  });
+  return { page: current, totalPages, month, leadingBlanks: new Date(Date.UTC(year, monthIndex, 1)).getUTCDay(), days };
+}
+
 function listLibraries() {
   const config = loadConfig();
   return listThreadIds().map(threadId => {
@@ -160,7 +221,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/session-file/check") {
     const body = await readJson(req);
     const threadId = String(body.threadId || "").trim(), sessionDir = String(body.sessionDir || "").trim();
-    if (!threadId || !sessionDir) throw new Error("请先填写对应线程名和线程文件搜索目录");
+    if (!threadId || !sessionDir) throw new Error("请先填写绑定线程和线程文件搜索目录");
     const file = findThreadSessionFile(sessionDir, threadId);
     if (!file) throw new Error(`在这个目录中没有找到线程 ${threadId} 的 JSONL 文件，请重新填写路径或检查文件是否存在`);
     return json(res, 200, { found: true, file });
@@ -169,7 +230,7 @@ async function handleApi(req, res, url) {
   const overviewMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/overview$/);
   if (req.method === "GET" && overviewMatch) {
     const data = overview(decodeURIComponent(overviewMatch[1]));
-    return data ? json(res, 200, data) : error(res, 404, "记忆库不存在");
+    return data ? json(res, 200, data) : error(res, 404, "记忆体不存在");
   }
 
   const settingsMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/settings$/);
@@ -197,6 +258,61 @@ async function handleApi(req, res, url) {
     return json(res, 200, { success: true, threadId });
   }
 
+  const miningMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/mining\/(status|start|day|targeted-messages|targeted)$/);
+  if(miningMatch){
+    const threadId=decodeURIComponent(miningMatch[1]);publicThreadSettings(threadId);
+    if(req.method==="GET"&&miningMatch[2]==="status")return json(res,200,{job:miningJobs.get(threadId)||null,dates:miningDates(threadId)});
+    if(req.method==="GET"&&miningMatch[2]==="day"){
+      const date=String(url.searchParams.get("date")||"");
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error("日期格式无效");
+      const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
+      try{
+        let anchors={retain:{},eventAnchors:{}};
+        try{anchors={...anchors,...JSON.parse(fs.readFileSync(path.join(getThreadDir(threadId),"memory","retain-config.json"),"utf8"))};}catch{}
+        const feelings=store.listFeelings({date}).map(row=>({...row,retainAnchor:!!anchors.retain?.[row.id],eventAnchor:!!anchors.eventAnchors?.[row.id]}));
+        const features=store.listFeatures({date});
+        return json(res,200,{date,feelings,features});
+      }finally{store.close();}
+    }
+    if(req.method==="GET"&&miningMatch[2]==="targeted-messages"){
+      const date=String(url.searchParams.get("date")||""),search=String(url.searchParams.get("search")||"").trim();
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error("日期格式无效");
+      const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
+      try{
+        const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND source_date=? ORDER BY timestamp").all(threadId,date);
+        const needle=search.toLocaleLowerCase();
+        return json(res,200,{date,search,matchCount:needle?rows.filter(row=>row.text.toLocaleLowerCase().includes(needle)).length:0,
+          rows:rows.map(row=>({...row,matched:!!needle&&row.text.toLocaleLowerCase().includes(needle)}))});
+      }finally{store.close();}
+    }
+    if(req.method==="POST"&&miningMatch[2]==="targeted"){
+      const body=await readJson(req),date=String(body.date||""),mode=body.mode==="api"?"api":body.mode==="subagent"?"subagent":null;
+      const timestamps=[...new Set(Array.isArray(body.timestamps)?body.timestamps.map(String):[])];
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error("日期格式无效");
+      if(!mode)throw new Error("请选择 API 或 Subagent 挖掘通道");
+      if(!timestamps.length)throw new Error("请至少选择一条对话");
+      const batchFile=path.join(os.tmpdir(),`stmem-targeted-${crypto.randomUUID()}.json`);
+      fs.writeFileSync(batchFile,JSON.stringify({date,timestamps,instruction:String(body.instruction||"")}));
+      try{
+        const output=await runStmemAsync(targetedMiningCommandArgs(threadId,mode,batchFile));
+        return json(res,200,{success:true,output});
+      }finally{try{fs.unlinkSync(batchFile);}catch{}}
+    }
+    if(req.method==="POST"&&miningMatch[2]==="start"){
+      const active=miningJobs.get(threadId);
+      if(active&&["queued","running"].includes(active.status))return error(res,409,"这个记忆体正在挖掘，请等待当前任务完成");
+      const body=await readJson(req),mode=body.mode==="api"?"api":body.mode==="subagent"?"subagent":null;
+      if(!mode)throw new Error("请选择 API 或 Subagent 挖掘通道");
+      const available=new Set(miningDates(threadId).map(row=>row.date));
+      const dates=[...new Set(Array.isArray(body.dates)?body.dates.map(String):[])].filter(date=>/^\d{4}-\d{2}-\d{2}$/.test(date)&&available.has(date)).sort();
+      if(!dates.length)throw new Error("请至少选择一个有对话的日期");
+      const now=new Date().toISOString(),job={id:crypto.randomUUID(),threadId,mode,dates,status:"queued",currentDate:null,completed:0,results:[],createdAt:now,updatedAt:now};
+      miningJobs.set(threadId,job);
+      executeMiningJob(job).catch(cause=>{job.status="failed";job.currentDate=null;job.error=String(cause.message||cause).slice(0,500);job.updatedAt=new Date().toISOString();});
+      return json(res,202,{job});
+    }
+  }
+
   const memorySectionMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/(rules|feelings|features)$/);
   if (memorySectionMatch) {
     const threadId = decodeURIComponent(memorySectionMatch[1]), section = memorySectionMatch[2];
@@ -206,12 +322,19 @@ async function handleApi(req, res, url) {
       try {
         const search = String(url.searchParams.get("search") || "").toLowerCase();
         const category = String(url.searchParams.get("category") || "");
-        let rows = section === "feelings" ? store.listFeelings().reverse() : store.listFeatures().reverse();
+        let rows = section === "feelings" ? store.listFeelings() : store.listFeatures().reverse();
         if (section === "feelings") { let anchors={retain:{},eventAnchors:{}}; try{anchors={...anchors,...JSON.parse(fs.readFileSync(path.join(getThreadDir(threadId),"memory","retain-config.json"),"utf8"))};}catch{} rows=rows.map(row=>({...row,retainAnchor:!!anchors.retain?.[row.id],eventAnchor:!!anchors.eventAnchors?.[row.id]})); }
         if (search) rows = rows.filter(row => String(row.content || "").toLowerCase().includes(search) || String(row.coarse_summary || "").toLowerCase().includes(search));
         if (category && section === "features") rows = rows.filter(row => row.category === category);
         if (section === "feelings" && url.searchParams.get("mode")) rows=rows.filter(row=>row.summary_mode===url.searchParams.get("mode"));
         if (section === "feelings" && url.searchParams.get("importance")) rows=rows.filter(row=>String(row.importance)===url.searchParams.get("importance"));
+        if (section === "feelings" && url.searchParams.get("date")) rows=rows.filter(row=>row.source_date===url.searchParams.get("date"));
+        if (section === "feelings" && url.searchParams.get("retainAnchor")==="1") rows=rows.filter(row=>row.retainAnchor);
+        if (section === "feelings" && url.searchParams.get("eventAnchor")==="1") rows=rows.filter(row=>row.eventAnchor);
+        if (section === "feelings") {
+          const direction=url.searchParams.get("sort")==="asc"?1:-1;
+          rows.sort((a,b)=>direction*((Number(a.seq)||0)-(Number(b.seq)||0)));
+        }
         return json(res, 200, { rows: paginate(rows, url.searchParams.get("page")), categories: section === "features" ? [...new Set(store.listFeatures().map(row => row.category))].sort() : [] });
       } finally { store.close(); }
     }
@@ -229,10 +352,11 @@ async function handleApi(req, res, url) {
     const threadId=decodeURIComponent(conversationsMatch[1]), store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
     try {
       const query=String(url.searchParams.get("search")||"").trim(), date=String(url.searchParams.get("date")||"").trim(), focus=String(url.searchParams.get("focus")||"").trim(), pageSize=20;
-      const dates=store.db.prepare("SELECT source_date date,COUNT(*) count FROM messages WHERE thread_id=? GROUP BY source_date ORDER BY source_date DESC").all(threadId);
-      if(query){const pattern=`%${query}%`,total=store.db.prepare("SELECT COUNT(*) count FROM messages WHERE thread_id=? AND text LIKE ?").get(threadId,pattern).count,page=Math.max(1,Number(url.searchParams.get("page"))||1);const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND text LIKE ? ORDER BY timestamp DESC LIMIT ? OFFSET ?").all(threadId,pattern,pageSize,(page-1)*pageSize);return json(res,200,{mode:"search",query,dates,rows:{page,pageSize,total,totalPages:Math.max(1,Math.ceil(total/pageSize)),rows}});}
-      if(date){const total=store.db.prepare("SELECT COUNT(*) count FROM messages WHERE thread_id=? AND source_date=?").get(threadId,date).count;let page=Math.max(1,Number(url.searchParams.get("page"))||1);if(focus){const position=store.db.prepare("SELECT COUNT(*) count FROM messages WHERE thread_id=? AND source_date=? AND timestamp<=?").get(threadId,date,focus).count;if(position)page=Math.ceil(position/pageSize);}const totalPages=Math.max(1,Math.ceil(total/pageSize));page=Math.min(page,totalPages);const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND source_date=? ORDER BY timestamp ASC LIMIT ? OFFSET ?").all(threadId,date,pageSize,(page-1)*pageSize);return json(res,200,{mode:"date",date,focus,dates,rows:{page,pageSize,total,totalPages,rows}});}
-      return json(res,200,{mode:"dates",dates});
+      const counts=store.db.prepare("SELECT source_date date,COUNT(*) count FROM messages WHERE thread_id=? GROUP BY source_date ORDER BY source_date ASC").all(threadId);
+      const calendar=buildConversationCalendar(counts,url.searchParams.get("calendarPage"));
+      if(query){const pattern=`%${query}%`,total=store.db.prepare("SELECT COUNT(*) count FROM messages WHERE thread_id=? AND text LIKE ?").get(threadId,pattern).count,page=Math.max(1,Number(url.searchParams.get("page"))||1);const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND text LIKE ? ORDER BY timestamp DESC LIMIT ? OFFSET ?").all(threadId,pattern,pageSize,(page-1)*pageSize);return json(res,200,{mode:"search",query,calendar,rows:{page,pageSize,total,totalPages:Math.max(1,Math.ceil(total/pageSize)),rows}});}
+      if(date){const total=store.db.prepare("SELECT COUNT(*) count FROM messages WHERE thread_id=? AND source_date=?").get(threadId,date).count;let page=Math.max(1,Number(url.searchParams.get("page"))||1);if(focus){const position=store.db.prepare("SELECT COUNT(*) count FROM messages WHERE thread_id=? AND source_date=? AND timestamp<=?").get(threadId,date,focus).count;if(position)page=Math.ceil(position/pageSize);}const totalPages=Math.max(1,Math.ceil(total/pageSize));page=Math.min(page,totalPages);const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND source_date=? ORDER BY timestamp ASC LIMIT ? OFFSET ?").all(threadId,date,pageSize,(page-1)*pageSize);return json(res,200,{mode:"date",date,focus,calendar,rows:{page,pageSize,total,totalPages,rows}});}
+      return json(res,200,{mode:"calendar",calendar});
     } finally { store.close(); }
   }
 
@@ -354,4 +478,4 @@ function startWebServer({ host = "127.0.0.1", port = 4173 } = {}) {
   });
 }
 
-module.exports = { startWebServer, listLibraries, overview, previewRows, paginate, runStmem };
+module.exports = { startWebServer, listLibraries, overview, previewRows, paginate, buildConversationCalendar, miningCommandArgs, targetedMiningCommandArgs, runStmem };

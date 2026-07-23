@@ -76,7 +76,7 @@
 ## 特征库查询
 
 如果主 agent 问事实性问题（"她爱吃什么"）：
-- 使用 Stone Memory 的搜索工具查询 SQLite 记忆库
+- 使用 Stone Memory 的搜索工具查询该记忆体的 SQLite 记忆数据
 - 找到相关条目后，一句话回答；不要直接读取旧 JSONL 文件
 
 ## 搜索日志
@@ -86,4 +86,3 @@
 ```json
 {"timestamp":"ISO","query":"原始查询","feelingIds":["命中的id"],"archiveDates":["date"],"savedTopicId":"如果存了话题归档就填"}
 ```
-

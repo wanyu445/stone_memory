@@ -31,6 +31,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem mine [--thread <id>] --all                  挖掘全部未处理日期，生成feelings + features
   stmem mine [--thread <id>] [--date <YYYY-MM-DD>]  挖掘单日 feelings + features
   stmem mine [--thread <id>] --date <日期> --force   直接重挖并覆盖当天结果
+  stmem mine [--thread <id>] --targeted --batch-file <json>  对选中的对话精准补挖并追加摘要
   stmem rebuild --thread <id> [--window N] [--tool-pairs N]  预览重建
   stmem rebuild --thread <id> --apply           实际写入
   stmem rebuild --thread <id> --check           检查活动线程结构完整性

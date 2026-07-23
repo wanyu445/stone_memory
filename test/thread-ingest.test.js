@@ -30,3 +30,13 @@ test("shared ingest handles Claude and Codex, deduplicates, and sorts late messa
 test("thread parser accepts newline and adjacent JSON objects", () => {
   assert.deepEqual(parseThreadMessages('{"a":1}\n{"b":2}{"c":3}'), [{ a: 1 }, { b: 2 }, { c: 3 }]);
 });
+
+test("native thread ingest preserves conversation text longer than 2000 characters", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-ingest-long-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = new MemoryStore({ memoryDir: root, threadId: "thread-test" });
+  t.after(() => store.close());
+  const text = "长".repeat(2500);
+  ingestMessages([{ timestamp: "2026-05-12T01:00:00Z", type: "user", message: { content: text } }], { memoryStore: store });
+  assert.equal(store.listMessages({ date: "2026-05-12" })[0].text, text);
+});

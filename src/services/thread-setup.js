@@ -21,12 +21,12 @@ function saveConfig(config) {
 function validateThreadInput(input, config = loadConfig(), { allowExisting = false } = {}) {
   const required = ["libraryName", "threadId", "ai", "user", "runtime", "purpose", "minerMode"];
   for (const key of required) if (!String(input[key] || "").trim()) throw new Error(`缺少必填项：${key}`);
-  if (!/^[A-Za-z0-9._:-]+$/.test(input.threadId)) throw new Error("对应线程名只能包含字母、数字、点、冒号、下划线和连字符");
-  if (config[input.threadId] && !allowExisting) throw new Error("这个对应线程名已经绑定到其他记忆库");
+  if (!/^[A-Za-z0-9._:-]+$/.test(input.threadId)) throw new Error("绑定线程只能包含字母、数字、点、冒号、下划线和连字符");
+  if (config[input.threadId] && !allowExisting) throw new Error("这个线程已经绑定到其他记忆体");
   const wanted = normalizeName(input.libraryName);
   const duplicate = Object.entries(config).find(([key, item]) =>
     key !== input.threadId && !GLOBAL_KEYS.has(key) && item && typeof item === "object" && normalizeName(item.label || key) === wanted);
-  if (duplicate) throw new Error(`已经存在名为“${String(input.libraryName).trim()}”的记忆库`);
+  if (duplicate) throw new Error(`已经存在名为“${String(input.libraryName).trim()}”的记忆体`);
   if (!["claude", "codex"].includes(input.runtime)) throw new Error("运行时必须是 claude 或 codex");
   if (!String(input.sessionDir || "").trim()) throw new Error("需要填写线程文件搜索目录");
   if (!["api", "subagent"].includes(input.minerMode)) throw new Error("挖掘模式必须是 api 或 subagent");

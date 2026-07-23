@@ -63,10 +63,10 @@ async function interactiveInit(threadId) {
   const user = await askRequired(rl, "用户名字", existing.user);
   let label;
   while (true) {
-    label = await askRequired(rl, "记忆库名字（控制台显示名称）", existing.label);
+    label = await askRequired(rl, "记忆体名字（控制台显示名称）", existing.label);
     const duplicate = Object.entries(cfg).find(([id, item]) => id !== threadId && item && typeof item === "object" && normalizeName(item.label || id) === normalizeName(label));
     if (!duplicate) break;
-    console.log(`  已经存在名为“${label}”的记忆库，请换一个名字。`);
+    console.log(`  已经存在名为“${label}”的记忆体，请换一个名字。`);
   }
   const userGender = await askRequired(rl, "用户性别 (male/female)", existing.userGender);
   const runtime = await askRequired(rl, "运行时 (claude/codex)", existing.runtime);

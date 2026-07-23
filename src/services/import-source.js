@@ -38,7 +38,7 @@ function mapGenericRow(raw, mapping = {}) {
   const text = textValue(raw?.[contentField]);
   if (!timestamp || !beijingDateKey(timestamp) || !text) return { message: null, fields: { timeField, roleField, contentField } };
   return {
-    message: { timestamp: String(timestamp), type: normalizeRole(raw?.[roleField]), text: text.slice(0, 2000) },
+    message: { timestamp: String(timestamp), type: normalizeRole(raw?.[roleField]), text },
     fields: { timeField, roleField, contentField },
   };
 }

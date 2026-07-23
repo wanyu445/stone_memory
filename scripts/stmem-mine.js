@@ -10,6 +10,7 @@
  *   stmem mine [--thread <id>] --all
  *   stmem mine [--thread <id>] --api          # 临时走 API
  *   stmem mine [--thread <id>] --subagent     # 临时走 subagent
+ *   stmem mine [--thread <id>] --targeted --batch-file <json>
  */
 const fs = require("fs");
 const path = require("path");
@@ -48,6 +49,8 @@ async function main() {
   const forceApi = args.includes("--api");
   const forceSub = args.includes("--subagent");
   const force = args.includes("--force");
+  const targeted = args.includes("--targeted");
+  const batchIdx = args.indexOf("--batch-file");
   const threadIdx = args.indexOf("--thread");
   const tid = threadIdx >= 0 ? args[threadIdx + 1] : listThreadIds()[0];
   if (!tid) throw new Error("未指定线程，请用 --thread <id> 或先 stmem init");
@@ -68,7 +71,17 @@ async function main() {
     },
   });
 
-  if (allMode) {
+  if (targeted) {
+    if (batchIdx < 0 || !args[batchIdx + 1]) throw new Error("精准补挖需要 --batch-file <json>");
+    const payload = JSON.parse(fs.readFileSync(path.resolve(args[batchIdx + 1]), "utf8"));
+    const date = String(payload.date || targetDate || "");
+    const timestamps = new Set(Array.isArray(payload.timestamps) ? payload.timestamps.map(String) : []);
+    if (!timestamps.size) throw new Error("精准补挖没有选中对话");
+    const messages = miner.store.listMessages({ date }).filter(row => timestamps.has(row.timestamp));
+    if (messages.length !== timestamps.size) throw new Error("部分所选对话已不存在，请刷新后重试");
+    const result = await miner.mineTargeted(date, messages, { instruction: String(payload.instruction || "") });
+    console.log(JSON.stringify({ status: "completed", date, feelingCount: result.feelings.length }));
+  } else if (allMode) {
     const allDates = miner.store.listMessageDates();
     if (!allDates.length) { console.log("[stmem] SQLite messages 无数据"); process.exit(0); }
     const miningState = miner._readState();

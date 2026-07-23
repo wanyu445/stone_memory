@@ -7,6 +7,7 @@ const { runSubagent } = require("./subagent-runner");
 const { parseJsonArray, parseJsonObject } = require("../lib/json-parse");
 const { archiveFingerprint, getDayState, isCompleted, retryDelayMs } = require("./mining-state");
 const { MemoryStore } = require("../storage/memory-store");
+const { parseFeelingTime } = require("./thread-rebuilder");
 
 class MiningError extends Error {
   constructor(code, message, details = {}) {
@@ -22,6 +23,25 @@ function normalizeNewImportance(value) {
   if (!Number.isFinite(importance) || importance <= 2) return 2;
   if (importance >= 5) return 5;
   return 3;
+}
+
+function sortFeelingsChronologically(entries) {
+  return (entries || []).map((entry, index) => {
+    const parsed = parseFeelingTime(String(entry?.content || ""));
+    const minutes = parsed?.hour == null ? null : parsed.hour * 60 + (parsed.minute || 0);
+    return { entry, index, minutes };
+  }).sort((a, b) => {
+    if (a.minutes !== null && b.minutes !== null) return a.minutes - b.minutes || a.index - b.index;
+    if (a.minutes !== null) return -1;
+    if (b.minutes !== null) return 1;
+    return a.index - b.index;
+  }).map(row => row.entry);
+}
+
+function feelingEventTime(entry, targetDate) {
+  const parsed = parseFeelingTime(String(entry?.content || ""));
+  if (parsed?.hour == null) return null;
+  return new Date(`${targetDate}T${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute || 0).padStart(2, "0")}:00+08:00`).toISOString();
 }
 
 function subagentSafe(prompt, opts = {}) {
@@ -48,6 +68,7 @@ function buildFeelingPrompt(aiName, userName, purpose) {
 写作要点：
 - 每条以完整日期开头："6月9日，下午五点二十六分"
 - 时间精确到分——同一时段多件事靠分钟区分
+- feelings 数组必须严格按当天事件发生时间从早到晚排列
 - 记录决策、偏好、模式和习惯
 - importance 只允许 2/3/5：2=普通但值得保存，3=持续有价值，5=极少数会长期影响后续工作的关键决策
 - 不要输出 1 或 4
@@ -70,6 +91,7 @@ function buildFeelingPrompt(aiName, userName, purpose) {
 写作要点：
 - 每条以完整日期开头："5月26日，下午两点三十五分"、"4月18日，凌晨三点十二分"、"6月9日，凌晨一点零八分"
 - 时间必须精确到分，不能只写"凌晨一点"或"下午三点"——同一时段发生多件事时必须靠分钟区分
+- feelings 数组必须严格按当天事件发生时间从早到晚排列
 - 用"她"和"${userName}"，不要用"用户"
 - 要有具体画面和细节，不是空泛总结
 - 你可以在结尾加一句你的感受或判断
@@ -354,6 +376,54 @@ class MemoryMiner {
     }).join("\n");
   }
 
+  async mineTargeted(targetDate, messages, { instruction = "" } = {}) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) throw new Error("精准补挖需要 YYYY-MM-DD 日期");
+    if (!Array.isArray(messages) || !messages.length) throw new Error("精准补挖至少需要一条对话");
+    const examples = this.store.listFeelings({ date: targetDate }).slice(0, 5);
+    const [year, month, day] = targetDate.split("-").map(Number);
+    const dateLabel = `${month}月${day}日`;
+    const prompt = `${buildFeelingPrompt(this.aiName, this.userName, this.purpose)}
+
+这是一次精准补挖，只总结用户明确选中的对话片段：
+- 一个片段里可以包含一个或多个独立事件；有几个值得记录的事件就输出几条摘要
+- 不要总结未提供的上下文，不要为了凑数创造事件
+- 每条摘要必须以“${dateLabel}，”开头，并使用所选对话中的真实时间
+- 只输出 feelings JSON 数组，不输出 features
+${instruction ? `- 用户补充要求：${instruction}` : ""}
+
+当天已有摘要的前五条仅用于模仿叙述视角和语气，不是待总结内容，也不要重复：
+${examples.length ? examples.map((row, index) => `${index + 1}. ${row.content}`).join("\n") : "（当天尚无摘要）"}`;
+    const raw = sortFeelingsChronologically(await this._extractViaSubagent(messages, prompt) || []);
+    const existing = new Set(this.store.listFeelings({ date: targetDate }).map(row => row.content.trim()));
+    const feelings = raw.filter(row => row?.content?.trim() && !existing.has(row.content.trim())).map(row => ({
+      id: `mem_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+      content: row.content.replace(/^\d{1,2}月\d{1,2}日/, dateLabel),
+      eventTime: feelingEventTime(row, targetDate),
+      importance: normalizeNewImportance(row.importance),
+    }));
+    if (!feelings.length) return { date: targetDate, feelings: [] };
+    const job = this.store.createJob({
+      sourceDate: targetDate, mode: "targeted", triggerType: "cli",
+      publishStrategy: "append", instruction: instruction || null,
+    });
+    const now = new Date().toISOString();
+    this.store.updateJob(job.id, { status: "running", startedAt: now });
+    try {
+      this.store.appendTargeted(targetDate, { feelings, miningJobId: job.id });
+      this.store.updateJob(job.id, {
+        status: "completed", feelingCount: feelings.length, featureCount: 0,
+        finishedAt: new Date().toISOString(), publishedAt: new Date().toISOString(),
+      });
+      return { date: targetDate, feelings };
+    } catch (error) {
+      this.store.updateJob(job.id, {
+        status: "failed", errorCode: error.code || "TARGETED_MINING_FAILED",
+        errorMessage: error.message, finishedAt: new Date().toISOString(),
+      });
+      throw error;
+    }
+  }
+
   /** claude -p 单日双通道：ops 走 --system-prompt-file，stdin 只传对话 + 输出指令 */
   async _mineDayWithSubagent(targetDate, messages, state, opsPrompt) {
 
@@ -424,8 +494,9 @@ class MemoryMiner {
       if (fixed > 0) console.log(`  Date fix: ${fixed} entry/ies corrected to ${expectedPrefix}`);
     }
 
+    const ordered = isFeature ? deduped : sortFeelingsChronologically(deduped);
     const now = new Date().toISOString();
-    const entries = deduped.map((m, i) => ({
+    const entries = ordered.map((m, i) => ({
       id: `mem_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
       sourceDate: targetDate,
       eventTime: m.eventTime || null,
@@ -545,4 +616,4 @@ class MemoryMiner {
   }
 }
 
-module.exports = { MemoryMiner, MiningError, normalizeNewImportance };
+module.exports = { MemoryMiner, MiningError, normalizeNewImportance, sortFeelingsChronologically, feelingEventTime };

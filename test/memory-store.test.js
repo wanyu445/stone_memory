@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const Database = require("better-sqlite3");
 const { MemoryStore } = require("../src/storage/memory-store");
 
 function tempStore(t) {
@@ -61,4 +62,40 @@ test("targeted storage appends to the current day and preserves existing memorie
   store.appendTargeted("2026-06-12", { feelings: [{ content: "first", eventTime: "2026-06-12T18:00:00+08:00", importance: 3 }] });
   const result = store.appendTargeted("2026-06-12", { feelings: [{ content: "earlier", eventTime: "2026-06-12T09:00:00+08:00", importance: 3 }] });
   assert.deepEqual(result.feelings.map(row => [row.content, row.daySeq]), [["earlier", 1], ["first", 2]]);
+});
+
+test("schema migration preserves old rows and allows distinct messages at one timestamp", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-store-v8-"));
+  const file = path.join(dir, "stone-memory.db");
+  const legacy = new Database(file);
+  legacy.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations VALUES (8, '2026-07-01T00:00:00.000Z');
+    CREATE TABLE messages (
+      thread_id TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      source_date TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      source TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(thread_id, timestamp)
+    );
+    INSERT INTO messages VALUES (
+      'thread-test','2026-06-12T08:00:00.123Z','2026-06-12','user','first','archive','2026-07-01T00:00:00.000Z'
+    );
+  `);
+  legacy.close();
+
+  const store = new MemoryStore({ memoryDir: dir, threadId: "thread-test" });
+  t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  assert.equal(store.insertMessages([
+    { timestamp: "2026-06-12T08:00:00.123Z", sourceDate: "2026-06-12", role: "user", text: "first" },
+    { timestamp: "2026-06-12T08:00:00.123Z", sourceDate: "2026-06-12", role: "assistant", text: "second" },
+  ]), 1);
+  assert.deepEqual(store.listMessages({ date: "2026-06-12" }).map(row => [row.type, row.text]), [
+    ["user", "first"],
+    ["assistant", "second"],
+  ]);
+  assert.equal(store.db.prepare("SELECT MAX(version) version FROM schema_migrations").get().version, 9);
 });

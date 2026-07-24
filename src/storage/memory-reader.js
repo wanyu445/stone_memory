@@ -68,7 +68,7 @@ function readMessages(memoryDir, { threadId, date = null, from = null, to = null
     if (from) { clauses.push("timestamp>=?"); params.push(from); }
     if (to) { clauses.push("timestamp<?"); params.push(to); }
     return db.prepare(`SELECT timestamp,source_date AS sourceDate,role AS type,text,source
-      FROM messages WHERE ${clauses.join(" AND ")} ORDER BY timestamp`).all(...params);
+      FROM messages WHERE ${clauses.join(" AND ")} ORDER BY timestamp,message_seq`).all(...params);
   });
 }
 

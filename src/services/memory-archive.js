@@ -47,7 +47,7 @@ class MemoryArchive {
 
   readRecent(count = 100) {
     return this.store.db.prepare(`SELECT timestamp,source_date AS sourceDate,role AS type,text,source
-      FROM messages WHERE thread_id=? ORDER BY timestamp DESC LIMIT ?`).all(this.threadId, count).reverse();
+      FROM messages WHERE thread_id=? ORDER BY timestamp DESC,message_seq DESC LIMIT ?`).all(this.threadId, count).reverse();
   }
 
   readRecentHours(hours = 1) {

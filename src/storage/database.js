@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
 const { resolveDatabasePath } = require("./database-location");
+const { messageIdentity } = require("../lib/message-identity");
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -21,14 +22,16 @@ CREATE TABLE IF NOT EXISTS threads (
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS messages (
+  message_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   thread_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
   timestamp TEXT NOT NULL,
   source_date TEXT NOT NULL,
   role TEXT NOT NULL,
   text TEXT NOT NULL,
   source TEXT,
   created_at TEXT NOT NULL,
-  PRIMARY KEY(thread_id, timestamp)
+  UNIQUE(thread_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS mining_day_state (
   thread_id TEXT NOT NULL,
@@ -146,12 +149,42 @@ function openDatabase(memoryDir) {
   // 只有新库或版本升级时才执行建表、列迁移和旧表清理。
   if (currentVersion < SCHEMA_VERSION) {
     db.exec(SCHEMA);
+    migrateMessages(db);
     migrateColumns(db);
     removeVersionTables(db);
     db.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
       .run(SCHEMA_VERSION, new Date().toISOString());
   }
   return db;
+}
+
+function migrateMessages(db) {
+  const columns = db.pragma("table_info(messages)");
+  if (columns.some(column => column.name === "message_id")) return;
+  db.function("stmem_message_id", { deterministic: true }, messageIdentity);
+  db.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE messages_v9 (
+      message_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      source_date TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      source TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(thread_id, message_id)
+    );
+    INSERT INTO messages_v9
+      (thread_id,message_id,timestamp,source_date,role,text,source,created_at)
+      SELECT thread_id,stmem_message_id(timestamp,role,text),timestamp,source_date,role,text,source,created_at
+      FROM messages ORDER BY timestamp;
+    DROP TABLE messages;
+    ALTER TABLE messages_v9 RENAME TO messages;
+    CREATE INDEX idx_messages_thread_date ON messages(thread_id,source_date,timestamp);
+    COMMIT;
+  `);
 }
 
 function removeVersionTables(db) {

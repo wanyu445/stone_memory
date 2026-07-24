@@ -7,9 +7,10 @@ const { listDateFiles } = require("../lib/archive-paths");
 const { findThreadSessionFile } = require("../lib/thread-session-file");
 const { dateKeyFromTs } = require("./memory-archive");
 const { buildCodexSessionMeta } = require("./codex-session-meta");
+const { messageIdentity } = require("../lib/message-identity");
 
 function itemKey(timestamp, role, text) {
-  return crypto.createHash("sha256").update(`${timestamp || ""}\0${role || ""}\0${text || ""}`).digest("hex").slice(0, 24);
+  return messageIdentity(timestamp, role, text);
 }
 
 function readJsonl(file) {
@@ -256,12 +257,14 @@ function codexMessageKey(row) {
 
 function trimRows(rows, runtime, excludedMessages, excludedTools) {
   const removedTimestamps = new Set();
+  const removedMessageIds = new Set();
   let removedMessages = 0, removedTools = 0;
   const output = [];
   for (const original of rows) {
     const key = runtime === "codex" ? codexMessageKey(original) : claudeMessageKey(original);
     if (key && excludedMessages.has(key)) {
       if (original.timestamp) removedTimestamps.add(original.timestamp);
+      removedMessageIds.add(key);
       removedMessages++; continue;
     }
     if (runtime === "codex" && original.type === "response_item" && ["function_call", "function_call_output"].includes(original.payload?.type) && excludedTools.has(original.payload?.call_id)) {
@@ -279,7 +282,7 @@ function trimRows(rows, runtime, excludedMessages, excludedTools) {
     }
     output.push(original);
   }
-  return { rows: output, removedTimestamps, removedMessages, removedTools };
+  return { rows: output, removedTimestamps, removedMessageIds, removedMessages, removedTools };
 }
 
 function writeJsonlAtomic(file, rows) {
@@ -314,12 +317,12 @@ function permanentlyTrimThread(threadId, { excludedMessages = [], excludedTools 
   const store = new MemoryStore({ memoryDir, threadId });
   let archiveMessages = 0;
   try {
-    const remove = store.db.prepare("DELETE FROM messages WHERE thread_id=? AND timestamp=?");
-    archiveMessages = store.db.transaction(timestamps => {
+    const remove = store.db.prepare("DELETE FROM messages WHERE thread_id=? AND message_id=?");
+    archiveMessages = store.db.transaction(messageIds => {
       let count = 0;
-      for (const timestamp of timestamps) count += remove.run(threadId, timestamp).changes;
+      for (const messageId of messageIds) count += remove.run(threadId, messageId).changes;
       return count;
-    })([...trimmed.removedTimestamps]);
+    })([...trimmed.removedMessageIds]);
   } finally { store.close(); }
   return { removedMessages: trimmed.removedMessages, removedTools: trimmed.removedTools, archiveMessages, fullRecords };
 }

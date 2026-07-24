@@ -3,6 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { openDatabase } = require("./database");
 const { listDateFiles } = require("../lib/archive-paths");
+const { messageIdentity } = require("../lib/message-identity");
 
 function id(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
@@ -62,14 +63,16 @@ class MemoryStore {
 
   insertMessages(rows, { source = "archive" } = {}) {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO messages
-      (thread_id,timestamp,source_date,role,text,source,created_at)
-      VALUES (@threadId,@timestamp,@sourceDate,@role,@text,@source,@createdAt)`);
+      (thread_id,message_id,timestamp,source_date,role,text,source,created_at)
+      VALUES (@threadId,@messageId,@timestamp,@sourceDate,@role,@text,@source,@createdAt)`);
     const write = this.db.transaction(items => {
       let added = 0;
       const now = new Date().toISOString();
       for (const row of items) {
         if (!row?.timestamp || !row?.sourceDate || !row?.role || !row?.text) continue;
-        added += insert.run({ threadId: this.threadId, timestamp: row.timestamp, sourceDate: row.sourceDate,
+        added += insert.run({ threadId: this.threadId,
+          messageId: messageIdentity(row.timestamp, row.role, row.text),
+          timestamp: row.timestamp, sourceDate: row.sourceDate,
           role: row.role, text: row.text, source: row.source || source, createdAt: row.createdAt || now }).changes;
       }
       return added;
@@ -84,7 +87,7 @@ class MemoryStore {
     if (from) { clauses.push("timestamp>=?"); params.push(from); }
     if (to) { clauses.push("timestamp<=?"); params.push(to); }
     return this.db.prepare(`SELECT timestamp,source_date AS sourceDate,role AS type,text,source,created_at AS createdAt
-      FROM messages WHERE ${clauses.join(" AND ")} ORDER BY timestamp`).all(...params);
+      FROM messages WHERE ${clauses.join(" AND ")} ORDER BY timestamp,message_seq`).all(...params);
   }
 
   listMessageDates() {

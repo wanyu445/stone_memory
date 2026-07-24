@@ -10,18 +10,18 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const { getCfg, getThreadDir, listThreadIds } = require("./src/config");
 const { runSubagent } = require("./src/services/subagent-runner");
 const { parseJsonArray } = require("./src/lib/json-parse");
 const { readFeelings: readDatabaseFeelings, readFeatures: readDatabaseFeatures } = require("./src/storage/memory-reader");
 const { MemoryStore } = require("./src/storage/memory-store");
+const { buildMcpRebuildPreviewArgs } = require("./src/services/mcp-rebuild-preview");
 
 const CONFIG_PATH = path.join(os.homedir(), ".stone_memory", "stmem.json");
 const PROJECT_ROOT = path.resolve(__dirname);
 const SCRIPTS_DIR = path.join(PROJECT_ROOT, "scripts");
 const LOG_FILE = path.join(os.homedir(), ".stone_memory", "logs", "mcp.log");
-const PENDING_REBUILD_FILE = path.join(os.homedir(), ".stone_memory", "rebuild-pending.json");
 
 /** 获取 feeling 的完整日期字符串，优先从 createdAt 取年份，无 createdAt 时从月份推断（跨年保护） */
 function feelingDate(month, day, feeling) {
@@ -30,9 +30,6 @@ function feelingDate(month, day, feeling) {
   if (!year) { const now = new Date(); year = parseInt(month) > now.getMonth() + 1 ? now.getFullYear() - 1 : now.getFullYear(); }
   return `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
 }
-// 启动时检查触发器，注入提醒到线程文件尾部
-checkPendingTriggers();
-
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
   catch { return null; }
@@ -73,37 +70,6 @@ function resolveThread(args, cfg) {
     windowDays: args.window || tc.windowDays || 3,
     toolPairs: args.toolPairs ?? tc.keepToolPairs ?? 30,
   };
-}
-
-// ── 触发器 ──
-
-function checkPendingTriggers() {
-  const cfg = loadConfig();
-  if (!cfg) return;
-  // 待重建 — 直接执行，不注入文本提醒
-  if (fs.existsSync(PENDING_REBUILD_FILE)) {
-    let queue;
-    try {
-      queue = JSON.parse(fs.readFileSync(PENDING_REBUILD_FILE, "utf8"));
-      const threadId = queue.threadId;
-      const tc = cfg[threadId] || {};
-      const runtime = tc.runtime || "claude";
-      const scriptName = runtime === "codex" ? "rebuild-codex-thread.js" : "rebuild-thread.js";
-      const script = path.join(SCRIPTS_DIR, scriptName);
-      if (fs.existsSync(script)) {
-        const windowFlag = queue.window ? `--window ${queue.window}` : "";
-        const cmd = `${process.execPath} ${script} --thread ${threadId} --apply ${windowFlag}`.trim();
-        log(`pending rebuild: ${cmd}`);
-        try {
-          execSync(cmd, { encoding: "utf8", timeout: 120000, maxBuffer: 10 * 1024 * 1024, windowsHide: true });
-          log(`pending rebuild done: ${threadId}`);
-        } catch (e) {
-          log(`pending rebuild failed: ${e.stderr || e.message}`);
-        }
-      }
-    } catch {}
-    try { fs.unlinkSync(PENDING_REBUILD_FILE); } catch {}
-  }
 }
 
 /** 手动检查当前待办 */
@@ -156,16 +122,20 @@ function toolRebuild(args) {
   if (!cfg) return "未配置 stmem.json";
   const resolved = resolveThread(args, cfg);
   if (!resolved) return "无法确定线程 ID";
-  const queue = {
-    threadId: resolved.threadId,
-    window: args.window || resolved.windowDays,
-    requestedAt: new Date().toISOString(),
-  };
+  const script = path.join(SCRIPTS_DIR, "stmem-rebuild.js");
+  if (!fs.existsSync(script)) return "找不到 stmem-rebuild.js";
+  const rebuildArgs = buildMcpRebuildPreviewArgs(script, resolved, args);
   try {
-    fs.writeFileSync(PENDING_REBUILD_FILE, JSON.stringify(queue, null, 2) + "\n", "utf8");
-    return "已插入 rebuild 队列，下次 MCP 服务器启动或 /switch 时自动执行。";
+    const output = execFileSync(process.execPath, rebuildArgs, {
+      encoding: "utf8",
+      timeout: 120000,
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+      cwd: PROJECT_ROOT,
+    });
+    return `${output.trim()}\n\n这是只读 dry-run；确认结果后请在前端或维护窗口显式应用，MCP 启动不会自动改写线程。`;
   } catch (err) {
-    return `写入队列失败: ${err.message}`;
+    return `重建预览失败: ${err.stderr || err.message}`;
   }
 }
 
@@ -449,7 +419,7 @@ function toolAuditQuery(args) {
 const TOOLS = [
   {
     name: "stmem_memory_rebuild",
-    description: "Queue a thread rebuild: writes a pending-rebuild marker to disk. The rebuild will run automatically the next time MCP server starts or /switch triggers it. This avoids UUID chain breaks that happen when the file is replaced mid-session.",
+    description: "Generate a read-only thread rebuild dry-run. Applying a rebuild requires explicit confirmation in the web UI or a maintenance CLI command; MCP startup never rewrites a thread.",
     inputSchema: {
       type: "object",
       properties: {

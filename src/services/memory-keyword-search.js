@@ -194,7 +194,13 @@ function searchByKeyword(query, { maxResults = 1, threadId } = {}) {
   } catch {}
 
   return {
-    hits: top.map(t => ({ id: t.id, content: t.content, score: t.score })),
+    hits: top.map(t => ({
+      id: t.id,
+      content: t.content,
+      score: t.score,
+      date: t.date,
+      utcTime: t.utcTime,
+    })),
     text: results.map(r => r.text).join("\n\n---\n\n"),
   };
 }
@@ -242,7 +248,7 @@ function searchArchiveContext(feelingDate, keywords, { maxDays = 5, contextLines
   for (const dateStr of priorityDates) {
     if ([...new Set(allSnippets.map(s => s.date))].length >= maxDays) break;
 
-    const messages = readArchive(p.archiveDir, dateStr);
+    const messages = readArchive(p.memoryDir, p.threadId, dateStr);
     if (messages.length === 0) continue;
 
     // 找到关键词命中的所有行

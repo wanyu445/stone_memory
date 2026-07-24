@@ -347,7 +347,7 @@ function main() {
   for (const date of preDates) {
     if (fragmentDates.has(date)) {
       if (pendingMemory.length > 0) {
-        for (const block of buildMemoryBlocks(pendingMemory)) {
+        for (const block of buildMemoryBlocks(pendingMemory, { userName: getCfg("user", threadId, "用户") })) {
           output.push(JSON.stringify({
             timestamp: block.timestamp, type: "response_item",
             payload: { type: "message", role: "user", content: [{ type: "input_text", text: block.text }] },
@@ -380,7 +380,7 @@ function main() {
     }
   }
   if (pendingMemory.length > 0) {
-    for (const block of buildMemoryBlocks(pendingMemory)) {
+    for (const block of buildMemoryBlocks(pendingMemory, { userName: getCfg("user", threadId, "用户") })) {
       output.push(JSON.stringify({
         timestamp: block.timestamp, type: "response_item",
         payload: { type: "message", role: "user", content: [{ type: "input_text", text: block.text }] },

@@ -176,7 +176,7 @@ function buildFragmentWindows(preWindowFeelings, allFeelings, messages, retainMa
 
 // ---- 记忆块构建 ----
 
-function buildMemoryBlocks(feelings) {
+function buildMemoryBlocks(feelings, { userName = "用户" } = {}) {
   if (feelings.length === 0) return [];
   const byDate = {};
   const dateFirstFeeling = {};
@@ -208,7 +208,7 @@ function buildMemoryBlocks(feelings) {
   for (const group of groups) {
     const lines = [];
     lines.push("<memory_context>");
-    lines.push("以下是你和小鱼在过去对话中的重要记忆，按时间排列。这些记忆是你在对话中自然形成的印象，作为背景知识理解即可，不需要逐条回应。");
+    lines.push(`以下是你和${userName}在过去对话中的重要记忆，按时间排列。这些记忆是你在对话中自然形成的印象，作为背景知识理解即可，不需要逐条回应。`);
     lines.push("");
     for (const d of group) {
       if (d === "unknown") continue;

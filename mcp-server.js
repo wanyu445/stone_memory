@@ -269,7 +269,9 @@ function toolDeepSearch(args) {
 
   // 保存 topic 文件（handler 兜底，存到线程 memory 下）
   try {
-    const stopWords = new Set(["小鱼","她","我","的","了","是","在","和","跟","与","有","不","也","都","就","还","要","会","能","去","来","这","那","什么","怎么","为什么","一个","赛博"]);
+    const stopWords = new Set(["她","我","的","了","是","在","和","跟","与","有","不","也","都","就","还","要","会","能","去","来","这","那","什么","怎么","为什么","一个"]);
+    const configuredUserName = getCfg("user", resolved?.threadId, "");
+    if (configuredUserName) stopWords.add(configuredUserName);
     const kws = query.split(/[\s，,。！？]+/).filter(w => w.length >= 2 && !stopWords.has(w));
     const mainKw = kws[0] || query.split(/[\s，,。]+/)[0];
     if (mainKw && mainKw.length >= 2 && result && result.length > 200) {

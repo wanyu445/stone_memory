@@ -516,7 +516,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
     if (fragmentDates.has(date)) {
       // 先输出累积的记忆块
       if (pendingMemory.length > 0) {
-        const blocks = buildMemoryBlocks(pendingMemory);
+        const blocks = buildMemoryBlocks(pendingMemory, { userName: getCfg("user", currentThreadId, "用户") });
         for (const block of blocks) { emit("user", block.text, { timestamp: block.timestamp }); stats.memoryBlock++; }
         pendingMemory = [];
       }
@@ -546,7 +546,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
 
   // 输出剩余记忆块
   if (pendingMemory.length > 0) {
-    const blocks = buildMemoryBlocks(pendingMemory);
+    const blocks = buildMemoryBlocks(pendingMemory, { userName: getCfg("user", currentThreadId, "用户") });
     for (const block of blocks) { emit("user", block.text, { timestamp: block.timestamp }); stats.memoryBlock++; }
   }
 

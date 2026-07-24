@@ -1,4 +1,5 @@
 .mcp.json
+AGENTS.md
 node_modules/
 .env
 .env.*
@@ -6,4 +7,3 @@ node_modules/
 *.db
 *.db-shm
 *.db-wal
-

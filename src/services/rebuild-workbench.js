@@ -146,7 +146,7 @@ function checkCodex(rows, threadId) {
   const meta=metas[0],sessionId=meta?.payload?.session_id,id=meta?.payload?.id;
   const calls = new Set(rows.filter(row => row.type === "response_item" && row.payload?.type === "function_call").map(row => row.payload.call_id).filter(Boolean));
   const outputs = new Set(rows.filter(row => row.type === "response_item" && row.payload?.type === "function_call_output").map(row => row.payload.call_id).filter(Boolean));
-  return { threadId,runtime:"codex",missingSessionMeta:metas.length?0:1,duplicateSessionMeta:Math.max(0,metas.length-1),sessionMetaNotFirst:meta&&rows[0]!==meta?1:0,missingSessionId:meta&&(!sessionId||!id)?1:0,mismatchedSessionIds:sessionId&&id&&sessionId!==id?1:0,missingBaseInstructions:meta&&!meta.payload?.base_instructions?1:0,missingToolResults:[...calls].filter(value=>!outputs.has(value)).length,missingToolCalls:[...outputs].filter(value=>!calls.has(value)).length };
+  return { threadId,runtime:"codex",missingSessionMeta:metas.length?0:1,duplicateSessionMeta:Math.max(0,metas.length-1),sessionMetaNotFirst:meta&&rows[0]!==meta?1:0,missingSessionId:meta&&(!sessionId&&!id)?1:0,mismatchedSessionIds:sessionId&&id&&sessionId!==id?1:0,missingBaseInstructions:meta&&!meta.payload?.base_instructions?1:0,missingToolResults:[...calls].filter(value=>!outputs.has(value)).length,missingToolCalls:[...outputs].filter(value=>!calls.has(value)).length };
 }
 
 function checkIntegrityFile(file,runtime,threadId=path.basename(file)) {

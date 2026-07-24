@@ -2,17 +2,22 @@ function buildCodexSessionMeta(meta, { threadId, now = new Date(), cwd = process
   const payload=meta?.payload&&typeof meta.payload==="object"?{...meta.payload}:{};
   const sessionId=payload.session_id||payload.id||threadId;
   if(!sessionId)throw new Error("Codex session_meta 缺少线程 ID");
+  const hasSessionId=Boolean(payload.session_id);
+  const hasId=Boolean(payload.id);
+  const normalizedPayload={
+    ...payload,
+    timestamp:payload.timestamp||meta?.timestamp||now.toISOString(),
+    cwd:payload.cwd||cwd,
+    originator:payload.originator||"codex",
+  };
+  if(hasSessionId||!hasId)normalizedPayload.session_id=sessionId;
+  else delete normalizedPayload.session_id;
+  if(hasId||!hasSessionId)normalizedPayload.id=sessionId;
+  else delete normalizedPayload.id;
   return {
     timestamp:now.toISOString(),
     type:"session_meta",
-    payload:{
-      ...payload,
-      session_id:sessionId,
-      id:sessionId,
-      timestamp:payload.timestamp||meta?.timestamp||now.toISOString(),
-      cwd:payload.cwd||cwd,
-      originator:payload.originator||"codex",
-    },
+    payload:normalizedPayload,
   };
 }
 
@@ -25,7 +30,11 @@ function validateCodexRebuildOutput(outputText, expectedSessionId) {
   });
   const meta=rows[0];
   if(meta?.type!=="session_meta")throw new Error("Codex rebuild 输出首行不是 session_meta");
-  if(meta.payload?.session_id!==expectedSessionId||meta.payload?.id!==expectedSessionId)throw new Error("Codex rebuild 输出线程 ID 不一致");
+  const sessionId=meta.payload?.session_id;
+  const id=meta.payload?.id;
+  if((!sessionId&&!id)||(sessionId&&sessionId!==expectedSessionId)||(id&&id!==expectedSessionId)) {
+    throw new Error("Codex rebuild 输出线程 ID 不一致");
+  }
   return {lines:rows.length,sessionId:expectedSessionId};
 }
 

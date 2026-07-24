@@ -7,6 +7,7 @@ const { extractFeatureTerms, normalizeTerm } = require("../src/services/feature-
 const { readUserArchive } = require("../src/services/feature-term-evidence");
 const { buildTermTimeline, buildCooccurrenceSignatures } = require("../src/services/term-timeline");
 const { buildRelationLifecycles } = require("../src/services/relation-lifecycle");
+const { findRelationSignaturePeers } = require("../src/services/relation-signature-context");
 const { buildRelationCompressionPlan, summarizeRelationCompressionPlan } = require("../src/services/relation-compression-plan");
 const { buildWorkLifecycles } = require("../src/services/work-lifecycle");
 const { buildWorkCompressionPlan, summarizeWorkCompressionPlan } = require("../src/services/work-compression-plan");
@@ -44,8 +45,22 @@ const report = buildTermTimeline({
   to,
 });
 const intersections = buildCooccurrenceSignatures({ termTimelines: report, messages, feelings, anchors, from, to });
-const relation = buildRelationLifecycles({ termTimelines: report, intersections });
-relation.compressionPlan = buildRelationCompressionPlan({ relation, termTimelines: report, anchors });
+const signaturePeers = findRelationSignaturePeers({ requestedTerms, extractedTerms, feelings });
+const requestedNormalized = new Set(requestedTerms.map(normalizeTerm));
+const auxiliaryTerms = signaturePeers.filter(row => !requestedNormalized.has(row.normalizedTerm)).map(row => row.term);
+const auxiliaryTimelines = auxiliaryTerms.length ? buildTermTimeline({
+  // 辅助词只用于 feelings 共同签名资格，不构建 archive 词频曲线。
+  requestedTerms: auxiliaryTerms, extractedTerms, feelings, messages: [], anchors, from, to,
+}) : [];
+const relationTimelines = [...report, ...auxiliaryTimelines];
+const relationIntersections = buildCooccurrenceSignatures({
+  // 辅助词只为补全摘要共同签名；不重复扫描 archive 的局部消息窗口。
+  // 用户显式查询词的同消息证据仍由上方 intersections 完整计算。
+  termTimelines: relationTimelines, messages: [], feelings, anchors, from, to,
+});
+const relation = buildRelationLifecycles({ termTimelines: relationTimelines, intersections: relationIntersections });
+relation.analysisPeers = signaturePeers;
+relation.compressionPlan = buildRelationCompressionPlan({ relation, termTimelines: relationTimelines, anchors });
 relation.compressionSummary = summarizeRelationCompressionPlan(relation.compressionPlan);
 const work = buildWorkLifecycles({ termTimelines: report, intersections });
 work.compressionPlan = buildWorkCompressionPlan({
@@ -55,7 +70,7 @@ work.compressionPlan = buildWorkCompressionPlan({
 work.compressionSummary = summarizeWorkCompressionPlan(work.compressionPlan);
 
 if (args.includes("--json")) {
-  console.log(JSON.stringify({ threadId, report, intersections, relation, work }, null, 2));
+  fs.writeFileSync(1, `${JSON.stringify({ threadId, report, intersections, relation, work }, null, 2)}\n`);
   process.exit(0);
 }
 

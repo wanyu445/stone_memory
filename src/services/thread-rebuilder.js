@@ -93,7 +93,50 @@ function loadInjectableFeelings(memoryDir, threadId) {
   return feelings;
 }
 
+function resolveLatestFeelingWatermark(memoryDir, threadId, messages) {
+  const events = readFeelings(memoryDir, { threadId, forInjection: false }).map(row => {
+    const parsed = parseFeelingTime(row.fullContent || row.content || "") || {};
+    const eventMs = new Date(row.eventTime || "").getTime();
+    const utcTime = Number.isFinite(eventMs)
+      ? new Date(eventMs).toISOString()
+      : feelingToUtc({ date: row.sourceDate || parsed.date, hour: parsed.hour, minute: parsed.minute });
+    return { id: row.id, utcTime };
+  }).filter(event => event.utcTime);
+  if (events.length === 0) return null;
+  events.sort((left, right) => new Date(left.utcTime) - new Date(right.utcTime));
+  const feeling = events.at(-1);
+  const automatic = automaticRetainWindow(feeling.utcTime, null, messages);
+  if (!automatic) return null;
+  const startMs = new Date(automatic.startUtc).getTime();
+  const endMs = new Date(automatic.endUtc).getTime();
+  const firstMessage = (messages || []).map(message => ({
+    timestamp: message?.timestamp,
+    time: new Date(message?.timestamp || "").getTime(),
+  })).filter(message => Number.isFinite(message.time) && message.time >= startMs && message.time < endMs)
+    .sort((left, right) => left.time - right.time)[0];
+  if (!firstMessage) return null;
+  return { feelingId: feeling.id, feelingUtc: feeling.utcTime, cutoffUtc: firstMessage.timestamp };
+}
+
 // ---- 锚点 + 片段窗口 ----
+
+function automaticRetainWindow(eventUtc, nextEventUtc, messages, gapMinutes = 5) {
+  const eventMs = new Date(eventUtc || "").getTime();
+  if (!Number.isFinite(eventMs)) return null;
+  const startUtc = new Date(eventMs - 5 * 60 * 1000).toISOString();
+  const nextMs = new Date(nextEventUtc || "").getTime();
+  const ordered = (messages || []).map(message => new Date(message?.timestamp || "").getTime())
+    .filter(Number.isFinite).sort((a,b)=>a-b);
+  const afterEvent = ordered.filter(time => time >= eventMs && (!Number.isFinite(nextMs) || time < nextMs));
+  let endMs = Number.isFinite(nextMs) ? nextMs : (ordered.length ? ordered.at(-1) + 1 : eventMs + 1);
+  for (let i = 1; i < afterEvent.length; i++) {
+    if (afterEvent[i] - afterEvent[i - 1] > gapMinutes * 60 * 1000) {
+      endMs = Math.min(endMs, afterEvent[i]);
+      break;
+    }
+  }
+  return { startUtc, endUtc:new Date(Math.max(endMs,eventMs+1)).toISOString() };
+}
 
 function buildFragmentWindows(preWindowFeelings, allFeelings, messages, retainMap) {
   // 标记 retainOriginal
@@ -110,14 +153,11 @@ function buildFragmentWindows(preWindowFeelings, allFeelings, messages, retainMa
       startUtc = cfg.startUtc;
       endUtc = cfg.endUtc;
     } else if (f.utcTime) {
-      const startMs = new Date(f.utcTime).getTime() - 30 * 60 * 1000;
-      startUtc = new Date(startMs).toISOString();
       const idx = allFeelings.indexOf(f);
-      if (idx >= 0 && idx < allFeelings.length - 1) {
-        endUtc = allFeelings[idx + 1].utcTime || new Date(startMs + 24 * 3600000).toISOString();
-      } else {
-        endUtc = new Date(startMs + 24 * 3600000).toISOString();
-      }
+      const nextUtc=idx >= 0 && idx < allFeelings.length - 1 ? allFeelings[idx + 1].utcTime : null;
+      const automatic=automaticRetainWindow(f.utcTime,nextUtc,messages);
+      startUtc=automatic.startUtc;
+      endUtc=automatic.endUtc;
     } else continue;
     fragmentWindows.push({ feeling: f, startUtc, endUtc });
   }
@@ -197,6 +237,6 @@ function computeCutoff(windowDays, referenceDate = new Date().toISOString().slic
 module.exports = {
   parseFeelingTime, feelingToUtc,
   loadRetainConfig, loadInjectableFeelings,
-  buildFragmentWindows, buildMemoryBlocks,
+  resolveLatestFeelingWatermark, automaticRetainWindow, buildFragmentWindows, buildMemoryBlocks,
   computeCutoff,
 };

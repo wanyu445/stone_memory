@@ -6,6 +6,7 @@ const { MemoryStore } = require("../storage/memory-store");
 const { listDateFiles } = require("../lib/archive-paths");
 const { findThreadSessionFile } = require("../lib/thread-session-file");
 const { dateKeyFromTs } = require("./memory-archive");
+const { buildCodexSessionMeta } = require("./codex-session-meta");
 
 function itemKey(timestamp, role, text) {
   return crypto.createHash("sha256").update(`${timestamp || ""}\0${role || ""}\0${text || ""}`).digest("hex").slice(0, 24);
@@ -121,8 +122,15 @@ function buildRebuildPreview(threadId, { windowDays = 3, toolPairs = 30 } = {}) 
 function checkClaude(rows, threadId) {
   const uuids = new Set(rows.map(row => row.uuid).filter(Boolean));
   const duplicates = rows.map(row => row.uuid).filter(Boolean).filter((id, index, all) => all.indexOf(id) !== index);
-  const sessionIds = new Set(rows.filter(row => row.type === "system" && row.subtype === "init").map(row => row.session_id).filter(Boolean));
+  const initRows=rows.filter(row=>row.type==="system"&&row.subtype==="init");
+  const sessionIds = new Set(initRows.map(row => row.session_id).filter(Boolean));
   const orphans = rows.filter(row => row.parentUuid && !uuids.has(row.parentUuid) && !sessionIds.has(row.parentUuid));
+  const seen=new Set(sessionIds),forwardParents=[];
+  for(const row of rows){
+    if(row.parentUuid&&!seen.has(row.parentUuid))forwardParents.push(row);
+    if(row.uuid)seen.add(row.uuid);
+  }
+  const unexpectedRoots=Math.max(0,rows.filter(row=>row.uuid&&!row.parentUuid).length-1);
   const toolUses = new Set(), toolResults = new Set();
   for (const row of rows) for (const block of Array.isArray(row.message?.content) ? row.message.content : []) {
     if (block.type === "tool_use" && block.id) toolUses.add(block.id);
@@ -130,57 +138,102 @@ function checkClaude(rows, threadId) {
   }
   const missingResults = [...toolUses].filter(id => !toolResults.has(id));
   const missingUses = [...toolResults].filter(id => !toolUses.has(id));
-  return { threadId, runtime: "claude", duplicates: duplicates.length, orphanParents: orphans.length, missingToolResults: missingResults.length, missingToolUses: missingUses.length };
+  return { threadId, runtime: "claude", missingSessionInit:initRows.length?0:1,duplicateSessionInit:Math.max(0,initRows.length-1),duplicates: duplicates.length, orphanParents: orphans.length,forwardParents:forwardParents.length,unexpectedRoots,missingToolResults: missingResults.length, missingToolUses: missingUses.length };
 }
 
 function checkCodex(rows, threadId) {
   const metas = rows.filter(row => row.type === "session_meta");
+  const meta=metas[0],sessionId=meta?.payload?.session_id,id=meta?.payload?.id;
   const calls = new Set(rows.filter(row => row.type === "response_item" && row.payload?.type === "function_call").map(row => row.payload.call_id).filter(Boolean));
   const outputs = new Set(rows.filter(row => row.type === "response_item" && row.payload?.type === "function_call_output").map(row => row.payload.call_id).filter(Boolean));
-  return { threadId, runtime: "codex", missingSessionMeta: metas.length ? 0 : 1, duplicateSessionMeta: Math.max(0, metas.length - 1), missingToolResults: [...calls].filter(id => !outputs.has(id)).length, missingToolCalls: [...outputs].filter(id => !calls.has(id)).length };
+  return { threadId,runtime:"codex",missingSessionMeta:metas.length?0:1,duplicateSessionMeta:Math.max(0,metas.length-1),sessionMetaNotFirst:meta&&rows[0]!==meta?1:0,missingSessionId:meta&&(!sessionId||!id)?1:0,mismatchedSessionIds:sessionId&&id&&sessionId!==id?1:0,missingBaseInstructions:meta&&!meta.payload?.base_instructions?1:0,missingToolResults:[...calls].filter(value=>!outputs.has(value)).length,missingToolCalls:[...outputs].filter(value=>!calls.has(value)).length };
 }
 
-function checkThreadIntegrity(threadId) {
-  const runtime = getCfg("runtime", threadId, "claude"), file = sessionFile(threadId, runtime);
-  if (!file) throw new Error(missingSessionMessage(threadId));
+function checkIntegrityFile(file,runtime,threadId=path.basename(file)) {
   const { rows, malformed } = readJsonl(file);
   const details = runtime === "codex" ? checkCodex(rows, threadId) : checkClaude(rows, threadId);
   const issues = malformed + Object.entries(details).filter(([key]) => !["threadId", "runtime"].includes(key)).reduce((sum, [, value]) => sum + value, 0);
   return { file, malformed, ...details, issues, healthy: issues === 0 };
 }
 
-function repairThreadIntegrity(threadId) {
-  const before = checkThreadIntegrity(threadId);
+function checkThreadIntegrity(threadId) {
+  const runtime = getCfg("runtime", threadId, "claude"), file = sessionFile(threadId, runtime);
+  if (!file) throw new Error(missingSessionMessage(threadId));
+  return checkIntegrityFile(file,runtime,threadId);
+}
+
+function recoveryCodexMeta(file,rows) {
+  const current=rows.find(row=>row.type==="session_meta"&&row.payload?.base_instructions&&(row.payload.session_id||row.payload.id));
+  if(current)return current;
+  let candidates=[];
+  try{
+    const base=path.basename(file).replace(/\.jsonl$/i,"");
+    candidates=fs.readdirSync(path.dirname(file)).filter(name=>name!==path.basename(file)&&name.includes(base)&&(name.includes(".bak")||name.includes(".integrity")))
+      .map(name=>path.join(path.dirname(file),name)).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs);
+  }catch{}
+  for(const candidate of candidates){
+    try{
+      const meta=readJsonl(candidate).rows.find(row=>row.type==="session_meta"&&row.payload?.base_instructions&&(row.payload.session_id||row.payload.id));
+      if(meta)return meta;
+    }catch{}
+  }
+  return null;
+}
+
+function repairIntegrityFile(file,runtime,threadId=path.basename(file)) {
+  const before=checkIntegrityFile(file,runtime,threadId);
   if (before.healthy) return { repaired: false, before, after: before, message: "线程结构完整，无需修复" };
-  const file = before.file;
   const { rows } = readJsonl(file);
   const backup = `${file}.integrity.${new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)}.bak`;
   fs.copyFileSync(file, backup);
   let output = rows;
   if (before.runtime === "claude") {
-    const init = rows.find(row => row.type === "system" && row.subtype === "init");
+    let init = rows.find(row => row.type === "system" && row.subtype === "init");
+    if(!init)init={type:"system",subtype:"init",session_id:threadId,timestamp:new Date().toISOString(),cwd:process.cwd(),version:"unknown"};
     const root = init?.session_id || threadId;
+    const toolUses=new Set(),toolResults=new Set();
+    for(const row of rows)for(const block of Array.isArray(row.message?.content)?row.message.content:[]){
+      if(block.type==="tool_use"&&block.id)toolUses.add(block.id);
+      if(block.type==="tool_result"&&block.tool_use_id)toolResults.add(block.tool_use_id);
+    }
     let parent = root;
-    output = rows.map(row => {
+    const source=[init,...rows.filter(row=>row!==init&&!(row.type==="system"&&row.subtype==="init"))];
+    output = source.map(row => {
+      let clean=row;
+      if(Array.isArray(row.message?.content)){
+        const content=row.message.content.filter(block=>(block.type!=="tool_use"||toolResults.has(block.id))&&(block.type!=="tool_result"||toolUses.has(block.tool_use_id)));
+        clean={...row,message:{...row.message,content}};
+      }
       if (!row.uuid) return row;
-      const next = { ...row, uuid: crypto.randomUUID(), parentUuid: parent };
+      const next = { ...clean, uuid: crypto.randomUUID(), parentUuid: parent };
       parent = next.uuid;
       return next;
     });
   } else {
-    const seenMeta = { value: false };
-    output = rows.filter(row => {
-      if (row.type !== "session_meta") return true;
-      if (seenMeta.value) return false;
-      seenMeta.value = true; return true;
+    const recovered=recoveryCodexMeta(file,rows);
+    if(!recovered)throw new Error(`无法从当前线程或相邻备份恢复完整 Codex session_meta；原文件已备份到 ${backup}，未执行不安全修复`);
+    const sessionId=recovered.payload.session_id||recovered.payload.id;
+    const calls=new Set(rows.filter(row=>row.type==="response_item"&&row.payload?.type==="function_call").map(row=>row.payload.call_id).filter(Boolean));
+    const results=new Set(rows.filter(row=>row.type==="response_item"&&row.payload?.type==="function_call_output").map(row=>row.payload.call_id).filter(Boolean));
+    const body=rows.filter(row=>row.type!=="session_meta").filter(row=>{
+      if(row.type!=="response_item")return true;
+      if(row.payload?.type==="function_call")return results.has(row.payload.call_id);
+      if(row.payload?.type==="function_call_output")return calls.has(row.payload.call_id);
+      return true;
     });
-    if (!seenMeta.value) output.unshift({ timestamp: new Date().toISOString(), type: "session_meta", payload: { id: threadId, timestamp: new Date().toISOString(), cwd: process.cwd(), originator: "codex" } });
+    output=[buildCodexSessionMeta(recovered,{threadId:sessionId}),...body];
   }
   const temp = `${file}.repair-${process.pid}`;
   fs.writeFileSync(temp, output.map(JSON.stringify).join("\n") + "\n", "utf8");
   fs.renameSync(temp, file);
-  const after = checkThreadIntegrity(threadId);
-  return { repaired: true, backup, before, after, message: after.healthy ? "已修复并通过复查" : "已修复结构链；仍有无法自动补造的工具调用配对" };
+  const after = checkIntegrityFile(file,runtime,threadId);
+  return { repaired: true, backup, before, after, message: after.healthy ? "已修复并通过复查" : "已完成安全修复；仍有无法自动恢复的问题" };
+}
+
+function repairThreadIntegrity(threadId) {
+  const runtime=getCfg("runtime",threadId,"claude"),file=sessionFile(threadId,runtime);
+  if(!file)throw new Error(missingSessionMessage(threadId));
+  return repairIntegrityFile(file,runtime,threadId);
 }
 
 function loadRebuildPlan(file) {
@@ -271,4 +324,4 @@ function permanentlyTrimThread(threadId, { excludedMessages = [], excludedTools 
   return { removedMessages: trimmed.removedMessages, removedTools: trimmed.removedTools, archiveMessages, fullRecords };
 }
 
-module.exports = { itemKey, inspectClaude, inspectCodex, conversationDates, conversationWindow, latestConversationDate, buildRebuildPreview, checkThreadIntegrity, repairThreadIntegrity, loadRebuildPlan, permanentlyTrimThread, trimRows, sessionFile };
+module.exports = { itemKey, inspectClaude, inspectCodex, conversationDates, conversationWindow, latestConversationDate, buildRebuildPreview, checkIntegrityFile,repairIntegrityFile,checkThreadIntegrity, repairThreadIntegrity, loadRebuildPlan, permanentlyTrimThread, trimRows, sessionFile };

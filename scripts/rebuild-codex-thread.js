@@ -17,11 +17,12 @@ const crypto = require("crypto");
 const { FullArchive, dateKeyFromTs } = require("../src/services/memory-archive");
 const {
   loadInjectableFeelings, loadRetainConfig,
-  buildFragmentWindows, buildMemoryBlocks,
+  buildFragmentWindows, buildMemoryBlocks, resolveLatestFeelingWatermark,
 } = require("../src/services/thread-rebuilder");
 const { getCfg, getThreadDir } = require("../src/config");
 const { readMessages } = require("../src/storage/memory-reader");
 const { itemKey, conversationWindow, loadRebuildPlan } = require("../src/services/rebuild-workbench");
+const { buildCodexSessionMeta, validateCodexRebuildOutput } = require("../src/services/codex-session-meta");
 
 const DEFAULT_WINDOW_DAYS = 3;
 
@@ -87,6 +88,7 @@ function main() {
   const toolPairsIdx = args.indexOf("--tool-pairs");
   const planIdx = args.indexOf("--plan");
   const triggerIdx = args.indexOf("--trigger");
+  const watermarkMode = args.includes("--watermark");
   const threadId = threadIdx >= 0 ? args[threadIdx + 1] : null;
   const windowDays = windowIdx >= 0 ? parseInt(args[windowIdx + 1]) || DEFAULT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS;
   const keepPairs = toolPairsIdx >= 0 ? Math.max(0, parseInt(args[toolPairsIdx + 1]) || 0) : 40;
@@ -96,15 +98,6 @@ function main() {
   if (!threadId) { console.log("用法: --thread <id> [--window N] [--tool-pairs N] [--apply]"); return; }
   const codexDir = getCfg("sessionDir", threadId);
   if (!codexDir) { console.error("无法重建：未配置线程文件目录，请前往设置填写 Codex session 搜索目录"); process.exit(1); }
-
-  // Windows：检查是否有待替换的 .rebuilt 文件（上次写入时文件被锁）
-  if (process.platform === "win32") {
-    const rebuiltFile = path.join(codexDir, `${threadId}.rebuilt.jsonl`);
-    if (fs.existsSync(rebuiltFile)) {
-      const targetFile = path.join(codexDir, `${threadId}.jsonl`);
-      try { fs.renameSync(rebuiltFile, targetFile); console.log(`[codex-rebuild] pending replace: ${rebuiltFile} → ${targetFile}`); } catch {}
-    }
-  }
 
   // 支持 rollout-<threadId>.jsonl 文件名和日期子目录
   function searchSessionFile(dir) {
@@ -122,6 +115,21 @@ function main() {
     inputFile = searchSessionFile(codexDir);
     if (!inputFile) { console.error(`无法重建：在 ${codexDir} 中没有找到线程 ${threadId}。请修改线程文件目录或检查文件是否存在`); process.exit(1); }
   }
+  const pendingFile=inputFile.replace(/\.jsonl$/i,".rebuilt.jsonl");
+  if(process.platform==="win32"&&fs.existsSync(pendingFile)){
+    const pendingRaw=fs.readFileSync(pendingFile,"utf8");
+    const pendingMeta=JSON.parse(pendingRaw.split("\n").find(Boolean)||"null");
+    const pendingId=pendingMeta?.payload?.session_id||pendingMeta?.payload?.id;
+    if(!pendingId)throw new Error(`待替换文件缺少 Codex session ID：${pendingFile}`);
+    validateCodexRebuildOutput(pendingRaw,pendingId);
+    try{
+      fs.copyFileSync(pendingFile,inputFile);
+      fs.unlinkSync(pendingFile);
+      console.log(`[codex-rebuild] pending replace applied: ${pendingFile} → ${inputFile}`);
+    }catch(error){
+      throw new Error(`仍无法写入 Codex 活动线程，请关闭占用该线程的 Codex 后重试：${error.message}`);
+    }
+  }
 
   console.log(`[codex-rebuild] Loading: ${inputFile}`);
   const raw = fs.readFileSync(inputFile, "utf8");
@@ -132,9 +140,8 @@ function main() {
 
   // 提取元信息（保留原始 originator，不覆盖为 "codex-rebuild"）
   const metaMsg = allMsgs.find(m => m.type === "session_meta");
-  const origSessionId = metaMsg?.payload?.id || threadId;
+  const origSessionId = metaMsg?.payload?.session_id || metaMsg?.payload?.id || threadId;
   const origCwd = metaMsg?.payload?.cwd || process.cwd();
-  const origOriginator = metaMsg?.payload?.originator || "codex";
 
   // === 全量备份到 full/ ===
   const memoryDir = path.join(getThreadDir(threadId), "memory");
@@ -202,15 +209,28 @@ function main() {
   }
 
   // === 窗口 ===
-  const { cutoff: cutoffDate } = conversationWindow(allMsgs, "codex", windowDays);
+  const fallbackWindow = conversationWindow(allMsgs, "codex", windowDays);
+  const watermark = watermarkMode ? resolveLatestFeelingWatermark(memoryDir, threadId, messages) : null;
+  const cutoffUtc = watermark?.cutoffUtc || null;
+  const cutoffDate = cutoffUtc ? dateKeyFromTs(cutoffUtc) : fallbackWindow.cutoff;
+  const isWindowMessage = message => cutoffUtc
+    ? new Date(message?.timestamp || "").getTime() >= new Date(cutoffUtc).getTime()
+    : msgDate(message?.timestamp) >= cutoffDate;
+  console.log(watermark
+    ? `[codex-rebuild] Retention mode: watermark (feeling ${watermark.feelingId}, since ${cutoffUtc})`
+    : `[codex-rebuild] Retention mode: active-days${watermarkMode ? " (watermark unavailable)" : ""}`);
   console.log(`[codex-rebuild] Window: ${windowDays} days (cutoff: ${cutoffDate})`);
 
   // === Feelings ===
   console.log(`[codex-rebuild] Loading injectable feelings (daily/coarse; hidden excluded)...`);
   const fp = getFeelingsPaths(threadId);
   const allFeelings = loadInjectableFeelings(path.join(getThreadDir(threadId), "memory"), threadId);
-  const preWindow = allFeelings.filter(f => f.date < cutoffDate);
-  const inWindow = allFeelings.filter(f => f.date >= cutoffDate);
+  const preWindow = watermark
+    ? allFeelings.filter(f => f.id !== watermark.feelingId)
+    : allFeelings.filter(f => f.date < cutoffDate);
+  const inWindow = watermark
+    ? allFeelings.filter(f => f.id === watermark.feelingId)
+    : allFeelings.filter(f => f.date >= cutoffDate);
   console.log(`[codex-rebuild] ${preWindow.length} pre-window, ${inWindow.length} in-window`);
 
   // === 锚点 + 片段 ===
@@ -253,10 +273,7 @@ function main() {
   }
 
   // System meta（保留原始 originator）
-  output.push(JSON.stringify({
-    timestamp: now.toISOString(), type: "session_meta",
-    payload: { id: origSessionId, timestamp: now.toISOString(), cwd: origCwd, originator: origOriginator },
-  }));
+  output.push(JSON.stringify(buildCodexSessionMeta(metaMsg,{threadId:origSessionId,now,cwd:origCwd})));
 
   // Turn context
   output.push(JSON.stringify({
@@ -282,7 +299,9 @@ function main() {
       ruleCount++;
       injectedRuleNames.push(f);
     }
-  } catch {}
+  } catch(error) {
+    throw new Error(`读取人设 / 规则失败，已停止重建以避免生成无人设线程：${error.message}`);
+  }
   if (ruleCount > 0) console.log(`[codex-rebuild] injected ${ruleCount} rules from rules/`);
 
   /** 输出一条常规消息（去重、去系统注入）+ 附属的 function_call 链 */
@@ -373,7 +392,7 @@ function main() {
   // 窗口消息（保留工具链）
   for (let mi = 0; mi < messages.length; mi++) {
     const m = messages[mi];
-    if (!m || msgDate(m.timestamp) < cutoffDate) continue;
+    if (!m || !isWindowMessage(m)) continue;
     const callIds = msgToCallIds.get(mi) || [];
     emitMessage(m, callIds);
   }
@@ -381,25 +400,43 @@ function main() {
   // === 统计 ===
   const totalOriginal = lines.length;
   const totalOutput = output.length;
+  const fullArchiveSize = codexArchive.getTotalBytes();
+  const outputText = output.join("\n") + "\n";
+  validateCodexRebuildOutput(outputText,origSessionId);
+  const estimatedOutputSize = Buffer.byteLength(outputText, "utf8");
+  const byteReduction = fullArchiveSize > 0 ? (1 - estimatedOutputSize / fullArchiveSize) * 100 : null;
 
   if (apply) {
     // 备份
     const bakPath = inputFile + ".bak." + now.toISOString().replace(/[:.]/g, "").slice(0, 15);
     fs.copyFileSync(inputFile, bakPath);
     console.log(`[codex-rebuild] backup: ${path.basename(bakPath)}`);
-    // 写入（Windows 下如被锁则写 .rebuilt.jsonl 待下次替换）
-    const outputFile = (process.platform === "win32") ? inputFile.replace(/\.jsonl$/, ".rebuilt.jsonl") : inputFile;
-    fs.writeFileSync(outputFile, output.join("\n") + "\n", "utf8");
-    const contextBytes=fs.statSync(outputFile).size;
-    require("../src/services/rebuild-log").appendRebuildLog(threadId,{status:process.platform==="win32"?"pending_replace":"completed",runtime:"codex",trigger,threadFile:inputFile,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:Buffer.byteLength(raw),contextBytes,outputLines:totalOutput});
-    console.log(`\n[codex-rebuild] ${totalOriginal} → ${totalOutput} lines (${((1 - totalOutput / totalOriginal) * 100).toFixed(1)}% saved)`);
+    const stagedFile=inputFile.replace(/\.jsonl$/i,".rebuilt.jsonl");
+    fs.writeFileSync(stagedFile,outputText,"utf8");
+    validateCodexRebuildOutput(fs.readFileSync(stagedFile,"utf8"),origSessionId);
+    try{
+      if(process.platform==="win32"){
+        fs.copyFileSync(stagedFile,inputFile);
+        fs.unlinkSync(stagedFile);
+      }else{
+        fs.renameSync(stagedFile,inputFile);
+      }
+    }catch(error){
+      throw new Error(`重建结果已安全保存在 ${stagedFile}，但无法覆盖活动线程；请关闭占用该线程的 Codex 后重试：${error.message}`);
+    }
+    const contextBytes=fs.statSync(inputFile).size;
+    require("../src/services/rebuild-log").appendRebuildLog(threadId,{status:"completed",runtime:"codex",trigger,threadFile:inputFile,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:fullArchiveSize,contextBytes,outputLines:totalOutput});
+    console.log(`\n[codex-rebuild] ${fullArchiveSize} bytes full → ${contextBytes} bytes (${fullArchiveSize > 0 ? ((1 - contextBytes / fullArchiveSize) * 100).toFixed(1) : "—"}% saved)`);
     console.log(`  Memory blocks: ${stats.memoryBlock} | Messages: ${stats.windowMsg} | Function calls: ${stats.functionCall} | System dropped: ${stats.systemDropped}`);
   } else {
     console.log(`\n[codex-rebuild] ====== DRY RUN ======`);
     console.log(`  Window: ${windowDays} days (since ${cutoffDate})`);
     console.log(`  Original: ${totalOriginal} lines → Output: ${totalOutput} lines`);
-    console.log(`  Reduction: ${((1 - totalOutput / totalOriginal) * 100).toFixed(1)}%`);
+    console.log(`  Reduction: ${byteReduction === null ? "—" : `${byteReduction.toFixed(1)}%`}`);
+    console.log(`  Full archive size: ${fullArchiveSize} bytes`);
+    console.log(`  Estimated output: ${estimatedOutputSize} bytes`);
     console.log(`  Memory blocks: ${stats.memoryBlock} | Messages: ${stats.windowMsg} | Function calls: ${stats.functionCall}`);
+    console.log(`  Retained messages: ${retainedMessages}`);
     console.log(`  System dropped: ${stats.systemDropped}`);
     console.log(`  Tool pairs preserved: ${pairCount}`);
     console.log("  Use --apply to write.");

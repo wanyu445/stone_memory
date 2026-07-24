@@ -13,11 +13,14 @@ const { findThreadSessionFile } = require("../lib/thread-session-file");
 const { listRules } = require("../services/rule-store");
 const { latestSuccessfulRebuild, readRebuildState } = require("../services/rebuild-log");
 const { sessionFile } = require("../services/rebuild-workbench");
+const { parseFeelingTime, feelingToUtc, automaticRetainWindow } = require("../services/thread-rebuilder");
+const { parseRebuildDryRun } = require("../services/rebuild-dry-run");
 
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_UPLOAD = 512 * 1024 * 1024;
 const previews = new Map();
 const miningJobs = new Map();
+const compressionJobs = new Set();
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
 const STMEM_BIN = path.join(PROJECT_ROOT, "bin", "stmem");
 
@@ -28,24 +31,30 @@ function runStmem(args, { timeout = 10 * 60 * 1000 } = {}) {
   return (result.stdout || "").trim();
 }
 
-function runStmemAsync(args) {
+function runStmemAsync(args, { maxOutput = 8000 } = {}) {
   return new Promise((resolve, reject) => {
     const child=spawn(process.execPath,[STMEM_BIN,...args],{cwd:PROJECT_ROOT,stdio:["ignore","pipe","pipe"]});
     let stdout="",stderr="";
-    child.stdout.on("data",chunk=>{stdout=(stdout+chunk).slice(-8000);});
-    child.stderr.on("data",chunk=>{stderr=(stderr+chunk).slice(-8000);});
+    child.stdout.on("data",chunk=>{stdout=(stdout+chunk).slice(-maxOutput);});
+    child.stderr.on("data",chunk=>{stderr=(stderr+chunk).slice(-Math.min(maxOutput,8000));});
     child.once("error",reject);
     child.once("close",code=>code===0?resolve(stdout.trim()):reject(new Error((stderr||stdout||`stmem ${args[0]} 失败`).trim())));
   });
 }
 
+function miningDatesFromStore(store,threadId) {
+  return store.db.prepare(`SELECT m.source_date date,COUNT(*) messageCount,
+    COALESCE(s.status,'pending') status,
+    (SELECT COUNT(*) FROM feelings f WHERE f.thread_id=m.thread_id AND f.source_date=m.source_date) feelingCount,
+    (SELECT COUNT(*) FROM features x WHERE x.thread_id=m.thread_id AND x.source_date=m.source_date) featureCount,
+    s.updated_at updatedAt,s.error_message errorMessage
+    FROM messages m LEFT JOIN mining_day_state s ON s.thread_id=m.thread_id AND s.source_date=m.source_date
+    WHERE m.thread_id=? GROUP BY m.source_date ORDER BY m.source_date DESC`).all(threadId);
+}
+
 function miningDates(threadId) {
   const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
-  try{return store.db.prepare(`SELECT m.source_date date,COUNT(*) messageCount,
-    COALESCE(s.status,'pending') status,COALESCE(s.feeling_count,0) feelingCount,
-    COALESCE(s.feature_count,0) featureCount,s.updated_at updatedAt,s.error_message errorMessage
-    FROM messages m LEFT JOIN mining_day_state s ON s.thread_id=m.thread_id AND s.source_date=m.source_date
-    WHERE m.thread_id=? GROUP BY m.source_date ORDER BY m.source_date DESC`).all(threadId);}
+  try{return miningDatesFromStore(store,threadId);}
   finally{store.close();}
 }
 
@@ -55,6 +64,76 @@ function miningCommandArgs(threadId, date, mode) {
 
 function targetedMiningCommandArgs(threadId, mode, batchFile) {
   return ["mine","--thread",threadId,"--targeted","--batch-file",batchFile,mode==="api"?"--api":"--subagent"];
+}
+
+function timelineCommandArgs(threadId, terms, { from = "", to = "" } = {}) {
+  const cleaned = [...new Set((terms || []).map(term => String(term).trim()).filter(Boolean))];
+  if (cleaned.length < 1 || cleaned.length > 3) throw new Error("时间轴每次请选择 1～3 个关键词");
+  if (cleaned.some(term => term.length > 64)) throw new Error("时间轴关键词过长");
+  const validDate = value => !value || /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!validDate(from) || !validDate(to)) throw new Error("时间范围格式无效");
+  if (from && to && from > to) throw new Error("开始日期不能晚于结束日期");
+  const args = ["term-timeline", "--thread", threadId, "--terms", cleaned.join(","), "--json"];
+  if (from) args.push("--from", from);
+  if (to) args.push("--to", to);
+  return args;
+}
+
+function compressionCommandArgs(threadId, { kind = "compact", apply = false, mode = "subagent", from = "", to = "", afterDays = 90 } = {}) {
+  if (!["compact", "hidden"].includes(kind)) throw new Error("未知压缩类型");
+  const args = [kind, "--thread", threadId, "--json"];
+  if (kind === "compact") {
+    if ((from && !to) || (!from && to)) throw new Error("精确压缩窗口需要同时提供开始和结束日期");
+    if (from) args.push("--from", from, "--to", to);
+    if (apply) args.push(mode === "api" ? "--api" : "--subagent", "--apply");
+  } else {
+    const days = Math.max(1, Math.min(3650, Number(afterDays) || 90));
+    args.push("--after-days", String(days));
+    if (apply) args.push("--apply");
+  }
+  return args;
+}
+
+function compactTimelineReport(data) {
+  return {
+    threadId: data.threadId,
+    report: (data.report || []).map(row => ({
+      term: row.term, normalizedTerm: row.normalizedTerm, categories: row.categories || [],
+      categorySupport: row.categorySupport || {}, from: row.from, to: row.to,
+      messageCount: row.messageCount, occurrenceCount: row.occurrenceCount, activeDays: row.activeDays,
+      firstSeen: row.firstSeen, lastSeen: row.lastSeen, baseline: row.baseline,
+      timeline: row.timeline || [], feelings: row.feelings || [],
+    })),
+    intersections: (data.intersections || []).map(row => ({
+      terms: row.terms || [],
+      sameDayCount: row.sameDays?.length || 0,
+      sameMessageCount: row.sameMessages?.length || 0,
+      sameFeelingCount: row.sameFeelings?.length || 0,
+    })),
+    relation: {
+      terms: (data.relation?.terms || []).map(row => ({
+        term: row.term, normalizedTerm: row.normalizedTerm, state: row.state,
+        shape: row.shape, confidence: row.confidence, reasons: row.reasons || [],
+        signature: row.signature ? {
+          term: row.signature.term, normalizedTerm: row.signature.normalizedTerm,
+          sameFeelings: row.signature.sameFeelings, sameDays: row.signature.sameDays,
+          strength: row.signature.strength,
+        } : null,
+      })),
+      pairs: (data.relation?.pairs || []).map(row => ({
+        terms: row.terms || [], normalizedTerms: row.normalizedTerms || [],
+        state: row.state, shape: row.shape, evidence: row.evidence || {},
+      })),
+    },
+    work: {
+      groups: (data.work?.groups || []).map(row => ({
+        id: row.id, state: row.state, shape: row.shape, firstSeen: row.firstSeen,
+        lastSeen: row.lastSeen, members: (row.members || []).map(member => ({
+          term: member.term, normalizedTerm: member.normalizedTerm,
+        })),
+      })),
+    },
+  };
 }
 
 async function executeMiningJob(job) {
@@ -360,6 +439,40 @@ async function handleApi(req, res, url) {
     } finally { store.close(); }
   }
 
+  const timelineMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/timeline$/);
+  if (req.method === "GET" && timelineMatch) {
+    const threadId = decodeURIComponent(timelineMatch[1]);
+    const terms = String(url.searchParams.get("terms") || "").split(",");
+    const args = timelineCommandArgs(threadId, terms, {
+      from: String(url.searchParams.get("from") || ""),
+      to: String(url.searchParams.get("to") || ""),
+    });
+    return json(res, 200, compactTimelineReport(JSON.parse(runStmem(args, { timeout: 2 * 60 * 1000 }))));
+  }
+
+  const compressionMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/compression\/(preview|apply)$/);
+  if (compressionMatch) {
+    const threadId = decodeURIComponent(compressionMatch[1]), action = compressionMatch[2];
+    if (req.method === "GET" && action === "preview") {
+      const args = compressionCommandArgs(threadId, {
+        kind: String(url.searchParams.get("kind") || "compact"),
+        afterDays: url.searchParams.get("afterDays") || 90,
+      });
+      return json(res, 200, JSON.parse(await runStmemAsync(args, { maxOutput: 64 * 1024 * 1024 })));
+    }
+    if (req.method === "POST" && action === "apply") {
+      if (compressionJobs.has(threadId)) throw new Error("这个记忆体已有压缩任务正在执行");
+      const body = await readJson(req);
+      const args = compressionCommandArgs(threadId, {
+        kind: body.kind, apply: true, mode: body.mode,
+        from: body.from, to: body.to, afterDays: body.afterDays,
+      });
+      compressionJobs.add(threadId);
+      try { return json(res, 200, JSON.parse(await runStmemAsync(args, { maxOutput: 64 * 1024 * 1024 }))); }
+      finally { compressionJobs.delete(threadId); }
+    }
+  }
+
   const feelingActionMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/feelings\/(update|anchor)$/);
   if (req.method === "POST" && feelingActionMatch) {
     const threadId=decodeURIComponent(feelingActionMatch[1]), body=await readJson(req);
@@ -369,12 +482,37 @@ async function handleApi(req, res, url) {
     finally { fs.rmSync(dir,{recursive:true,force:true}); }
   }
 
+  const retainPreviewMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/feelings\/retain-preview$/);
+  if(req.method==="GET"&&retainPreviewMatch){
+    const threadId=decodeURIComponent(retainPreviewMatch[1]),id=String(url.searchParams.get("id")||"");
+    const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
+    try{
+      const feeling=store.db.prepare("SELECT * FROM feelings WHERE thread_id=? AND id=?").get(threadId,id);
+      if(!feeling)throw new Error("摘要不存在");
+      const parsed=parseFeelingTime(feeling.content),eventTime=feeling.event_time||(parsed?feelingToUtc({...parsed,date:feeling.source_date}):null);
+      const all=store.listFeelings(),index=all.findIndex(row=>row.id===id),next=index>=0?all.slice(index+1).find(row=>row.event_time||parseFeelingTime(row.content)?.hour!=null):null;
+      let nextEventUtc=null;
+      if(next){
+        const nextParsed=parseFeelingTime(next.content);
+        nextEventUtc=next.event_time||(nextParsed?feelingToUtc({...nextParsed,date:next.source_date}):null);
+      }
+      const dayMessages=store.listMessages({date:feeling.source_date});
+      const automatic=automaticRetainWindow(eventTime,nextEventUtc,dayMessages);
+      const startUtc=automatic?.startUtc||null,endUtc=automatic?.endUtc||null;
+      let config={retain:{}};try{config={...config,...JSON.parse(fs.readFileSync(path.join(getThreadDir(threadId),"memory","retain-config.json"),"utf8"))};}catch{}
+      const saved=config.retain?.[id]||{},effectiveStart=saved.startUtc||startUtc,effectiveEnd=saved.endUtc||endUtc;
+      const startMs=effectiveStart?new Date(effectiveStart).getTime():NaN,endMs=effectiveEnd?new Date(effectiveEnd).getTime():NaN;
+      const rows=dayMessages.map(row=>{const time=new Date(row.timestamp).getTime();return {...row,selected:Number.isFinite(time)&&Number.isFinite(startMs)&&Number.isFinite(endMs)&&time>=startMs&&time<endMs};});
+      return json(res,200,{feeling:{id:feeling.id,content:feeling.content,sourceDate:feeling.source_date},startUtc:effectiveStart,endUtc:effectiveEnd,rows});
+    }finally{store.close();}
+  }
+
   const ruleActionMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/rules\/([^/]+)\/(enable|disable)$/);
   if (req.method === "POST" && ruleActionMatch) { runStmem(["rules", ruleActionMatch[3], "--thread", decodeURIComponent(ruleActionMatch[1]), "--name", decodeURIComponent(ruleActionMatch[2])]); return json(res, 200, { success: true }); }
   const ruleDeleteMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/rules\/([^/]+)$/);
   if (req.method === "DELETE" && ruleDeleteMatch) { runStmem(["rules", "delete", "--thread", decodeURIComponent(ruleDeleteMatch[1]), "--name", decodeURIComponent(ruleDeleteMatch[2])]); return json(res, 200, { success: true }); }
 
-  const rebuildMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/rebuild\/(preview|apply|check|repair)$/);
+  const rebuildMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/rebuild\/(preview|dry-run|apply|check|repair)$/);
   if (rebuildMatch) {
     const threadId = decodeURIComponent(rebuildMatch[1]), action = rebuildMatch[2];
     if (req.method === "GET" && action === "preview") {
@@ -384,6 +522,21 @@ async function handleApi(req, res, url) {
       const preview = buildRebuildPreview(threadId, { windowDays, toolPairs });
       return json(res, 200, { ...preview, items: paginate(preview.items, url.searchParams.get("page")), tools: paginate(preview.tools, url.searchParams.get("toolPage")) });
     }
+    if(req.method==="GET"&&action==="dry-run"){
+      const windowDays=Math.max(1,Number(url.searchParams.get("windowDays"))||3),toolValue=url.searchParams.get("toolPairs"),toolPairs=Math.max(0,toolValue===null?30:Number(toolValue)),watermark=url.searchParams.get("watermark")==="true";
+      const rebuildArgs=["rebuild","--thread",threadId,"--window",String(windowDays),"--tool-pairs",String(toolPairs)];
+      if(watermark)rebuildArgs.push("--watermark");
+      return json(res,200,parseRebuildDryRun(runStmem(rebuildArgs)));
+    }
+    if(req.method==="POST"&&action==="dry-run"){
+      const body=await readJson(req),windowDays=Math.max(1,Number(body.windowDays)||3),toolPairs=Math.max(0,body.toolPairs===undefined?30:Number(body.toolPairs)),watermark=body.watermark===true;
+      const dir=fs.mkdtempSync(path.join(os.tmpdir(),"stmem-rebuild-preview-")),planFile=path.join(dir,"plan.json");
+      fs.writeFileSync(planFile,JSON.stringify({excludedMessages:body.excludedMessages||[],excludedTools:body.excludedTools||[]}),{encoding:"utf8",mode:0o600});
+      const rebuildArgs=["rebuild","--thread",threadId,"--window",String(windowDays),"--tool-pairs",String(toolPairs),"--plan",planFile];
+      if(watermark)rebuildArgs.push("--watermark");
+      try{return json(res,200,parseRebuildDryRun(runStmem(rebuildArgs)));}
+      finally{fs.rmSync(dir,{recursive:true,force:true});}
+    }
     if (req.method === "GET" && action === "check") return json(res, 200, JSON.parse(runStmem(["rebuild", "--thread", threadId, "--check"])));
     if (req.method === "POST" && action === "repair") return json(res, 200, JSON.parse(runStmem(["rebuild", "--thread", threadId, "--repair"])));
     if (req.method === "POST" && action === "apply") {
@@ -392,7 +545,9 @@ async function handleApi(req, res, url) {
       fs.writeFileSync(planFile, JSON.stringify({ excludedMessages: body.excludedMessages || [], excludedTools: body.excludedTools || [] }), "utf8");
       try {
         const requestedTools = body.toolPairs === undefined ? 30 : Number(body.toolPairs);
-        const output = runStmem(["rebuild", "--thread", threadId, "--window", String(Math.max(1, Number(body.windowDays) || 3)), "--tool-pairs", String(Math.max(0, requestedTools)), "--plan", planFile, "--trigger", "web", "--apply"]);
+        const rebuildArgs=["rebuild", "--thread", threadId, "--window", String(Math.max(1, Number(body.windowDays) || 3)), "--tool-pairs", String(Math.max(0, requestedTools)), "--plan", planFile, "--trigger", "web", "--apply"];
+        if(body.watermark===true)rebuildArgs.push("--watermark");
+        const output = runStmem(rebuildArgs);
         const integrity = JSON.parse(runStmem(["rebuild", "--thread", threadId, "--check"]));
         return json(res, 200, { success: true, output, integrity });
       } finally { fs.rmSync(path.dirname(planFile), { recursive: true, force: true }); }
@@ -420,6 +575,22 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && pageMatch) {
     const item = previews.get(pageMatch[1]);
     return item ? json(res, 200, { token: pageMatch[1], filename: item.filename, ...item.source.preview, ...previewRows(item.source, url.searchParams.get("page")) }) : error(res, 404, "导入预览已过期");
+  }
+
+  const libraryImportMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/imports$/);
+  if(req.method==="POST"&&libraryImportMatch){
+    const threadId=decodeURIComponent(libraryImportMatch[1]);publicThreadSettings(threadId);
+    const input=await readJson(req),tokens=[...new Set(Array.isArray(input.importTokens)?input.importTokens.map(String):[])];
+    if(!tokens.length)throw new Error("请先上传并确认至少一个对话文件");
+    const items=tokens.map(token=>({token,item:previews.get(token)}));
+    if(items.some(row=>!row.item))throw new Error("有一个导入预览已经过期，请重新上传");
+    const imported={imported:0,fullBacked:0,files:0};
+    for(const {token,item} of items){
+      runStmem(["import","--thread",threadId,"--source",item.filePath,"--apply"]);
+      imported.imported+=item.source.preview.valid;imported.fullBacked+=item.source.preview.valid;imported.files++;
+      fs.rmSync(path.dirname(item.filePath),{recursive:true,force:true});previews.delete(token);
+    }
+    return json(res,200,imported);
   }
 
   if (req.method === "POST" && url.pathname === "/api/libraries") {
@@ -478,4 +649,4 @@ function startWebServer({ host = "127.0.0.1", port = 4173 } = {}) {
   });
 }
 
-module.exports = { startWebServer, listLibraries, overview, previewRows, paginate, buildConversationCalendar, miningCommandArgs, targetedMiningCommandArgs, runStmem };
+module.exports = { startWebServer, listLibraries, overview, previewRows, paginate, buildConversationCalendar, miningDatesFromStore, miningCommandArgs, targetedMiningCommandArgs, timelineCommandArgs, compactTimelineReport, compressionCommandArgs, runStmem };

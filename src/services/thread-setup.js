@@ -82,9 +82,9 @@ function createThread(input, { allowExisting = false } = {}) {
   const audit = path.join(root, "memory", "audit-marks.json");
   if (!fs.existsSync(audit)) fs.writeFileSync(audit, JSON.stringify({ lastCutoffDate: `${new Date().getFullYear()}-01-01`, retainMarks: {} }, null, 2));
   const instructions = path.join(root, "rules", "instructions.md");
-  if (!fs.existsSync(instructions)) fs.writeFileSync(instructions, `<!-- stmem-rule: instructions.md -->\n# ${entry.ai} 的系统指令\n\n在此定义 ${entry.ai} 的基础人格、行为规则、回复风格。\n每次 rebuild 时这些指令会自动注入到新线程头部。\n`);
+  if (!fs.existsSync(instructions)) fs.writeFileSync(instructions, `# ${entry.ai} 的系统指令\n\n在此定义 ${entry.ai} 的基础人格、行为规则、回复风格。\n每次 rebuild 时这些指令会自动注入到新线程头部。\n`);
   const operations = path.join(root, "rules", "operations.md");
-  if (!fs.existsSync(operations)) fs.writeFileSync(operations, `<!-- stmem-rule: operations.md -->\n# ${entry.ai} 的操作指令\n\n在此定义 ${entry.ai} 可以使用的工具、API、外部系统。\n每次 rebuild 时这些操作指令会自动注入到新线程头部。\n`);
+  if (!fs.existsSync(operations)) fs.writeFileSync(operations, `# ${entry.ai} 的操作指令\n\n在此定义 ${entry.ai} 可以使用的工具、API、外部系统。\n每次 rebuild 时这些操作指令会自动注入到新线程头部。\n`);
 
   const store = new MemoryStore({ memoryDir: path.join(root, "memory"), threadId });
   store.registerThread({ runtime: entry.runtime, purpose: entry.purpose, label: entry.label });

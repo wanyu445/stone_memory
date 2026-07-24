@@ -75,3 +75,20 @@ test("infers a missing paired role only from high-affinity relation co-occurrenc
   assert.equal(result.terms.find(row => row.term === "少爷").inferredRelation, true);
   assert.equal(result.pairs[0].shape, "episodic_pair");
 });
+
+test("relation signatures never take over an explicitly work-only term", () => {
+  const feelings = Array.from({ length: 5 }, (_, index) => ({
+    id: `shared-${index}`, source_date: `2026-06-0${index + 1}`, importance: 4, content: "关系角色一起整理材料",
+  }));
+  const rows = buildTermTimeline({
+    requestedTerms: ["角色", "材料"],
+    extractedTerms: [
+      { normalizedTerm: "角色", category: "relation", featureIds: ["relation-1"] },
+      { normalizedTerm: "材料", category: "work", featureIds: ["work-1"] },
+    ],
+    messages: [], feelings, from: "2026-06-01", to: "2026-06-10",
+  });
+  const intersections = buildCooccurrenceSignatures({ termTimelines: rows, messages: [], feelings });
+  const result = buildRelationLifecycles({ termTimelines: rows, intersections });
+  assert.equal(result.terms.some(row => row.term === "材料"), false);
+});

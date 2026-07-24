@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { ensureDateFile, resolveDateFile, migrateFlatFiles } = require("../lib/archive-paths");
+const { ensureDateFile, resolveDateFile, listDateFiles, migrateFlatFiles } = require("../lib/archive-paths");
 const { MemoryStore } = require("../storage/memory-store");
 
 function dateKeyFromTs(timestamp) {
@@ -65,6 +65,13 @@ class FullArchive {
   }
 
   archiveFull(message) { return this.archiveFullBatch([message]); }
+
+  /** full/ 中全部按日原始 JSONL 的物理字节数。 */
+  getTotalBytes() {
+    return listDateFiles(this.fullDir).reduce((total, { file }) => {
+      try { return total + fs.statSync(file).size; } catch { return total; }
+    }, 0);
+  }
 
   archiveFullBatch(messages) {
     const grouped = new Map();

@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 const { MemoryStore } = require("../src/storage/memory-store");
 const { readFeelings, readFeatures, readMessages } = require("../src/storage/memory-reader");
-const { loadInjectableFeelings } = require("../src/services/thread-rebuilder");
+const { loadInjectableFeelings, resolveLatestFeelingWatermark } = require("../src/services/thread-rebuilder");
 
 test("SQLite reader applies daily, coarse, and hidden modes without destroying full content", t => {
   const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-reader-"));
@@ -76,4 +76,28 @@ test("fork can keep child memories private from parent", t => {
 
   assert.deepEqual(readFeelings(memoryDir, { threadId: "parent" }), []);
   assert.deepEqual(readFeelings(memoryDir, { threadId: "child" }).map(row => row.id), ["private"]);
+});
+
+test("watermark starts at the first original message matched by the latest event feeling", t => {
+  const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-watermark-"));
+  const store = new MemoryStore({ memoryDir, threadId: "thread-watermark" });
+  t.after(() => { store.close(); fs.rmSync(memoryDir, { recursive: true, force: true }); });
+  const now = new Date().toISOString();
+  const insert = store.db.prepare(`INSERT INTO feelings
+    (id,thread_id,source_date,event_time,order_key,content,importance,source,created_at,updated_at,summary_mode)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("older", "thread-watermark", "2026-07-20", "2026-07-20T01:00:00.000Z", "1", "7月20日，上午九点。旧事件。", 3, "manual", now, now, "daily");
+  insert.run("latest-hidden", "thread-watermark", "2026-07-21", "2026-07-21T02:00:00.000Z", "2", "7月21日，上午十点。最后事件。", 3, "manual", now, now, "hidden");
+  const messages = [
+    { timestamp: "2026-07-21T01:54:00.000Z" },
+    { timestamp: "2026-07-21T01:57:00.000Z" },
+    { timestamp: "2026-07-21T02:03:00.000Z" },
+    { timestamp: "2026-07-21T02:20:00.000Z" },
+  ];
+
+  assert.deepEqual(resolveLatestFeelingWatermark(memoryDir, "thread-watermark", messages), {
+    feelingId: "latest-hidden",
+    feelingUtc: "2026-07-21T02:00:00.000Z",
+    cutoffUtc: "2026-07-21T01:57:00.000Z",
+  });
 });

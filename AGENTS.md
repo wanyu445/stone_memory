@@ -245,6 +245,8 @@ full 允许迟到原始记录追加到既有日期文件末尾，因此文件物
 
 `stmem web [--port 4173]` 启动只监听 `127.0.0.1` 的本地单用户前端。当前已实现欢迎页、三步创建、记忆体唯一显示名、真实线程绑定、多文件导入、清洗后纯对话的20条分页预览、记忆体大厅、概览和线程重建工作台。前端使用 Node 内置 HTTP + 原生静态资源，不引入云端后端或第二套算法。
 
+未来部署与高密度挖掘需求已记录在 `/home/eurus/stone_memory_beta/design/single-user-vps-and-mining-intensity.md`，当前前端优化完成前不要提前实现。上云只指单用户个人 VPS + HTTPS/Tailscale/内网穿透，不扩展账号、多租户或多人协作。挖掘强度只设计标准/高频两档：标准模式每日挖掘并按活跃日 rebuild；高频模式空闲 15 分钟后按成功游标增量挖掘、参考当天最近 5 条摘要找语气，并按最后有效对话向前保留 X 小时原文。任何 watcher 增量写入仍必须先有正式 `stmem` CLI，成功落库后才推进游标；未挖尾部不得被 rebuild 静默裁掉。
+
 前端所有写操作必须调用与终端完全相同的 `stmem` 命令入口，HTTP 只做参数适配：创建与设置更新都调用 `stmem init --batch-file`，正式导入调用 `stmem import --apply`，重建/永久裁剪/完整性检查修复均调用 `stmem rebuild`。不得在 HTTP 层直接调用 `createThread`、`ingestRecords`、`permanentlyTrimThread` 等内部写服务形成第二条行为路径。只读列表、设置读取与导入预览可以直接读取服务。`--batch-file` 使用权限为 0600 的临时文件传递 API Key，不能把 Key 放到进程参数中。
 
 设置页展示全部 init 配置。记忆体名字、AI/用户名字、性别、Claude/Codex sessionDir、minerMode/API 配置、windowDays、keepToolPairs 和自动化开关复用 `stmem init --thread <已有ID> --batch-file` 修改；不要另建 config 命令。Claude 和 Codex 都由用户填写线程文件搜索根目录，以兼容 Windows 等不同安装位置；查找绑定线程文件时必须递归日期子目录。threadId 永久只读。runtime/purpose 涉及运行目录迁移，第一版只读，init 服务同样拒绝直接修改，不能只靠浏览器禁用。API Key 在本地页面使用 password 输入框默认显示黑点，小眼睛可以显隐；不把本地单用户产品按云端后台假设设计。
@@ -257,22 +259,36 @@ full 允许迟到原始记录追加到既有日期文件末尾，因此文件物
 
 记忆页是内容查看与单条编辑入口，不再放置深色长条“记忆挖掘”。当前保持“人设 / 规则、摘要、特征库、全量对话”四个入口，其余结构不动。规则文档保存在原有 `rules/*.md`，`.injection-state.json` 只记录是否注入；停用等同 hidden 语义，只让 Claude/Codex rebuild 跳过该文档，不删除正文。规则导入、编辑、删除、启用/停用全部调用 `stmem rules`，HTTP 不直接写 rules。摘要和特征库第一版提供 SQLite 只读分页、搜索与 category 查看；后续编辑摘要状态与锚点时必须先补正式 CLI。
 
-主导航按真实使用频率排列为“概览、维护、记忆档案、设置”。“线程重建”已并入第二位的“维护”；维护首页只放两张并列大卡片：“记忆挖掘”（副标题：将对话中的摘要 / 特征进行挖掘，对话导入）和“线程重建”，卡片右侧使用带 `→` 的圆形入口按钮。既有线程重建工作台完整接入第二张卡片。
+主导航按真实使用频率排列为“概览、维护、记忆档案、设置”。“线程重建”已并入第二位的“维护”；维护入口统一使用大卡片与右侧带 `→` 的圆形按钮，既有线程重建工作台从对应卡片进入。
+
+维护首页现统一为四张卡片，两列两行：对话导入、记忆挖掘、记忆压缩、线程重建；移动端仍单列。记忆压缩工作台分为“摘要精简”和“长期隐藏”。摘要精简先调用 `stmem compact --json` 展示系统推荐周、keep/coarse、路由、主副核心、样本和预计节省，用户选择 API/Subagent 并确认后，使用预览返回的精确 from/to 再调用同一 `stmem compact --from --to --apply`，避免执行时换周。长期隐藏先调用 `stmem hidden --json --after-days N`，确认后再带 `--apply`；默认 90 天。两种写入都必须异步运行 CLI，禁止 HTTP 直接更新 SQLite，同一记忆体不得并发启动两个压缩任务。执行后页面展示实际 updated/节省，不继续保留可重复点击的执行按钮。
 
 “记忆挖掘”已接入第一版逐日工作台，页面以结果展示为主，不得把一堆“日期 + 对话条数”勾选项放在主视觉。顶部复用全量对话的小月历形态：无对话纯白；有对话未挖掘为石头灰；已完成且摘要 0～9 条为淡粉，10 条及以上为深粉；失败用红色边框，运行中用黄色状态。月历点击日期后展示该日当前 feelings，按 `daySeq` 正序，同时展示 importance、summary mode、锚点和 feature category 数量。
 
 每个完成或失败日期生成一条可推导的“每日挖掘报告”，不新增报告表：内容为日期、对话数、摘要数、特征数、完成时间或失败原因，按 `mining_day_state.updated_at` 倒序分页；点击报告同样进入当天摘要。由于重挖会原子替换当天结果，当前 feelings 即最近一次成功挖掘内容，不保存摘要版本。
 
-执行功能折叠在页面下方“选择日期继续挖掘”。用户可任意勾选不连续日期（例如 4、8、16 日），也可全选未挖日期或当前页；每次统一选择 API/Subagent 通道。HTTP 层不实现范围挖掘算法，而是在后台按日期升序、同线程严格串行调用现有 `stmem mine --thread <id> --date <date> --api|--subagent`。不同日期失败互不阻断，结果保留失败原因；同一线程已有前端挖掘任务时拒绝重复启动。前端每 5 秒读取一次任务与 SQLite `mining_day_state`，显示当前日期、完成天数和百分比；刷新浏览器后只要本地 Web 服务未重启，仍可恢复当前任务。不得用 WebSocket、`from/to` 新 CLI 或第二套挖掘写逻辑增加复杂度。精准补挖暂不实现；对话导入仍待后续复用现有 `stmem import --apply` 接入该页。
+挖掘执行功能合并进“每日挖掘状态”，不再单独保留“选择日期继续挖掘”大模块。状态列表覆盖全部有对话日期并提供全部/待挖掘/已完成/失败筛选；待挖或失败日期可直接勾选，保留“全选未挖掘”、清空、API/Subagent 通道与“挖掘所选日期”。普通点击日期只切换下方当天摘要详情。HTTP 层不实现范围挖掘算法，而是在后台按日期升序、同线程严格串行调用现有 `stmem mine --thread <id> --date <date> --api|--subagent`。不同日期失败互不阻断，结果保留失败原因；同一线程已有前端挖掘任务时拒绝重复启动。前端每 5 秒读取一次任务与 SQLite 状态，显示当前日期、完成天数和百分比；刷新浏览器后只要本地 Web 服务未重启，仍可恢复当前任务。报告中的 message/feeling/feature 数量必须实时聚合真实表，不能信任旧 `mining_day_state` 中可能缺失或过期的计数。不得用 WebSocket、`from/to` 新 CLI 或第二套挖掘写逻辑增加复杂度。
 
 原“记忆”一级栏目改名为“记忆档案”，承担内容查看与单条编辑，并合并原一级“时间轴”入口。其入口为“人设 / 规则、摘要、特征库、全量对话、时间轴”；时间轴未接入前可在档案页内显示禁用占位，但不得继续占用一级导航。概览没有 `rebuild-state.json.lastCompleted` 时，不再只显示“暂无正式重建记录”，而应解释首次流程，并提供“前往维护”按钮：先在【记忆挖掘】导入并挖掘对话，再通过【线程重建】将人设、摘要与近期对话写入线程，完成记忆体构建。
+
+记忆档案的“时间轴”第一版已经接入，不再是禁用占位。查询必须复用 `stmem term-timeline --json`，每次允许 1～3 个关键词和可选起止日期。页面主图展示 archive 用户消息的真实逐日词频，并叠加命中 feeling 的 importance 点；点大小体现 importance，daily/coarse/hidden 体现不同透明度，retain/event 锚点有独立描边，点击可跳到对应摘要。下方展示所属 feature category、首次/最近出现、活跃天数、真实出现次数、relation 生命周期或 work 局部项目证据，以及多词同日/同消息/同摘要计数。HTTP 返回前必须移除共同命中的完整原文，只向浏览器发送页面实际使用的计数、曲线和摘要，避免历史长文本拖慢页面。时间轴当前只做解释与回看，不直接触发 compact、hidden 或生命周期写入。
+
+relation 共同签名不能依赖用户把两个词同时输入。`term-timeline` 对单词查询必须从该词命中的 feelings 中自动寻找至少共同出现 2 条摘要的 feature term，作为只参与关系资格拟合的后台辅助词；用户查询的可见 report 和曲线仍只包含原词。辅助词的共同签名只扫描 feelings，不重复计算 archive 局部消息窗口；显式多词查询继续提供完整同消息证据。这样单搜“女仆”也能借助“少爷”识别为稳定阶段型并显示主要共同签名，而不是退回到 feature category 文案。辅助词不参与前端曲线，也不能扩大 work 查询范围。
 记忆页入口大厅下方现为“人设 / 规则、摘要、特征库、全量对话”四个入口。全量对话只读查询 SQLite messages：关键词命中列表按 timestamp 倒序；点击命中后跳到该消息所在日期与分页，并高亮对应段落；按日期浏览时必须按 timestamp 正序恢复聊天顺序。页面不再展示“关键词结果最新优先；按日期查看时恢复真实对话顺序。”这句说明，原位置改为小巧安静的聊天活跃月历，视觉意象是石头旁的一小片苔藓，不是数据报表。月历放在同一标题卡片内的“全量对话”标题正下方，整体约 230px、日期格约 16px；不能作为内容区独占一行制造大块空白。按日期跳转或从关键词结果跳转时，月历必须同步切到目标月份。月历按真实月份逐月切换、七列按星期对齐，每个自然日是圆角小方格，格内不写日期或条数；完整日期和当天条数仅在悬浮提示与无障碍标签中表达。当天无对话为白色，1～100 条为浅绿色，101～199 条为中绿色，200 条及以上为深绿色；点击日期进入当天全量对话。月份使用轻量左右箭头切换，不展示大型图例或完整分页器。对话角色不得直接显示内部 `user/assistant`，应分别读取当前记忆体配置中的用户名和 AI 名。不得为了该页面重新生成 normalized archive JSONL。
 
 摘要详情编辑已通过 `stmem memory update|anchor` 接入。用户可手动切换 daily/coarse/hidden、编辑 coarse 文本和最多 3 个 core terms、开关 event/retain 锚点；手动 coarse 不调用模型，但必须原样保留完整日期时间前缀。切换 hidden/daily 不删除完整 content 或已有 coarse。重复保存已启用的 retain 锚点必须保留其既有 startUtc/endUtc 精确窗口，不能用普通开关元数据覆盖。前端遇到 hidden 与锚点并存时只提示语义冲突，不擅自取消任一状态。所有写入继续只走 CLI。摘要列表必须提供按日期正序/倒序切换，以及类似全量对话页的精确日期选择器；关键词搜索默认跨全部日期，不得受当前页限制。搜索栏下方提供轻量筛选气泡，至少包含“原文锚点”和“事件锚点”，可单独或组合筛选，让锚点摘要与普通摘要形成清楚主次。
 
+记忆档案摘要与记忆挖掘的当天摘要统一使用同一张 feeling 卡片：第一行“第 N 条 · importance X”（档案用全局 seq，当天详情用 daySeq），第二行摘要文本，第三行依次为“查看 / 编辑”、原文锚点、事件锚点、隐藏摘要。三个快捷开关必须调用现有 `stmem memory update|anchor`，不能由 route 直接写 SQLite 或 retain-config。首次启用原文锚点时，前端调用只读原文范围预览，按摘要事件时间默认勾选 rebuild 使用的连续窗口，允许用户补选/缩减并确认；CLI 接收确认后的 startUtc/endUtc 写入 `retain-config.json` 的 `retain[feelingId]`，rebuild 继续读取同一结构。取消原文锚点可直接删除配置；已有精确窗口重复保存时仍必须保留。
+
+没有显式 startUtc/endUtc 的 legacy retain 锚点，其自动原文窗口统一从摘要事件时间前 5 分钟开始；结束边界取“事件开始后的对话第一次出现超过 5 分钟真空期”和“下一条摘要事件开始时间”中更早者，没有这两个边界时结束于当天已有对话末尾。前端原文预览、共享 `thread-rebuilder`、Claude/Codex rebuild 和关键词 `memory search` 必须调用同一套窗口函数。用户已确认并保存的精确窗口始终优先，不能因自动边界规则变化而被覆盖。
+
 导入预览只展示最终进入 SQLite archive 的纯对话。Claude/Codex 的 session_meta、工具状态、推理元数据等计入“自动过滤”，不能显示成“无法识别”。支持一次选择或拖入多个 JSON/JSONL/SQLite 文件，各文件独立预览，最终统一写入并由 SQLite 去重。
 
-线程重建是独立页面，首页只提供“一键线程重建”“检查/修复线程”“裁剪对话”三个动作。一键重建直接使用 init 设置中的 windowDays/keepToolPairs 执行 `rebuild --apply`；检查/修复直接运行现有 CLI；只有点击裁剪对话才展开倒数 N 个实际发生过对话的活跃日期和最近 M 组工具链，空白自然日不消耗 N 的名额。普通对话与完整工具链分别20条分页且默认全选。工具链默认以完整 call/result 组为裁剪单位，不能由浏览器自行重写 UUID、parentUuid、session_meta 或 call_id。工具名超过约15字符宽度时必须自动换行，不能撑坏列表。
+线程重建是一个纵向集成页面，不再提供“一键重建 / 检查修复 / 裁剪对话”三张二级入口卡。顶部只保留“线程重建”和“一键修复”；紧接按钮下方放置 windowDays、keepToolPairs 与“不保留工具链会失去近期工具调用及结果上下文”的提示，再展示正式 dry-run 与活动线程结构检查结果。点击线程重建必须调用正式 `stmem rebuild` dry-run，解析其真实输出并以中文分组展示 full 原始消息/体积、活跃日窗口，以及摘要的明确去向：摘要总数（hidden 已排除）、近期原文窗口承载、原文锚点替代和最终注入记忆块；同时展示规则、记忆块、近期原文、工具链、系统记录移除、输出行数和缩减率，并允许展开原始输出。不得使用“可用摘要 / 实际摘要”这类容易被理解为质量筛选的名称；再由用户二次确认执行 `rebuild --apply`，不得直接 apply。检查/修复继续运行现有 CLI，先 check，只有发现问题才备份、repair 并复查。下方“线程状态”依次为人设/规则、摘要、原文三个折叠栏：规则列出启用状态并跳转记忆档案修改；摘要展示注入摘要总数、daily 数、coarse 数、以原文形式存储的摘要数及其实际注入原文行数，并保留前往记忆档案按钮；原文只保留“裁剪对话 / 工具链”入口。裁剪工作台仍展开倒数 N 个实际发生过对话的活跃日期和最近 M 组工具链，空白自然日不消耗 N 的名额；普通对话与完整工具链分别20条分页且默认全选。取消勾选后不得直接 apply，必须把排除 plan 交给同一个正式 dry-run 展示卡，用户再次点击“确认应用线程重建”后才永久裁剪并重建。工具链默认以完整 call/result 组为裁剪单位，不能由浏览器自行重写 UUID、parentUuid、session_meta 或 call_id；工具名超过约15字符宽度时必须自动换行。
+
+线程重建另提供默认关闭的可选“水位线模式”，原有 windowDays 活跃日模式不得删除或被强制替代。启用时读取时间上最后一条 feeling（包括 hidden，用于判断最近挖掘覆盖位置），复用原文锚点的自动命中窗口，从该事件命中的第一条真实消息开始保留到线程末尾；该 feeling 不再重复注入摘要，此前摘要照常进入记忆块。无摘要、事件时间不可解析或原文定位失败时，自动回退到用户设置的活跃日窗口。该模式只由 `stmem rebuild --watermark` 实现，前端仅传参并在 dry-run 明确展示实际使用了水位线还是发生回退；不新增 checkpoint、状态表或水位文件。
+
+重建体积必须统一使用物理字节口径：输入体积是当前记忆体 `memory/archive/full/` 下全部按日原始 JSONL 文件大小之和；预计输出体积是 dry-run 已完成序列化、即将生成的线程 JSONL 文本字节数；预计压缩率为 `1 - 预计输出字节 / full 总字节`。消息数和输出行数只作结构说明，不得再用于计算或命名为压缩率。
 
 前端所有分页场景统一调用 `pagination()` 与 `bindPagination()`，固定提供上一页、下一页、页码输入和跳转按钮，并支持在页码输入框按 Enter。导入预览、全量对话、摘要、特征库、裁剪对话和工具链都不得各自手写分页 DOM 或越界逻辑；以后新增分页页面也必须复用该组件。
 
@@ -284,7 +300,11 @@ full 允许迟到原始记录追加到既有日期文件末尾，因此文件物
 
 `stmem rebuild --thread <id> --check` 检查 Claude UUID/parentUuid、Codex session_meta 和两种运行时的工具配对；`--repair` 先保持原活动文件备份，再修复结构链并复查。普通 rebuild 仍保留原本的安全备份，但永久裁剪发生在备份之前，备份中不得重新包含被裁剪内容。
 
+完整性检查的具体最低要求：Claude 检查 system init 缺失/重复、UUID 重复、孤儿父节点、父节点出现在子节点之后、多余根链及 tool_use/tool_result 半链；修复时保留一条 init、移除无法配对的工具残片并重建单一 UUID 链。Codex 检查逐行 JSON、session_meta 缺失/重复/不在首行、session_id/id 缺失或不一致、base_instructions 丢失及 function_call/output 半链；修复时必须从当前 meta 或相邻备份恢复完整 payload、把 meta 放回首行并移除无法配对的工具残片。找不到含 base_instructions 的可靠 Codex meta 时必须拒绝不安全修复。结构修复不能凭空恢复用户已经删除的语义内容，报告不得宣称找回了缺失对话。
+
 Claude/Codex rebuild 的成功出口统一原子覆盖每线程 `logs/rebuild-state.json`，它是当前状态文件而非历史日志，不得按次追加增长。`lastCompleted` 记录 completedAt、runtime、trigger、窗口天数、近期原文数、retain 锚点及其原文消息数、注入摘要/规则数、工具链数和重建前后字节数；watcher 可覆盖同一文件中的 `contextUsage`。dry-run 与失败不得写 completed；Windows 仅生成待替换文件时更新 `pendingReplace`，不能覆盖或冒充最近成功重建。前端传 `--trigger web`，MCP 后续传 `--trigger mcp`，未传默认为 cli；旧 `rebuild.jsonl` 只作兼容读取，不再写入，调用入口不得自行维护另一份重建时间。
+
+Codex rebuild 必须完整继承原线程 `session_meta.payload`，尤其保留 `base_instructions`、`session_id`、`id`、`cli_version`、`source`、`thread_source`、`model_provider`、`history_mode` 和 `context_window`，不得重新构造一个只有 id/cwd/originator 的残缺 meta。输出写回前必须逐行验证 JSON、首行 session_meta 及双 ID 一致；人设/规则读取失败必须中止，禁止空 `catch` 后生成无人设线程。Windows staged 文件必须与递归找到的真实 inputFile 同目录同基名，覆盖失败时明确报错并保留 staged 文件，不得把未应用结果上报为 completed。
 
 概览是运行仪表盘，不再重复 daily/coarse/hidden/features 库存卡片。上次已插入的规则名称、近期原文、锚点原文、摘要、工具链和最近重建时间只读取 `rebuild-state.json.lastCompleted`；没有状态就明确显示暂无正式记录。当前上下文窗口只显示运行时上报的 token usage，不再用 JSONL 大小或 content 字节数估算；Claude 使用最新 assistant usage 的 input_tokens + cache_creation_input_tokens + cache_read_input_tokens，Codex 使用最新 token_count 的 last_token_usage.input_tokens（cached 已包含在内，不重复相加）并可自动读取 model_context_window。Claude 的窗口上限由用户在设置中填写，手动配置也可覆盖 Codex 自动值。watcher 仅在该线程启用 `automaticFullMining` 时随实时 archive 同步更新同一状态文件的 contextUsage，不调用模型、不追加历史。另展示上次挖掘时间、待挖日期、自动化配置和最近生成摘要；“最近生成摘要”只显示最新 5 条。完整库存与编辑只留在“记忆”模块。
 

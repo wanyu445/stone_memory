@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { qualifyRelationConcepts } = require("../src/services/relation-concept-qualification");
+const { findRelationSignaturePeers } = require("../src/services/relation-signature-context");
 
 function timeline(term, dates, importance = 5) {
   return { term, normalizedTerm: term, feelings: dates.map((date, index) => ({ id: `${term}-${index}`, sourceDate: date, importance })) };
@@ -28,4 +29,21 @@ test("ignores substring containment as a false signature", () => {
     timeline("没有", ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"]),
   ]);
   assert.equal(rows.find(row => row.term === "有没有").signature, null);
+});
+
+test("single-term relation analysis discovers its repeated feeling signature peer", () => {
+  const feelings = Array.from({ length: 5 }, (_, index) => ({
+    id: `pair-${index}`, content: `少爷和女仆第${index}次角色扮演`,
+  }));
+  const peers = findRelationSignaturePeers({
+    requestedTerms: ["女仆"],
+    extractedTerms: [
+      { term: "少爷", normalizedTerm: "少爷", category: "misc" },
+      { term: "角色扮演", normalizedTerm: "角色扮演", category: "relation" },
+      { term: "女仆", normalizedTerm: "女仆", category: "relation" },
+    ],
+    feelings,
+  });
+  assert.equal(peers.find(row => row.term === "少爷").sameFeelings, 5);
+  assert.equal(peers.some(row => row.term === "女仆"), false);
 });

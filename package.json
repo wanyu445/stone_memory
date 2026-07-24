@@ -1,6 +1,6 @@
 {
   "name": "stone-memory",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "可解释的本地 AI 记忆与线程生命周期管理系统",
   "bin": {
     "stmem": "./bin/stmem"
@@ -18,7 +18,7 @@
     "url": "git+https://github.com/wanyu445/stone_memory.git"
   },
   "keywords": ["ai-memory", "thread-lifecycle", "claude-code", "codex", "sqlite"],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "@node-rs/jieba": "^2.0.1",
     "better-sqlite3": "^11.10.0",

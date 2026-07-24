@@ -22,8 +22,9 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const { loadConfig, getCfg, getThreadDir } = require("../config");
+const { commandInvocation, appendOption } = require("../lib/command-invocation");
 
 const BUILTIN_RUNTIMES = {
   claude: {
@@ -107,6 +108,23 @@ function buildStdinCmd(runtimeName, opts = {}) {
   return cmd;
 }
 
+function buildStdinInvocation(runtimeName, opts = {}) {
+  const rt = getRuntimeConfig(runtimeName);
+  if (!rt) throw new Error(`Unknown runtime: ${runtimeName}. Add it to stmem.json → runtimes.`);
+  const flags = rt.flags || {};
+  const invocation = commandInvocation(rt.command, { remove: ["-p"] });
+  if (opts.opsFile && flags.systemPrompt && fs.existsSync(opts.opsFile)) {
+    appendOption(invocation.args, flags.systemPrompt, opts.opsFile);
+  }
+  if (opts.mcpConfig && flags.mcpConfig) {
+    appendOption(invocation.args, flags.mcpConfig, opts.mcpConfig);
+  }
+  if (opts.model && flags.model) {
+    appendOption(invocation.args, flags.model, opts.model);
+  }
+  return invocation;
+}
+
 /**
  * @param {string} prompt
  * @param {object} opts
@@ -146,32 +164,20 @@ function runSubagent(prompt, opts = {}) {
     finalPrompt = `${opsContent}\n\n---\n\n${prompt}`;
   }
 
-  const tmpDir = path.join(getThreadDir(threadId), "tmp");
-  fs.mkdirSync(tmpDir, { recursive: true });
-  const tmpFile = path.join(tmpDir, `prompt_${Date.now()}.txt`);
-  fs.writeFileSync(tmpFile, finalPrompt, "utf8");
-
-  const cmd = buildStdinCmd(runtimeName, { ...opts, opsFile, mcpConfig, model });
-  const fullCmd = `${cmd} < "${tmpFile}"`;
-
-  const shell = process.platform === "win32" ? "cmd.exe" : "/bin/bash";
-  try {
-    const out = execSync(fullCmd, {
-      encoding: "utf8",
-      timeout,
-      maxBuffer: 10 * 1024 * 1024,
-      shell,
-      windowsHide: true,
-    });
-    if (!out || !out.trim()) {
-      const err = new Error("subagent returned empty output");
-      err.code = "OUTPUT_EMPTY";
-      throw err;
-    }
-    return out.trim();
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch {}
+  const invocation = buildStdinInvocation(runtimeName, { ...opts, opsFile, mcpConfig, model });
+  const out = execFileSync(invocation.file, invocation.args, {
+    input: finalPrompt,
+    encoding: "utf8",
+    timeout,
+    maxBuffer: 10 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (!out || !out.trim()) {
+    const err = new Error("subagent returned empty output");
+    err.code = "OUTPUT_EMPTY";
+    throw err;
   }
+  return out.trim();
 }
 
-module.exports = { runSubagent, buildCommand, getRuntimeConfig, resolvePlaceholders };
+module.exports = { runSubagent, buildCommand, buildStdinInvocation, getRuntimeConfig, resolvePlaceholders };

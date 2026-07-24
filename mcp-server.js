@@ -10,12 +10,13 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const { getCfg, getThreadDir, listThreadIds } = require("./src/config");
 const { runSubagent } = require("./src/services/subagent-runner");
 const { parseJsonArray } = require("./src/lib/json-parse");
 const { readFeelings: readDatabaseFeelings, readFeatures: readDatabaseFeatures } = require("./src/storage/memory-reader");
 const { MemoryStore } = require("./src/storage/memory-store");
+const { resolveMcpThread } = require("./src/services/mcp-thread-resolution");
 
 const CONFIG_PATH = path.join(os.homedir(), ".stone_memory", "stmem.json");
 const PROJECT_ROOT = path.resolve(__dirname);
@@ -65,9 +66,9 @@ function subagentCall(prompt, opts = {}) {
 }
 
 function resolveThread(args, cfg) {
-  const sessionId = args.thread || process.env.CLAUDE_CODE_SESSION_ID || listThreadIds()[0];
-  if (!sessionId) return null;
-  const tc = cfg[sessionId] || {};
+  const config = cfg || {};
+  const sessionId = resolveMcpThread(args, config, listThreadIds());
+  const tc = config[sessionId] || {};
   return {
     threadId: sessionId,
     windowDays: args.window || tc.windowDays || 3,
@@ -91,11 +92,11 @@ function checkPendingTriggers() {
       const scriptName = runtime === "codex" ? "rebuild-codex-thread.js" : "rebuild-thread.js";
       const script = path.join(SCRIPTS_DIR, scriptName);
       if (fs.existsSync(script)) {
-        const windowFlag = queue.window ? `--window ${queue.window}` : "";
-        const cmd = `${process.execPath} ${script} --thread ${threadId} --apply ${windowFlag}`.trim();
-        log(`pending rebuild: ${cmd}`);
+        const rebuildArgs = [script, "--thread", threadId, "--apply"];
+        if (queue.window) rebuildArgs.push("--window", String(queue.window));
+        log(`pending rebuild: ${script} (${rebuildArgs.length - 1} args)`);
         try {
-          execSync(cmd, { encoding: "utf8", timeout: 120000, maxBuffer: 10 * 1024 * 1024, windowsHide: true });
+          execFileSync(process.execPath, rebuildArgs, { encoding: "utf8", timeout: 120000, maxBuffer: 10 * 1024 * 1024, windowsHide: true });
           log(`pending rebuild done: ${threadId}`);
         } catch (e) {
           log(`pending rebuild failed: ${e.stderr || e.message}`);
@@ -175,11 +176,12 @@ function toolMine(args) {
   const tid = resolved?.threadId || args.thread;
   const script = path.join(SCRIPTS_DIR, "stmem-mine.js");
   if (!fs.existsSync(script)) return `找不到 stmem-mine.js`;
-  const dateArg = args.date ? ` --date ${args.date}` : "";
-  const threadArg = tid ? ` --thread ${tid}` : "";
-  const forceArg = args.force ? " --force" : "";
+  const mineArgs = [script];
+  if (args.date) mineArgs.push("--date", String(args.date));
+  if (tid) mineArgs.push("--thread", String(tid));
+  if (args.force) mineArgs.push("--force");
   try {
-    const out = execSync(`${process.execPath} ${script}${dateArg}${threadArg}${forceArg}`, {
+    const out = execFileSync(process.execPath, mineArgs, {
       encoding: "utf8", timeout: 600_000, cwd: path.dirname(SCRIPTS_DIR), windowsHide: true,
     });
     return out.trim().slice(-1000) || "挖掘完成";
@@ -481,7 +483,10 @@ const TOOLS = [
     description: "关键词搜索记忆 feelings + 回溯原文 archive",
     inputSchema: {
       type: "object",
-      properties: { query: { type: "string", description: "搜索关键词" } },
+      properties: {
+        query: { type: "string", description: "搜索关键词" },
+        thread: { type: "string", description: "线程 ID；多记忆体环境必须显式绑定或设置 STMEM_THREAD_ID" },
+      },
       required: ["query"],
     },
   },
@@ -490,7 +495,10 @@ const TOOLS = [
     description: "深度记忆检索（子 agent 多级搜索 + 原文回溯）",
     inputSchema: {
       type: "object",
-      properties: { query: { type: "string", description: "搜索内容（自然语言）" } },
+      properties: {
+        query: { type: "string", description: "搜索内容（自然语言）" },
+        thread: { type: "string", description: "线程 ID；多记忆体环境必须显式绑定或设置 STMEM_THREAD_ID" },
+      },
       required: ["query"],
     },
   },

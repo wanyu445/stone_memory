@@ -6,7 +6,9 @@ const { readFeelings: readDatabaseFeelings, readMessages } = require("../storage
 const { automaticRetainWindow } = require("./thread-rebuilder");
 
 function resolvePaths(threadId) {
-  const tid = threadId || listThreadIds()[0];
+  const configured = listThreadIds();
+  const tid = threadId || (configured.length === 1 ? configured[0] : null);
+  if (!tid && configured.length > 1) throw new Error("Multiple memory bodies configured; threadId is required");
   if (!tid) throw new Error("No thread configured");
   const dir = getThreadDir(tid);
   const feelDir = path.join(dir, "memory", "mined", "feelings");

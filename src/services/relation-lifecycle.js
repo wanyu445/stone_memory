@@ -5,8 +5,10 @@ function buildRelationLifecycles({ termTimelines = [], intersections = [] }) {
   const feelingReferenceDate = termTimelines.flatMap(row => feelingDates(row)).sort().at(-1) || null;
   const qualifications = qualifyRelationConcepts(termTimelines);
   const qualificationByTerm = new Map(qualifications.map(row => [row.normalizedTerm, row]));
+  const timelineByTerm = new Map(termTimelines.map(row => [row.normalizedTerm, row]));
   const relationTerms = new Set(qualifications
-    .filter(row => row.qualification !== "rejected")
+    .filter(row => row.qualification !== "rejected"
+      && timelineByTerm.get(row.normalizedTerm)?.categories?.includes("relation"))
     .map(row => row.normalizedTerm));
 
   // Recover a missing half of a paired role only when most occurrences of the
@@ -22,7 +24,9 @@ function buildRelationLifecycles({ termTimelines = [], intersections = [] }) {
       const affinity = signature.sameFeelings.length / Math.max(1, Math.min(...rows.map(row => row.feelings.length)));
       if (!hasRelation || signature.sameFeelings.length < 2 || affinity < 0.5) continue;
       for (const term of signature.normalizedTerms) {
-        if (!relationTerms.has(term)) { relationTerms.add(term); changed = true; }
+        const categories = timelineByTerm.get(term)?.categories || [];
+        const canInferMissingRole = categories.length === 0 || categories.every(category => category === "misc");
+        if (!relationTerms.has(term) && canInferMissingRole) { relationTerms.add(term); changed = true; }
       }
     }
   }
@@ -54,7 +58,6 @@ function buildRelationLifecycles({ termTimelines = [], intersections = [] }) {
     })),
   }; });
   const byTerm = new Map(terms.map(row => [row.normalizedTerm, row]));
-  const timelineByTerm = new Map(termTimelines.map(row => [row.normalizedTerm, row]));
   const pairs = intersections.filter(row => {
     if (row.terms.length !== 2 || !row.normalizedTerms.every(term => byTerm.has(term))) return false;
     const children = row.normalizedTerms.map(term => termTimelines.find(item => item.normalizedTerm === term));

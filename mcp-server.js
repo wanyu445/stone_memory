@@ -246,7 +246,7 @@ function toolDeepSearch(args) {
   if (kwResult.hits?.length) {
     for (const hit of kwResult.hits.slice(0, 3)) {
       if (hit.utcTime) {
-        const startMs = new Date(hit.utcTime).getTime() - 30 * 60 * 1000;
+        const startMs = new Date(hit.utcTime).getTime() - 5 * 60 * 1000;
         const ctx = searchArchiveContext(new Date(startMs).toISOString().slice(0, 10), query.split(/\s+/).filter(w => w.length >= 2), {
           maxDays: 3, mode: "event", threadId: resolved?.threadId,
         });

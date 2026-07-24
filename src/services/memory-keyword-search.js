@@ -3,6 +3,7 @@ const path = require("path");
 
 const { getCfg, getThreadDir, listThreadIds } = require("../config");
 const { readFeelings: readDatabaseFeelings, readMessages } = require("../storage/memory-reader");
+const { automaticRetainWindow } = require("./thread-rebuilder");
 
 function resolvePaths(threadId) {
   const tid = threadId || listThreadIds()[0];
@@ -147,25 +148,15 @@ function searchByKeyword(query, { maxResults = 1, threadId } = {}) {
 
   const results = [];
   for (const hit of top) {
-    // 时间窗口: [feeling.utcTime - 30min, 下一条feeling.utcTime]
     if (!hit.utcTime) {
       results.push({ feeling: hit, text: `Found: ${hit.content}\n\n(No timestamp — cannot retrieve original)` });
       continue;
     }
-    const startMs = new Date(hit.utcTime).getTime() - 30 * 60 * 1000;
-    const startUtc = new Date(startMs).toISOString();
-
-    let endUtc = null;
-    if (hit.idx + 1 < feelings.length) {
-      const next = feelings[hit.idx + 1];
-      endUtc = next.utcTime;
-    }
-    if (!endUtc) endUtc = new Date(startMs + 6 * 3600000).toISOString();
-
-    // Read archive for the feeling's date and potentially next day
     const archiveDate = hit.date;
     let messages = readArchive(p.memoryDir, p.threadId, archiveDate);
-    // If endUtc spills to next day, also read next day
+    const nextUtc=hit.idx + 1 < feelings.length ? feelings[hit.idx + 1].utcTime : null;
+    const automatic=automaticRetainWindow(hit.utcTime,nextUtc,messages);
+    const startUtc=automatic.startUtc,endUtc=automatic.endUtc;
     const endDate = endUtc.slice(0, 10);
     if (endDate !== archiveDate) {
       messages = messages.concat(readArchive(p.memoryDir, p.threadId, endDate));

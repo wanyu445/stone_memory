@@ -46,7 +46,7 @@ function initThreadPaths(threadId) {
   RULES_DIR = path.join(THREAD_BASE, "rules");
   DEFAULT_WINDOW_DAYS = getCfg("windowDays", threadId, 3);
 }
-const { buildMemoryBlocks } = require("../src/services/thread-rebuilder");
+const { automaticRetainWindow, buildMemoryBlocks, resolveLatestFeelingWatermark } = require("../src/services/thread-rebuilder");
 
 function loadRetainConfig() {
   try {
@@ -294,7 +294,7 @@ function outputCleanMessage(msg, emitFn, stats, preservedToolIds = new Set()) {
 
 // ---- 主流程 ----
 
-function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverride = null, plan = loadRebuildPlan()) {
+function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverride = null, plan = loadRebuildPlan(), watermarkMode = false) {
   // === 加载 ===
   console.log("[rebuild] Loading injectable feelings (daily/coarse; hidden excluded)...");
   const allFeelings = loadInjectableFeelings();
@@ -321,7 +321,18 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   console.log(`[rebuild]   ${messages.length} messages from full`);
 
   // === 计算滚动窗口 ===
-  const { cutoff: cutoffDate } = conversationWindow(messages, "claude", windowDays);
+  const fallbackWindow = conversationWindow(messages, "claude", windowDays);
+  const watermark = watermarkMode
+    ? resolveLatestFeelingWatermark(path.join(THREAD_BASE, "memory"), currentThreadId, messages)
+    : null;
+  const cutoffUtc = watermark?.cutoffUtc || null;
+  const cutoffDate = cutoffUtc ? dateKeyFromTs(cutoffUtc) : fallbackWindow.cutoff;
+  const isWindowMessage = msg => cutoffUtc
+    ? new Date(msg?.timestamp || "").getTime() >= new Date(cutoffUtc).getTime()
+    : msgDate(msg) >= cutoffDate;
+  console.log(watermark
+    ? `[rebuild] Retention mode: watermark (feeling ${watermark.feelingId}, since ${cutoffUtc})`
+    : `[rebuild] Retention mode: active-days${watermarkMode ? " (watermark unavailable)" : ""}`);
 
   // === 保留工具调用对 (tool_use + tool_result)，遇到窗口外上下文截断 ===
   const preservedToolIds = new Set();
@@ -337,7 +348,7 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
 
     // 该工具对的日期已滚出窗口 → 上下文变摘要，截断
     const date = msgDate(msg);
-    if (date && date < cutoffDate) {
+    if (!isWindowMessage(msg)) {
       console.log(`[rebuild]   tool chain: first pre-window pair at date=${date}, stop at ${pairCount} pairs`);
       break;
     }
@@ -360,7 +371,10 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   const preWindow = [];
   const inWindow = [];
   for (const f of allFeelings) {
-    if (f.date < cutoffDate) preWindow.push(f);
+    if (watermark) {
+      if (f.id === watermark.feelingId) inWindow.push(f);
+      else preWindow.push(f);
+    } else if (f.date < cutoffDate) preWindow.push(f);
     else inWindow.push(f);
   }
   console.log(`[rebuild]   ${preWindow.length} pre-window, ${inWindow.length} in-window`);
@@ -388,18 +402,12 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
       startUtc = cfg.startUtc;
       endUtc = cfg.endUtc;
     } else {
-      // 自动计算: [feeling.utcTime - 30min, 下一条feeling.utcTime]
       if (!f.utcTime) continue;
-      const startMs = new Date(f.utcTime).getTime() - 30 * 60 * 1000;
-      startUtc = new Date(startMs).toISOString();
-
       const globalIdx = allFeelings.indexOf(f);
-      if (globalIdx >= 0 && globalIdx < allFeelings.length - 1) {
-        const next = allFeelings[globalIdx + 1];
-        endUtc = next.utcTime || new Date(startMs + 24 * 3600000).toISOString();
-      } else {
-        endUtc = new Date(startMs + 24 * 3600000).toISOString();
-      }
+      const nextUtc=globalIdx >= 0 && globalIdx < allFeelings.length - 1 ? allFeelings[globalIdx + 1].utcTime : null;
+      const automatic=automaticRetainWindow(f.utcTime,nextUtc,messages);
+      startUtc=automatic.startUtc;
+      endUtc=automatic.endUtc;
     }
     fragmentWindows.push({ feeling: f, startUtc, endUtc });
   }
@@ -543,12 +551,12 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   }
 
   // 3. 窗口内消息 (近 N 天) — 保留对话 + thinking，去掉工具链/轮询
-  console.log(`[rebuild] Processing window messages (>= ${cutoffDate})...`);
+  console.log(`[rebuild] Processing window messages (>= ${cutoffUtc || cutoffDate})...`);
 
   for (let mi = 0; mi < messages.length; mi++) {
     const msg = messages[mi];
     const d = msgDate(msg);
-    if (!d || d < cutoffDate || (msg.type === "system" || msg.type === "attachment")) continue;
+    if (!d || !isWindowMessage(msg) || (msg.type === "system" || msg.type === "attachment")) continue;
     const content = msg.message?.content;
     const selectableText = typeof content === "string" ? content.trim() : Array.isArray(content)
       ? content.filter(block => block.type === "text" || block.type === "thinking").map(block => block.text || "").filter(Boolean).join("\n").trim()
@@ -580,23 +588,29 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
 
   // === 统计与输出 ===
   const originalSize = fs.statSync(inputPath).size;
+  const fullArchiveSize = FULL_ARCHIVE.getTotalBytes();
   const totalOutput = outputLines.length;
   const totalOriginal = messages.length;
+  const outputText = outputLines.join("\n");
+  const estimatedOutputSize = Buffer.byteLength(outputText, "utf8");
+  const byteReduction = fullArchiveSize > 0 ? (1 - estimatedOutputSize / fullArchiveSize) * 100 : null;
 
   if (dryRun) {
     console.log("\n[rebuild] ====== DRY RUN ======");
     console.log(`  Window:            ${windowDays} days (since ${cutoffDate})`);
     console.log(`  Original messages: ${totalOriginal}`);
     console.log(`  Output lines:      ${totalOutput}`);
-    console.log(`  Reduction:         ${((1 - totalOutput / totalOriginal) * 100).toFixed(1)}%`);
+    console.log(`  Reduction:         ${byteReduction === null ? "—" : `${byteReduction.toFixed(1)}%`}`);
     console.log(`  Memory blocks:     ${stats.memoryBlock}`);
     console.log(`  Window messages:   ${stats.windowMsg}`);
+    console.log(`  Retained messages: ${retainedMessages}`);
     console.log(`  System dropped:    ${stats.systemDropped}`);
     console.log(`  Memory feelings:   ${memoryFeelings.length}`);
-    console.log(`  Original size:     ${(originalSize / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`  Full archive size: ${fullArchiveSize} bytes`);
+    console.log(`  Estimated output:  ${estimatedOutputSize} bytes`);
     console.log("==============================");
   } else {
-    fs.writeFileSync(outputPath, outputLines.join("\n"), "utf8");
+    fs.writeFileSync(outputPath, outputText, "utf8");
     const outputSize = fs.statSync(outputPath).size;
     // 备份原文件
     const bakPath = inputPath + ".bak." + new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
@@ -605,10 +619,10 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
     // 原子替换 — 不依赖外部 mv
     fs.renameSync(outputPath, inputPath);
     const triggerIdx=process.argv.indexOf("--trigger"),trigger=triggerIdx>=0?process.argv[triggerIdx+1]:"cli";
-    require("../src/services/rebuild-log").appendRebuildLog(currentThreadId,{status:"completed",runtime:"claude",trigger,threadFile:inputPath,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:originalSize,contextBytes:outputSize,outputLines:totalOutput});
-    console.log(`\n[rebuild] ${(originalSize / 1024 / 1024).toFixed(2)} MB → ` +
+    require("../src/services/rebuild-log").appendRebuildLog(currentThreadId,{status:"completed",runtime:"claude",trigger,threadFile:inputPath,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:fullArchiveSize,contextBytes:outputSize,outputLines:totalOutput});
+    console.log(`\n[rebuild] ${(fullArchiveSize / 1024 / 1024).toFixed(2)} MB full → ` +
       `${(outputSize / 1024 / 1024).toFixed(2)} MB ` +
-      `(${((1 - outputSize / originalSize) * 100).toFixed(1)}% saved)`);
+      `(${fullArchiveSize > 0 ? ((1 - outputSize / fullArchiveSize) * 100).toFixed(1) : "—"}% saved)`);
   }
 }
 
@@ -622,6 +636,7 @@ function main() {
   const windowIdx = args.indexOf("--window");
   const toolPairsIdx = args.indexOf("--tool-pairs");
   const planIdx = args.indexOf("--plan");
+  const watermarkMode = args.includes("--watermark");
   const threadId = threadIdx >= 0 ? args[threadIdx + 1] : null;
   const windowDays = windowIdx >= 0
     ? parseInt(args[windowIdx + 1], 10) || DEFAULT_WINDOW_DAYS
@@ -664,12 +679,12 @@ function main() {
   const outputFile = inputFile.replace(/\.jsonl$/, `${OUTPUT_SUFFIX}.jsonl`);
 
   if (dryRun && !apply) {
-    rebuildThread(inputFile, outputFile, true, windowDays, toolPairsOverride, plan);
+    rebuildThread(inputFile, outputFile, true, windowDays, toolPairsOverride, plan, watermarkMode);
     console.log("\n[rebuild] Use --apply to write.");
     return;
   }
 
-  rebuildThread(inputFile, outputFile, false, windowDays, toolPairsOverride, plan);
+  rebuildThread(inputFile, outputFile, false, windowDays, toolPairsOverride, plan, watermarkMode);
   console.log(`\n[rebuild] Done — thread replaced.`);
 }
 

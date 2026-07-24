@@ -1,10 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { previewRows, paginate, buildConversationCalendar, miningCommandArgs, targetedMiningCommandArgs } = require("../src/web/server");
+const { previewRows, paginate, buildConversationCalendar, miningDatesFromStore, miningCommandArgs, targetedMiningCommandArgs, timelineCommandArgs, compactTimelineReport, compressionCommandArgs } = require("../src/web/server");
 const { itemKey, inspectClaude, inspectCodex, conversationWindow, latestConversationDate, trimRows } = require("../src/services/rebuild-workbench");
 const { validateThreadInput } = require("../src/services/thread-setup");
 const { findThreadSessionFile } = require("../src/lib/thread-session-file");
 const { usageFromRow } = require("../src/lib/thread-context-usage");
+const { MemoryStore } = require("../src/storage/memory-store");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -64,6 +65,58 @@ test("web targeted mining goes through the CLI append command", () => {
     targetedMiningCommandArgs("thread-1", "api", "/tmp/selection.json"),
     ["mine", "--thread", "thread-1", "--targeted", "--batch-file", "/tmp/selection.json", "--api"],
   );
+});
+
+test("web timeline reuses the read-only CLI report and limits comparison terms", () => {
+  assert.deepEqual(timelineCommandArgs("thread-1", ["老公", "论文"], {
+    from: "2026-07-01", to: "2026-07-20",
+  }), [
+    "term-timeline", "--thread", "thread-1", "--terms", "老公,论文", "--json",
+    "--from", "2026-07-01", "--to", "2026-07-20",
+  ]);
+  assert.throws(() => timelineCommandArgs("thread-1", ["一", "二", "三", "四"]), /1～3/);
+  assert.throws(() => timelineCommandArgs("thread-1", ["论文"], { from: "2026-07-20", to: "2026-07-01" }), /开始日期/);
+});
+
+test("web timeline drops raw cooccurrence conversations from its browser payload", () => {
+  const compact=compactTimelineReport({
+    threadId:"thread-1",
+    report:[{term:"论文",normalizedTerm:"论文",categories:["work"],timeline:[],feelings:[]}],
+    intersections:[{terms:["论文","系统"],sameDays:[{}],sameMessages:[{text:"很长的原文"}],sameFeelings:[{}]}],
+    relation:{terms:[],pairs:[{terms:["论文","系统"],state:"established",shape:"episodic_pair",evidence:{spanDays:12}}]},work:{groups:[]},
+  });
+  assert.deepEqual(compact.intersections,[{
+    terms:["论文","系统"],sameDayCount:1,sameMessageCount:1,sameFeelingCount:1,
+  }]);
+  assert.doesNotMatch(JSON.stringify(compact),/很长的原文/);
+  assert.deepEqual(compact.relation.pairs,[{
+    terms:["论文","系统"],normalizedTerms:[],state:"established",shape:"episodic_pair",evidence:{spanDays:12},
+  }]);
+});
+
+test("web compression previews and applies through existing compact and hidden CLI commands", () => {
+  assert.deepEqual(compressionCommandArgs("thread-1", { kind:"compact" }),
+    ["compact","--thread","thread-1","--json"]);
+  assert.deepEqual(compressionCommandArgs("thread-1", {
+    kind:"compact",apply:true,mode:"api",from:"2026-07-01",to:"2026-07-07",
+  }), ["compact","--thread","thread-1","--json","--from","2026-07-01","--to","2026-07-07","--api","--apply"]);
+  assert.deepEqual(compressionCommandArgs("thread-1", { kind:"hidden",apply:true,afterDays:120 }),
+    ["hidden","--thread","thread-1","--json","--after-days","120","--apply"]);
+});
+
+test("mining reports count real memories instead of stale day-state counters", t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"stmem-web-mining-")),store=new MemoryStore({memoryDir:dir,threadId:"thread-1"});
+  t.after(()=>{store.close();fs.rmSync(dir,{recursive:true,force:true});});
+  store.insertMessages([{timestamp:"2026-07-04T01:00:00.000Z",sourceDate:"2026-07-04",role:"user",text:"hello"}]);
+  store.appendTargeted("2026-07-04",{
+    feelings:[{content:"7月4日，上午九点。一条旧摘要。",importance:3}],
+    features:[{content:"旧特征",category:"relation",importance:3}],
+  });
+  store.setDayState("2026-07-04",{status:"completed",messageCount:1,feelingCount:0,featureCount:0});
+
+  assert.deepEqual(miningDatesFromStore(store,"thread-1").map(row=>[
+    row.date,row.messageCount,row.feelingCount,row.featureCount,
+  ]),[["2026-07-04",1,1,1]]);
 });
 
 test("rebuild preview shows the newest conversation and tool pair first", () => {

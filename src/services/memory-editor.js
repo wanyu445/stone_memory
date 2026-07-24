@@ -4,6 +4,16 @@ const { getThreadDir } = require("../config");
 const { MemoryStore } = require("../storage/memory-store");
 const { temporalPrefix } = require("./memory-compressor");
 
+function buildAnchorEntry(previous, feeling, type, options = {}) {
+  const next={...(previous||{}),anchor:true,_date:previous?._date||feeling.source_date};
+  if(type==="retain"&&options.startUtc&&options.endUtc){
+    const start=new Date(options.startUtc),end=new Date(options.endUtc);
+    if(!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||start>=end)throw new Error("原文锚点时间范围无效");
+    next.startUtc=start.toISOString();next.endUtc=end.toISOString();
+  }
+  return next;
+}
+
 function editFeeling(threadId, input) {
   const memoryDir = path.join(getThreadDir(threadId), "memory"), store = new MemoryStore({ memoryDir, threadId });
   try {
@@ -24,7 +34,7 @@ function editFeeling(threadId, input) {
   } finally { store.close(); }
 }
 
-function setAnchor(threadId, feelingId, type, enabled) {
+function setAnchor(threadId, feelingId, type, enabled, options = {}) {
   if (!["event", "retain"].includes(type)) throw new Error("锚点类型无效");
   const memoryDir = path.join(getThreadDir(threadId), "memory"), store = new MemoryStore({ memoryDir, threadId });
   let feeling; try { feeling=store.db.prepare("SELECT id,source_date FROM feelings WHERE thread_id=? AND id=?").get(threadId,feelingId); } finally { store.close(); }
@@ -32,8 +42,10 @@ function setAnchor(threadId, feelingId, type, enabled) {
   const file=path.join(memoryDir,"retain-config.json"); let config={retain:{},eventAnchors:{}};
   try { config={...config,...JSON.parse(fs.readFileSync(file,"utf8"))}; } catch {}
   const key=type==="event"?"eventAnchors":"retain"; config[key]=config[key]||{};
-  if (enabled) config[key][feelingId]={...(config[key][feelingId]||{}),anchor:true,_date:config[key][feelingId]?._date||feeling.source_date}; else delete config[key][feelingId];
+  if (enabled) {
+    config[key][feelingId]=buildAnchorEntry(config[key][feelingId],feeling,type,options);
+  } else delete config[key][feelingId];
   const temp=`${file}.tmp-${process.pid}`; fs.writeFileSync(temp,JSON.stringify(config,null,2)); fs.renameSync(temp,file);
   return { id:feelingId,type,enabled:!!enabled };
 }
-module.exports={editFeeling,setAnchor};
+module.exports={editFeeling,setAnchor,buildAnchorEntry};

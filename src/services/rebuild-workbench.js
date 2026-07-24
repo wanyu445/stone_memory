@@ -5,6 +5,7 @@ const { getCfg, getThreadDir } = require("../config");
 const { MemoryStore } = require("../storage/memory-store");
 const { listDateFiles } = require("../lib/archive-paths");
 const { findThreadSessionFile } = require("../lib/thread-session-file");
+const { isSystemInjection } = require("../lib/thread-message-filter");
 const { dateKeyFromTs } = require("./memory-archive");
 const { buildCodexSessionMeta } = require("./codex-session-meta");
 
@@ -48,7 +49,7 @@ function inspectClaude(rows, cutoff, toolLimit) {
     if (!row.timestamp || row.timestamp.slice(0, 10) < cutoff) continue;
     if (["user", "assistant"].includes(row.type)) {
       const text = textFromBlocks(row.message?.content, ["text", "thinking"]);
-      if (text && !text.includes("<!-- stmem-rule:") && !text.includes("<memory_context>")) items.push({
+      if (text && !isSystemInjection(text)) items.push({
         id: itemKey(row.timestamp, row.type, text), timestamp: row.timestamp, role: row.type, context: text,
       });
     }
@@ -67,7 +68,7 @@ function inspectCodex(rows, cutoff, toolLimit) {
     if (!row.timestamp || row.timestamp.slice(0, 10) < cutoff || row.type !== "response_item") continue;
     if (row.payload?.type === "message" && ["user", "assistant"].includes(row.payload.role)) {
       const text = textFromBlocks(row.payload.content, ["input_text", "output_text"]);
-      if (text && !text.includes("<!-- stmem-rule:") && !text.includes("<memory_context>")) items.push({
+      if (text && !isSystemInjection(text)) items.push({
         id: itemKey(row.timestamp, row.payload.role, text), timestamp: row.timestamp, role: row.payload.role, context: text,
       });
     }
@@ -91,7 +92,7 @@ function conversationDates(rows, runtime) {
       text = textFromBlocks(row.message?.content, ["text", "thinking"]);
     }
     if (!["user", "assistant"].includes(role) || !text) continue;
-    if (text.includes("<!-- stmem-rule:") || text.includes("<memory_context>")) continue;
+    if (isSystemInjection(text)) continue;
     const date = dateKeyFromTs(row.timestamp);
     if (/^\d{4}-\d{2}-\d{2}$/.test(date)) dates.add(date);
   }

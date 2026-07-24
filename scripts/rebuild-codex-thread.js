@@ -13,7 +13,6 @@
  */
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 const { FullArchive, dateKeyFromTs } = require("../src/services/memory-archive");
 const {
   loadInjectableFeelings, loadRetainConfig,
@@ -23,6 +22,7 @@ const { getCfg, getThreadDir } = require("../src/config");
 const { readMessages } = require("../src/storage/memory-reader");
 const { itemKey, conversationWindow, loadRebuildPlan } = require("../src/services/rebuild-workbench");
 const { buildCodexSessionMeta, validateCodexRebuildOutput } = require("../src/services/codex-session-meta");
+const { isSystemInjection } = require("../src/lib/thread-message-filter");
 
 const DEFAULT_WINDOW_DAYS = 3;
 
@@ -41,28 +41,6 @@ function msgDate(ts) {
 function extractTextBlocks(content) {
   if (!Array.isArray(content)) return [];
   return content.filter(b => b.type === "input_text" || b.type === "output_text");
-}
-
-/** 模板指纹：泛化变量为占位符，暴露骨架用于去重 */
-function templateFingerprint(text) {
-  if (!text) return "";
-  return text.split("\n").map(line =>
-    line
-      .replace(/\[\d{4}[\/\-]\d{2}[\/\-]\d{2}\s+\d{2}:\d{2}(:\d{2})?\]/g, "[DATE]")
-      .replace(/\d{4}-\d{2}-\d{2}/g, "DATE")
-      .replace(/\d{2}:\d{2}(:\d{2})?/g, "TIME")
-      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "UUID")
-      .replace(/\b\d+(\.\d+)?\b/g, "N")
-      .replace(/https?:\/\/\S+/g, "URL")
-      .trim()
-  ).join("\n");
-}
-
-/** 判断是否为系统注入内容 */
-function isSystemInjection(text) {
-  if (!text) return false;
-  const t = templateFingerprint(text);
-  return /<memory_context>|Relevant past memories:|Continue from where you left off\.|Review the current code changes|你上线了|Trigger:|\[轮询唤醒\]|你从哪来|石头待办清单|WECHAT SESSION INSTRUCTIONS/i.test(t);
 }
 
 /** 判断一条 response_item 是否是 function_call */
@@ -264,7 +242,7 @@ function main() {
   const output = [];
   const now = new Date();
   let stats = { memoryBlock: 0, windowMsg: 0, functionCall: 0, systemDropped: 0 };
-  const emittedHashes = new Set();
+  const emittedMessageKeys = new Set();
 
   function isClean(text) {
     if (!text) return false;
@@ -313,11 +291,10 @@ function main() {
     if (text.includes("<!-- stmem-rule:")) { stats.systemDropped++; return; }
     // 系统注入过滤
     if (!isClean(text)) { stats.systemDropped++; return; }
-    // 骨架去重：同模板骨架只留第一条
-    const dedupKey = templateFingerprint(text);
-    const hash = crypto.createHash("md5").update(dedupKey).digest("hex");
-    if (emittedHashes.has(hash)) { stats.systemDropped++; return; }
-    emittedHashes.add(hash);
+    // 只去除来源重叠产生的同一条记录；不同时间的相同措辞仍是独立对话。
+    const messageKey = itemKey(m.timestamp, m.type, text);
+    if (emittedMessageKeys.has(messageKey)) return;
+    emittedMessageKeys.add(messageKey);
     // 输出
     const blockType = m.type === "user" ? "input_text" : "output_text";
     output.push(JSON.stringify({
@@ -361,10 +338,9 @@ function main() {
       for (const entry of dayEntries) {
         const cleanText = (entry.text || "").replace(/^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/gm, "").trim();
         if (!cleanText || !isClean(cleanText)) continue;
-        const dedupKey = templateFingerprint(cleanText);
-        const hash = crypto.createHash("md5").update(dedupKey).digest("hex");
-        if (emittedHashes.has(hash)) continue;
-        emittedHashes.add(hash);
+        const messageKey = itemKey(entry.timestamp, entry.type, cleanText);
+        if (emittedMessageKeys.has(messageKey)) continue;
+        emittedMessageKeys.add(messageKey);
         const blockType = entry.type === "user" ? "input_text" : "output_text";
         output.push(JSON.stringify({
           timestamp: entry.timestamp, type: "response_item",

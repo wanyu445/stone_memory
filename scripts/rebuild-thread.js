@@ -24,6 +24,7 @@ const { getCfg, getThreadDir } = require("../src/config");
 const { resolveDateFile, listDateFiles } = require("../src/lib/archive-paths");
 const { readFeelings: readDatabaseFeelings, readMessages } = require("../src/storage/memory-reader");
 const { itemKey, conversationWindow, loadRebuildPlan } = require("../src/services/rebuild-workbench");
+const { isSystemInjection } = require("../src/lib/thread-message-filter");
 
 let THREAD_BASE = null;
 let FULL_ARCHIVE = null;
@@ -198,27 +199,6 @@ function extractRealBlocks(msg) {
   const content = msg.message?.content;
   if (!Array.isArray(content)) return [];
   return content.filter((b) => b.type === "text" || b.type === "thinking");
-}
-
-/** 将文本中的变量部分泛化为占位符（时间、数字、UUID、URL），暴露模板骨架用于去重 */
-function templateFingerprint(text) {
-  if (!text) return "";
-  return text.split("\n").map(line =>
-    line
-      .replace(/\[\d{4}[\/\-]\d{2}[\/\-]\d{2}\s+\d{2}:\d{2}(:\d{2})?\]/g, "[DATE]")
-      .replace(/\d{4}-\d{2}-\d{2}/g, "DATE")
-      .replace(/\d{2}:\d{2}(:\d{2})?/g, "TIME")
-      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "UUID")
-      .replace(/\b\d+(\.\d+)?\b/g, "N")
-      .replace(/https?:\/\/\S+/g, "URL")
-      .trim()
-  ).join("\n");
-}
-
-function isSystemInjection(text) {
-  if (!text) return false;
-  const t = templateFingerprint(text);
-  return /<memory_context>|Relevant past memories:|Continue from where you left off\.|Review the current code changes/i.test(t);
 }
 
 function isSystemAssistantText(text) {
@@ -444,18 +424,17 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
   const outputLines = [];
   let prevUuid = null;
   let stats = { memoryBlock: 0, windowMsg: 0, systemDropped: 0 };
-  const emittedHashes = new Set();
+  const emittedMessageKeys = new Set();
 
   function emit(type, content, extra = {}) {
-    // 去重: 泛化变量后用模板指纹 hash，同骨架文本只留一条
+    const ts = extra.timestamp || new Date().toISOString();
+    // 只去除来源重叠产生的同一条记录；不同时间的相同措辞仍是独立对话。
     const contentSrc = typeof content === "string" ? content : JSON.stringify(content);
-    const dedupKey = templateFingerprint(contentSrc);
-    const hash = crypto.createHash("md5").update(dedupKey).digest("hex");
-    if (emittedHashes.has(hash)) return null;
-    emittedHashes.add(hash);
+    const messageKey = itemKey(ts, type, contentSrc);
+    if (emittedMessageKeys.has(messageKey)) return null;
+    emittedMessageKeys.add(messageKey);
 
     const uuid = newUuid();
-    const ts = extra.timestamp || new Date().toISOString();
     const msg = {
       type,
       uuid,

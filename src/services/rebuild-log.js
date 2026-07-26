@@ -9,7 +9,10 @@ function stateFile(threadId) {
 
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
-  catch { return {}; }
+  catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
 }
 
 function createRebuildStateStore({
@@ -17,7 +20,11 @@ function createRebuildStateStore({
   now = () => new Date().toISOString(),
 } = {}) {
   function read(threadId) {
-    return readJson(resolveStateFile(threadId));
+    const file = resolveStateFile(threadId);
+    return withFileLockSync(`${file}.lock`, () => readJson(file), {
+      timeoutMs: 5000,
+      staleMs: 30_000,
+    });
   }
 
   function update(threadId, updater) {

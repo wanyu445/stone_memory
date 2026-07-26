@@ -64,7 +64,65 @@ function handleClaudeTurnGate(payload, {
   if (!threadId) {
     return { handled: false, reason: "thread_not_registered", blocked: false };
   }
-  return { handled: true, threadId, blocked: blocked(threadId) };
+  try {
+    return { handled: true, threadId, blocked: blocked(threadId) };
+  } catch (error) {
+    return {
+      handled: true,
+      threadId,
+      blocked: true,
+      reason: "state_unavailable",
+      error: error.message,
+    };
+  }
+}
+
+async function handleCodexStop(payload, {
+  config = loadConfig(),
+  execute = executePendingRebuild,
+} = {}) {
+  if (payload?.hook_event_name && payload.hook_event_name !== "Stop") {
+    return { handled: false, reason: "not_stop" };
+  }
+  const threadId = payload?.session_id;
+  if (!configuredThread(config, threadId, "codex")) {
+    return {
+      handled: false,
+      reason: config[threadId] ? "runtime_mismatch" : "thread_not_registered",
+      threadId: threadId || null,
+    };
+  }
+  const result = await execute(threadId, { turnSettled: true });
+  return { handled: true, threadId, result };
+}
+
+function handleCodexTurnGate(payload, {
+  config = loadConfig(),
+  blocked = isTurnBlocked,
+} = {}) {
+  if (payload?.hook_event_name && payload.hook_event_name !== "UserPromptSubmit") {
+    return { handled: false, reason: "not_user_prompt_submit", blocked: false };
+  }
+  const threadId = payload?.session_id;
+  if (!configuredThread(config, threadId, "codex")) {
+    return {
+      handled: false,
+      reason: config[threadId] ? "runtime_mismatch" : "thread_not_registered",
+      threadId: threadId || null,
+      blocked: false,
+    };
+  }
+  try {
+    return { handled: true, threadId, blocked: blocked(threadId) };
+  } catch (error) {
+    return {
+      handled: true,
+      threadId,
+      blocked: true,
+      reason: "state_unavailable",
+      error: error.message,
+    };
+  }
 }
 
 async function handleCodexNotification(notification, {
@@ -98,6 +156,8 @@ async function handleCodexNotification(notification, {
 module.exports = {
   handleClaudeStop,
   handleClaudeTurnGate,
+  handleCodexStop,
+  handleCodexTurnGate,
   handleCodexNotification,
   reportClaudeContextWindow,
   resolveClaudeThreadId,

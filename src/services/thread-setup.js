@@ -137,11 +137,49 @@ function createThread(input, { allowExisting = false, requireSession = true } = 
     claude: { command: "claude -p --bare", flags: { systemPrompt: "--system-prompt-file", mcpConfig: "--mcp-config", model: "--model" } },
   };
   config[threadId] = entry;
-  saveConfig(config);
-
   const root = threadDirectory({ ...input, threadId });
   for (const relative of ["memory/archive/full", "memory/import/done", "memory/mined/feelings", "rules", "logs"])
     fs.mkdirSync(path.join(root, relative), { recursive: true });
+  const previousAutomaticEnabled = existing.automaticRebuild?.enabled !== false;
+  const automaticEnabledChanged = Boolean(
+    existing.label && previousAutomaticEnabled !== entry.automaticRebuild.enabled,
+  );
+  let disableNotedBeforeSave = false;
+  if (automaticEnabledChanged && !entry.automaticRebuild.enabled) {
+    const {
+      noteAutomaticRebuildConfigEnabled,
+    } = require("./automatic-rebuild-state");
+    noteAutomaticRebuildConfigEnabled(threadId, false, {
+      lifecycleMode: entry.automaticRebuild.lifecycle?.mode || "supervisor",
+    });
+    disableNotedBeforeSave = true;
+  }
+  try {
+    saveConfig(config);
+  } catch (error) {
+    if (disableNotedBeforeSave) {
+      try {
+        const {
+          noteAutomaticRebuildConfigEnabled,
+        } = require("./automatic-rebuild-state");
+        noteAutomaticRebuildConfigEnabled(threadId, true, {
+          lifecycleMode: existing.automaticRebuild?.lifecycle?.mode || "supervisor",
+        });
+      } catch (rollbackError) {
+        error.rollbackError = rollbackError;
+        error.message += `; automatic rebuild state rollback failed: ${rollbackError.message}`;
+      }
+    }
+    throw error;
+  }
+  if (automaticEnabledChanged && entry.automaticRebuild.enabled) {
+    const {
+      noteAutomaticRebuildConfigEnabled,
+    } = require("./automatic-rebuild-state");
+    noteAutomaticRebuildConfigEnabled(threadId, true, {
+      lifecycleMode: entry.automaticRebuild.lifecycle?.mode || "supervisor",
+    });
+  }
   const retain = path.join(root, "memory", "retain-config.json");
   if (!fs.existsSync(retain)) fs.writeFileSync(retain, JSON.stringify({ retain: {}, eventAnchors: {} }, null, 2));
   const audit = path.join(root, "memory", "audit-marks.json");

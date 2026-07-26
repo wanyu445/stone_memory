@@ -27,8 +27,10 @@ const { ingestThreadFile: ingestSharedThreadFile } = require("../src/services/th
 const { MemoryStore } = require("../src/storage/memory-store");
 const { findThreadSessionFile } = require("../src/lib/thread-session-file");
 const { latestContextUsage } = require("../src/lib/thread-context-usage");
-const { updateContextUsage } = require("../src/services/rebuild-log");
-const { observeThreadUsage } = require("../src/services/automatic-rebuild-coordinator");
+const {
+  recordWatcherContextUsage,
+  runWatcherFlushPass,
+} = require("../src/services/watcher-context-usage");
 const LOG_DIR = path.join(os.homedir(), ".stone_memory", "logs");
 let workerLockDir = null;
 
@@ -229,22 +231,23 @@ async function flushSync(tid) {
   try {
     while (state.dirty) {
       state.dirty = false;
-      if (!fs.existsSync(path.join(os.homedir(), ".stone_memory", ".archive-off"))) {
-        await syncFromThread(tid);
-      }
-      const latestArchiveDate = scanArchiveDates(tid).at(-1) || null;
-      const dateChanged = state.latestArchiveDate && latestArchiveDate && state.latestArchiveDate !== latestArchiveDate;
-      state.latestArchiveDate = latestArchiveDate;
-      if (dateChanged) {
-        log(`[${tid}] SQLite 对话日期已推进到 ${latestArchiveDate}，按 mining state 检查待挖日期`);
-        await checkAndMine(tid);
-      }
       const config = loadConfig()[tid] || {};
-      const usage = latestContextUsage(findThreadSessionFile(config.sessionDir, tid), config.runtime || "claude");
-      if (usage) {
-        updateContextUsage(tid, usage);
-        observeThreadUsage(tid, usage, config);
-      }
+      const { latestArchiveDate } = await runWatcherFlushPass(tid, config, {
+        archiveEnabled: !fs.existsSync(path.join(os.homedir(), ".stone_memory", ".archive-off")),
+        sync: syncFromThread,
+        scanLatestArchiveDate: threadId => scanArchiveDates(threadId).at(-1) || null,
+        previousArchiveDate: state.latestArchiveDate,
+        mine: async (threadId, archiveDate) => {
+          log(`[${threadId}] SQLite 对话日期已推进到 ${archiveDate}，按 mining state 检查待挖日期`);
+          await checkAndMine(threadId);
+        },
+        readUsage: (threadId, currentConfig) => latestContextUsage(
+          findThreadSessionFile(currentConfig.sessionDir, threadId),
+          currentConfig.runtime || "claude",
+        ),
+        recordUsage: recordWatcherContextUsage,
+      });
+      state.latestArchiveDate = latestArchiveDate;
     }
   } finally {
     state.running = false;

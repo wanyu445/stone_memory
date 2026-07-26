@@ -2,6 +2,7 @@ const {
   readRebuildState,
   updateRebuildState,
 } = require("./rebuild-log");
+const { sanitizeDiagnostic } = require("../lib/sanitize-diagnostic");
 
 const defaultStore = {
   read: readRebuildState,
@@ -82,6 +83,8 @@ function createAutomaticRebuildState({
         highWaterTokens: 0,
         pendingSince: null,
         ignoreUsageBefore: completedAt,
+        resumeTurnAdmission: null,
+        resumeTurnAdmittedAt: null,
         lastCompletedAt: completedAt,
         lastResult: record,
         lastError: null,
@@ -95,7 +98,7 @@ function createAutomaticRebuildState({
       status: "failed",
       rebuildPending: true,
       lastFailedAt: now(),
-      lastError: String(error?.message || error),
+      lastError: sanitizeDiagnostic(error?.message || error),
       lastResult: record,
     }));
   }
@@ -107,9 +110,106 @@ function createAutomaticRebuildState({
     }));
   }
 
+  function admitResumeTurn(threadId) {
+    let admitted = false;
+    const state = update(threadId, current => {
+      if (!current.rebuildPending || current.resumeTurnAdmission !== "available") {
+        return current;
+      }
+      admitted = true;
+      return {
+        ...current,
+        resumeTurnAdmission: "admitted",
+        resumeTurnAdmittedAt: now(),
+      };
+    });
+    return { admitted, state };
+  }
+
+  function consumeResumeTurn(threadId) {
+    let consumed = false;
+    const state = update(threadId, current => {
+      if (!current.rebuildPending || current.resumeTurnAdmission !== "admitted") {
+        return current;
+      }
+      consumed = true;
+      return {
+        ...current,
+        resumeTurnAdmission: "settling",
+      };
+    });
+    return { consumed, state };
+  }
+
+  function releaseResumeTurn(threadId) {
+    return update(threadId, current => (
+      current.rebuildPending && current.resumeTurnAdmission === "settling"
+        ? {
+          ...current,
+          resumeTurnAdmission: "available",
+          resumeTurnAdmittedAt: null,
+        }
+        : current
+    ));
+  }
+
+  function noteConfigEnabled(threadId, enabled, { lifecycleMode = null } = {}) {
+    return update(threadId, current => {
+      const next = { ...current };
+      if (lifecycleMode) next.lifecycleMode = lifecycleMode;
+      if (enabled) {
+        next.status = current.rebuildPending ? "rebuild_pending" : "watching";
+        next.resumeTurnAdmission = current.rebuildPending ? "available" : null;
+        next.resumeTurnAdmittedAt = null;
+        delete next.disableRequestedAt;
+        return next;
+      }
+      next.disableGeneration = (Number(current.disableGeneration) || 0) + 1;
+      next.resumeTurnAdmission = null;
+      next.resumeTurnAdmittedAt = null;
+      const status = String(current.status || "");
+      if (status.startsWith("disabled_") || status === "disable_requested") {
+        next.disableRequestedAt = current.disableRequestedAt || now();
+        return next;
+      }
+      if (["rebuilding", "checking"].includes(status)) {
+        next.status = "disabled_waiting_safe_rebuild_exit";
+        next.runtimeRunning = false;
+        next.stopAttempted = true;
+      } else if (status === "stopping" && current.stopAttempted !== true) {
+        next.status = "disabled_cancelled_before_stop";
+        next.runtimeRunning = null;
+        next.stopAttempted = false;
+      } else if (["starting", "recovering", "stopping"].includes(status)) {
+        next.status = "disable_requested";
+        next.runtimeRunning = null;
+        next.stopAttempted = true;
+      } else {
+        const runtimeRunning = typeof current.runtimeRunning === "boolean"
+          ? current.runtimeRunning
+          : current.managedRuntime?.stoppedAt
+            ? false
+            : null;
+        next.status = runtimeRunning === true
+          ? "disabled_idle_runtime_running"
+          : runtimeRunning === false
+            ? "disabled_idle_runtime_stopped"
+            : "disabled_idle_runtime_status_unknown";
+        next.runtimeRunning = runtimeRunning;
+        next.stopAttempted = false;
+      }
+      next.disableRequestedAt = now();
+      return next;
+    });
+  }
+
   return {
+    admitResumeTurn,
+    consumeResumeTurn,
+    releaseResumeTurn,
     markCompleted,
     markFailed,
+    noteConfigEnabled,
     observeUsage,
     read,
     setManagedRuntime,
@@ -121,9 +221,13 @@ function createAutomaticRebuildState({
 const automatic = createAutomaticRebuildState();
 
 module.exports = {
+  admitAutomaticRebuildResumeTurn: automatic.admitResumeTurn,
+  consumeAutomaticRebuildResumeTurn: automatic.consumeResumeTurn,
+  releaseAutomaticRebuildResumeTurn: automatic.releaseResumeTurn,
   createAutomaticRebuildState,
   markCompleted: automatic.markCompleted,
   markFailed: automatic.markFailed,
+  noteAutomaticRebuildConfigEnabled: automatic.noteConfigEnabled,
   observeUsage: automatic.observeUsage,
   readAutomaticRebuildState: automatic.read,
   setManagedRuntime: automatic.setManagedRuntime,

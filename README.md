@@ -581,7 +581,8 @@ subagent 模式不依赖外部 API，通过宿主 Agent 的 CLI 执行挖掘/审
 生命周期有两种模式：
 
 - `supervisor`：提供 stop、start、health check，适用于 PM2、systemd、Docker 或自定义脚本。
-- `managed`：提供 start command 和 cwd，先运行 `stmem auto-rebuild --thread <id> --start`。Stone 会记录并核验 process group 的启动身份；未提供 health check 时要求进程稳定存活后才算启动成功。Windows 上请使用 `supervisor` 模式，由外部进程管理器可靠停止整棵进程树。
+- `managed`：提供可直接执行的 start command 和 cwd，先运行 `stmem auto-rebuild --thread <id> --start`。Stone 会按可执行文件、参数、cwd、PID/process group 和启动身份核验唯一归属；检测到未归属或额外同类实例时会拒绝启动/停止，且绝不会自动杀死未知进程。管道、重定向、`&&` 等复杂 shell 命令无法可靠建立身份，因此会 fail closed。当前可核验的 managed 实例检测仅支持 Linux；macOS 请使用 `supervisor`。
+- `supervisor` 在 Linux 和 macOS 都可用；Windows 的整棵进程树安全终止尚未满足自动 rebuild 的要求，因此 Windows 暂不执行自动生命周期。
 
 Claude Code 适配器会保留并转发原有 status line，同时追加可卸载的 Stop 和
 `UserPromptSubmit` hooks。Stop hook 会同步等 rebuild 完成；如果失败后 pending
@@ -592,7 +593,20 @@ stmem auto-rebuild --install-claude
 stmem auto-rebuild --uninstall-claude
 ```
 
-Codex CLI 可在 `~/.codex/config.toml` 的 `notify` 命令中调用 `scripts/stmem-codex-adapter.js`；脚本接受 Codex 追加的 `agent-turn-complete` JSON 参数。使用 app-server 的项目可把 `turn/completed` JSON 通过 stdin 传给同一脚本。已有 notify dispatcher 的用户应把该脚本作为其中一个同步处理器，不必替换其他通知。其他 Agent 项目只需在本轮真正结束后同步调用统一入口：
+Codex CLI 应安装同步的 `Stop` 和 `UserPromptSubmit` hooks。安装器只追加 Stone
+handler，保留用户原有的 `~/.codex/hooks.json` 内容；Codex 会要求用户通过 `/hooks`
+审核并信任新增 hook：
+
+```bash
+stmem auto-rebuild --install-codex
+stmem auto-rebuild --uninstall-codex
+```
+
+旧版 `notify` 仍可把 `agent-turn-complete` JSON 交给
+`scripts/stmem-codex-adapter.js` 做普通通知，但 Codex 的 legacy notify 只 spawn
+子进程、不等待退出，不能单独作为安全的 lifecycle 屏障。使用 app-server 的项目可把
+`turn/completed` JSON 通过 stdin 传给同一脚本，但客户端必须串行化入站，在 Stone
+handler 返回前不得接受下一轮。其他 Agent 项目只需在本轮真正结束后同步调用统一入口：
 
 ```bash
 stmem auto-rebuild --thread <id> --turn-settled
@@ -600,10 +614,9 @@ stmem auto-rebuild --thread <id> --turn-settled
 
 Codex app-server、聊天网关和其他外部 Agent 的入站层还必须在接收下一轮前同步调用
 `stmem auto-rebuild --thread <id> --gate`。未阻断时退出码为 0；pending 时返回
-JSON 中的 `blocked:true` 并以 75 退出。Codex CLI 的 notify 处理器也必须同步等待
-脚本退出，确保 rebuild 期间不会接受下一轮。
+JSON 中的 `blocked:true` 并以 75 退出。
 
-只要尝试过 stop，后续任何失败都会尽力 restart，并保留 pending 供下一个 settled turn 重试。关闭 `automaticRebuild.enabled` 只停用这条自动生命周期，不影响归档、挖掘或手动 rebuild。
+只要尝试过 stop，后续任何失败都会尽力 restart，并保留 pending 供下一个 settled turn 重试；唯一例外是超时后仍无法确认进程组退出，此时为避免两个 runtime 并存，Stone 会拒绝冒险 restart。关闭 `automaticRebuild.enabled` 后不再开始新的自动步骤：managed 模式不再自动 start，已停止的 runtime 交由用户手动启动；supervisor 仅在 Stone 已执行 stop 时做一次补偿性 start/health，然后停止管理。pending 保留为暂停状态；重新开启时 Stone 只放行一轮来取得新的可靠 settled turn，再继续 pending，避免在任意时刻突然停止 runtime。归档、挖掘、usage 更新和手动 rebuild 不受影响，关闭无需重启任何服务。
 
 当前 Windows 平台不会执行自动 rebuild：Stone 暂时无法在 rebuild 超时后可靠确认整棵
 子进程树都已退出，因此会保留 pending 并报错；手动 rebuild 和其他功能不受影响。

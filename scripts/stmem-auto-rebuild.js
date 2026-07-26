@@ -17,6 +17,10 @@ const {
   installClaudeAdapters,
   uninstallClaudeAdapters,
 } = require("../src/services/claude-adapter-installation");
+const {
+  installCodexAdapters,
+  uninstallCodexAdapters,
+} = require("../src/services/codex-adapter-installation");
 
 function threadIdFrom(args) {
   const index = args.indexOf("--thread");
@@ -31,6 +35,14 @@ async function main() {
   }
   if (args.includes("--uninstall-claude")) {
     console.log(JSON.stringify(uninstallClaudeAdapters(), null, 2));
+    return;
+  }
+  if (args.includes("--install-codex")) {
+    console.log(JSON.stringify(installCodexAdapters(), null, 2));
+    return;
+  }
+  if (args.includes("--uninstall-codex")) {
+    console.log(JSON.stringify(uninstallCodexAdapters(), null, 2));
     return;
   }
   const threadId = threadIdFrom(args);
@@ -62,7 +74,7 @@ async function main() {
     threadId,
     config,
     state: readAutomaticRebuildState(threadId),
-    turnBlocked: isTurnBlocked(threadId),
+    turnBlocked: isTurnBlocked(threadId, { admitResume: false }),
   }, null, 2));
 }
 

@@ -81,3 +81,102 @@ test("usage without an observation timestamp is isolated after rebuild", () => {
   assert.equal(ignored.highWaterTokens, 0);
   assert.equal(ignored.ignoredUsageAt, "2026-07-26T02:05:00.000Z");
 });
+
+test("disable and re-enable transitions preserve pending and managed ownership", () => {
+  const store = memoryStore({
+    automaticRebuild: {
+      status: "rebuilding",
+      rebuildPending: true,
+      highWaterTokens: 90,
+      managedRuntime: { pid: 123, processIdentity: "owned" },
+    },
+  });
+  const automatic = createAutomaticRebuildState({
+    store,
+    now: () => "2026-07-26T02:05:00.000Z",
+  });
+
+  const disabled = automatic.noteConfigEnabled("thread-1", false, {
+    lifecycleMode: "managed",
+  });
+  assert.equal(disabled.status, "disabled_waiting_safe_rebuild_exit");
+  assert.equal(disabled.disableGeneration, 1);
+  assert.equal(disabled.rebuildPending, true);
+  assert.equal(disabled.managedRuntime.pid, 123);
+
+  const reenabled = automatic.noteConfigEnabled("thread-1", true);
+  assert.equal(reenabled.status, "rebuild_pending");
+  assert.equal(reenabled.rebuildPending, true);
+  assert.equal(reenabled.managedRuntime.pid, 123);
+  assert.equal(reenabled.resumeTurnAdmission, "available");
+
+  const first = automatic.admitResumeTurn("thread-1");
+  const second = automatic.admitResumeTurn("thread-1");
+  const consumed = automatic.consumeResumeTurn("thread-1");
+  const consumedAgain = automatic.consumeResumeTurn("thread-1");
+  const released = automatic.releaseResumeTurn("thread-1");
+  assert.equal(first.admitted, true);
+  assert.equal(first.state.resumeTurnAdmission, "admitted");
+  assert.equal(second.admitted, false);
+  assert.equal(consumed.consumed, true);
+  assert.equal(consumed.state.resumeTurnAdmission, "settling");
+  assert.equal(consumedAgain.consumed, false);
+  assert.equal(released.resumeTurnAdmission, "available");
+});
+
+test("an idle disable records that Stone did not change the running runtime", () => {
+  const store = memoryStore({
+    automaticRebuild: {
+      status: "watching",
+      rebuildPending: false,
+      runtimeRunning: true,
+    },
+  });
+  const automatic = createAutomaticRebuildState({ store });
+
+  const disabled = automatic.noteConfigEnabled("thread-1", false, {
+    lifecycleMode: "managed",
+  });
+
+  assert.equal(disabled.status, "disabled_idle_runtime_running");
+  assert.equal(disabled.runtimeRunning, true);
+  assert.equal(disabled.stopAttempted, false);
+  assert.equal(disabled.lifecycleMode, "managed");
+});
+
+test("an idle managed disable reports a retained stopped runtime without pretending it is healthy", () => {
+  const store = memoryStore({
+    automaticRebuild: {
+      status: "watching",
+      rebuildPending: false,
+      managedRuntime: { pid: 123, stoppedAt: "2026-07-26T02:00:00.000Z" },
+    },
+  });
+  const automatic = createAutomaticRebuildState({ store });
+
+  const disabled = automatic.noteConfigEnabled("thread-1", false, {
+    lifecycleMode: "managed",
+  });
+
+  assert.equal(disabled.status, "disabled_idle_runtime_stopped");
+  assert.equal(disabled.runtimeRunning, false);
+});
+
+test("disable while preparing stop records that no stop command was executed", () => {
+  const store = memoryStore({
+    automaticRebuild: {
+      status: "stopping",
+      rebuildPending: true,
+      stopAttempted: false,
+    },
+  });
+  const automatic = createAutomaticRebuildState({ store });
+
+  const disabled = automatic.noteConfigEnabled("thread-1", false, {
+    lifecycleMode: "supervisor",
+  });
+
+  assert.equal(disabled.status, "disabled_cancelled_before_stop");
+  assert.equal(disabled.runtimeRunning, null);
+  assert.equal(disabled.stopAttempted, false);
+});

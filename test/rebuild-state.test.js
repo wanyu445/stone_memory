@@ -7,6 +7,44 @@ const { spawn } = require("node:child_process");
 
 const { createRebuildStateStore } = require("../src/services/rebuild-log");
 
+test("a missing rebuild-state file is treated as an empty first-run state", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-rebuild-missing-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = createRebuildStateStore({
+    resolveStateFile: () => path.join(root, "rebuild-state.json"),
+  });
+
+  assert.deepEqual(store.read("thread-1"), {});
+});
+
+test("invalid rebuild-state JSON fails closed and is never overwritten", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-rebuild-invalid-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "rebuild-state.json");
+  fs.writeFileSync(file, '{"automaticRebuild":');
+  const store = createRebuildStateStore({ resolveStateFile: () => file });
+
+  assert.throws(() => store.read("thread-1"), /JSON|Unexpected/);
+  assert.throws(
+    () => store.update("thread-1", state => ({ ...state, overwritten: true })),
+    /JSON|Unexpected/,
+  );
+  assert.equal(fs.readFileSync(file, "utf8"), '{"automaticRebuild":');
+});
+
+test("rebuild-state I/O errors are surfaced instead of impersonating an empty state", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-rebuild-io-error-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = createRebuildStateStore({ resolveStateFile: () => root });
+
+  assert.throws(() => store.read("thread-1"), /EISDIR|directory/);
+  assert.throws(
+    () => store.update("thread-1", state => ({ ...state, overwritten: true })),
+    /EISDIR|directory/,
+  );
+  assert.equal(fs.statSync(root).isDirectory(), true);
+});
+
 test("all rebuild-state mutations preserve fields written by other subsystems", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-rebuild-state-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

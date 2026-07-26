@@ -9,6 +9,13 @@ const {
   setManagedRuntime,
 } = require("./automatic-rebuild-state");
 const { processAlive, processIdentity } = require("../lib/process-identity");
+const {
+  findMatchingManagedRuntimes,
+  parseManagedStartCommand,
+} = require("./managed-runtime-inspector");
+const { withAutomaticRebuildLock } = require("./automatic-rebuild-lock");
+const { terminateProcessGroup } = require("../lib/process-group");
+const { sanitizeDiagnostic } = require("../lib/sanitize-diagnostic");
 
 function terminateProcess(pid, signal) {
   if (!Number.isInteger(pid) || pid <= 0) return;
@@ -29,7 +36,7 @@ function runCommand(command, {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    let killTimer = null;
+    let timeoutTermination = null;
     const child = spawn(command, {
       cwd: cwd || process.cwd(),
       env,
@@ -42,24 +49,26 @@ function runCommand(command, {
     child.stderr?.on("data", chunk => { stderr += chunk; });
     const timer = setTimeout(() => {
       timedOut = true;
-      try { terminateProcess(child.pid, "SIGTERM"); } catch {}
-      killTimer = setTimeout(() => {
-        try { terminateProcess(child.pid, "SIGKILL"); } catch {}
-      }, 1000);
-      killTimer.unref?.();
+      timeoutTermination = process.platform === "win32"
+        ? Promise.resolve().then(() => terminateProcess(child.pid, "SIGKILL"))
+        : terminateProcessGroup(child.pid);
     }, timeoutMs);
     timer.unref?.();
     child.once("error", error => {
       clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
       reject(error);
     });
-    child.once("close", (status, signal) => {
+    child.once("close", async (status, signal) => {
       clearTimeout(timer);
-      if (killTimer && !timedOut) clearTimeout(killTimer);
       if (timedOut) {
-        const error = new Error(`runtime lifecycle command timed out after ${timeoutMs}ms`);
+        let terminationError = null;
+        try { await timeoutTermination; } catch (error) { terminationError = error; }
+        const suffix = terminationError ? `; ${terminationError.message}` : "";
+        const error = new Error(
+          `runtime lifecycle command timed out after ${timeoutMs}ms${suffix}`,
+        );
         error.code = "LIFECYCLE_COMMAND_TIMEOUT";
+        if (terminationError?.unsafeToRestart) error.unsafeToRestart = true;
         reject(error);
         return;
       }
@@ -75,8 +84,9 @@ function runCommand(command, {
 
 function assertCommandSucceeded(command, result) {
   if (result.status === 0) return result;
-  const detail = result.stderr || result.stdout || `exit ${result.status}`;
-  throw new Error(`runtime lifecycle command failed (${command}): ${detail}`);
+  const detail = sanitizeDiagnostic(result.stderr || result.stdout || "");
+  const suffix = detail ? `: ${detail}` : "";
+  throw new Error(`runtime lifecycle command failed (exit ${result.status})${suffix}`);
 }
 
 async function waitForHealth(probe, expectedHealthy, {
@@ -139,10 +149,12 @@ function managedProcessAlive(runtime) {
 
 function startManagedProcess(command, options) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, {
+    const launchSpec = options.launchSpec
+      || parseManagedStartCommand(command, { cwd: options.cwd, env: options.env });
+    const child = spawn(launchSpec.command, launchSpec.args, {
       cwd: options.cwd,
       env: options.env || process.env,
-      shell: true,
+      shell: false,
       detached: true,
       windowsHide: true,
       stdio: "ignore",
@@ -161,7 +173,6 @@ function startManagedProcess(command, options) {
         processGroupId: process.platform === "win32" ? null : child.pid,
         processIdentity: identity,
         startedAt: new Date().toISOString(),
-        command,
         cwd: options.cwd,
       });
     });
@@ -187,6 +198,7 @@ async function stopManagedProcess(runtime, { timeoutMs, intervalMs }) {
 }
 
 const defaultManagedProcess = {
+  findMatches: findMatchingManagedRuntimes,
   isAlive: managedProcessAlive,
   status: managedProcessStatus,
   start: startManagedProcess,
@@ -204,6 +216,8 @@ function createRuntimeLifecycleController(config, {
   managedProcess = defaultManagedProcess,
   state = defaultState,
   env = process.env,
+  withLifecycleLock = withAutomaticRebuildLock,
+  lifecycleLockHeld = false,
 } = {}) {
   const options = {
     cwd: config.cwd || null,
@@ -222,6 +236,10 @@ function createRuntimeLifecycleController(config, {
 
   if (config.mode === "managed") {
     if (!threadId) throw new Error("managed lifecycle requires a threadId");
+    const launchSpec = parseManagedStartCommand(config.startCommand, {
+      cwd: config.cwd,
+      env,
+    });
     if (process.platform === "win32" && managedProcess === defaultManagedProcess) {
       throw new Error("Windows 暂不支持 Stone 托管模式；请改用 supervisor 配置可靠的 stop/start/health check");
     }
@@ -230,7 +248,36 @@ function createRuntimeLifecycleController(config, {
         ? managedProcess.status(runtime)
         : managedProcess.isAlive(runtime) ? "owned" : "stopped"
     );
-    return {
+    const canInspectMatches = typeof managedProcess.findMatches === "function";
+    const findMatches = async () => (
+      canInspectMatches
+        ? await managedProcess.findMatches(launchSpec)
+        : []
+    );
+    const conflictError = matches => {
+      const summary = matches.map(match => (
+        `PID ${Number(match.pid)} (${match.executable || "unknown executable"}, `
+        + `cwd=${match.cwd || "unknown"})`
+      )).join("；");
+      return new Error(
+        `Stone 拒绝启动：检测到已有外部 runtime（${summary}）。`
+        + "Stone 不会自动杀死未知进程；请先停止原实例，或切换 supervisor",
+      );
+    };
+    const duplicateError = matches => {
+      const summary = matches.map(match => (
+        `PID ${Number(match.pid)} (${match.executable || "unknown executable"}, `
+        + `cwd=${match.cwd || "unknown"})`
+      )).join("；");
+      return new Error(
+        `Stone 拒绝继续：检测到额外或重复 runtime（${summary}）。`
+        + "Stone 不会自动杀死未知进程；请停止额外实例，或切换 supervisor",
+      );
+    };
+    const withinLifecycleLock = operation => (
+      lifecycleLockHeld ? operation() : withLifecycleLock(threadId, operation)
+    );
+    const controller = {
       mode: "managed",
       async stop() {
         const runtime = state.read(threadId).managedRuntime;
@@ -238,6 +285,14 @@ function createRuntimeLifecycleController(config, {
         const status = processStatus(runtime);
         if (status === "unknown") {
           throw new Error("无法确认已记录 PID/process group 的归属，拒绝停止未知进程");
+        }
+        const matches = await findMatches();
+        if (status === "owned" && canInspectMatches
+          && !matches.some(match => Number(match.pid) === Number(runtime.pid))) {
+          throw new Error("已记录 runtime 与当前启动命令身份不匹配，拒绝停止未知进程");
+        }
+        if (matches.some(match => Number(match.pid) !== Number(runtime.pid))) {
+          throw duplicateError(matches);
         }
         if (status === "owned") {
           await managedProcess.stop(runtime, {
@@ -249,7 +304,10 @@ function createRuntimeLifecycleController(config, {
           ? commandHealth
           : async () => managedProcess.isAlive(runtime);
         await waitForHealth(probe, false, healthOptions);
-        state.setManagedRuntime(threadId, null);
+        state.setManagedRuntime(threadId, {
+          ...runtime,
+          stoppedAt: new Date().toISOString(),
+        });
         return { stopped: true, runtime };
       },
       async start() {
@@ -258,32 +316,82 @@ function createRuntimeLifecycleController(config, {
         if (currentStatus === "unknown") {
           throw new Error("无法确认已记录 PID/process group 的归属，拒绝启动重复 runtime");
         }
+        const matches = await findMatches();
         if (current && currentStatus === "owned") {
+          if (canInspectMatches
+            && !matches.some(match => Number(match.pid) === Number(current.pid))) {
+            throw new Error("已记录 runtime 与当前启动命令身份不匹配，拒绝启动重复 runtime");
+          }
+          if (matches.some(match => Number(match.pid) !== Number(current.pid))) {
+            throw duplicateError(matches);
+          }
           const probe = config.healthCheckCommand
             ? commandHealth
             : async () => managedProcess.isAlive(current);
           await waitForHealth(probe, true, healthOptions);
           return { started: false, runtime: current };
         }
-        const runtime = await managedProcess.start(config.startCommand, options);
-        state.setManagedRuntime(threadId, runtime);
-        const probe = config.healthCheckCommand
-          ? commandHealth
-          : async () => managedProcess.isAlive(runtime);
-        if (config.healthCheckCommand) await waitForHealth(probe, true, healthOptions);
-        else await waitForStableHealth(probe, healthOptions);
-        return { started: true, runtime };
+        if (matches.length) throw conflictError(matches);
+        const runtime = await managedProcess.start(config.startCommand, {
+          ...options,
+          launchSpec,
+        });
+        let ownershipPersisted = false;
+        try {
+          state.setManagedRuntime(threadId, runtime);
+          ownershipPersisted = true;
+          const probe = async () => {
+            if (processStatus(runtime) !== "owned") return false;
+            const activeMatches = await findMatches();
+            if (activeMatches.some(match => Number(match.pid) !== Number(runtime.pid))) {
+              throw duplicateError(activeMatches);
+            }
+            return config.healthCheckCommand ? commandHealth() : true;
+          };
+          if (config.healthCheckCommand) await waitForHealth(probe, true, healthOptions);
+          else await waitForStableHealth(probe, healthOptions);
+          return { started: true, runtime };
+        } catch (error) {
+          let cleanupError = null;
+          try {
+            if (processStatus(runtime) === "owned") {
+              await managedProcess.stop(runtime, {
+                timeoutMs: options.timeoutMs,
+                intervalMs: healthOptions.intervalMs,
+              });
+            }
+            await waitForHealth(
+              async () => managedProcess.isAlive(runtime),
+              false,
+              healthOptions,
+            );
+            if (ownershipPersisted) state.setManagedRuntime(threadId, null);
+          } catch (failure) {
+            cleanupError = failure;
+          }
+          if (cleanupError) {
+            error.message = `${error.message}; newly spawned runtime cleanup failed: `
+              + cleanupError.message;
+          }
+          throw error;
+        }
       },
       async health() {
         const current = state.read(threadId).managedRuntime;
         if (!current) return { healthy: false, reason: "not_started" };
         const status = processStatus(current);
         if (status === "unknown") return { healthy: false, reason: "ownership_unknown" };
+        if (status === "stopped") return { healthy: false, reason: "stopped" };
         const probe = config.healthCheckCommand
           ? commandHealth
           : async () => managedProcess.isAlive(current);
         return { healthy: await probe() };
       },
+    };
+    return {
+      ...controller,
+      stop: () => withinLifecycleLock(() => controller.stop()),
+      start: () => withinLifecycleLock(() => controller.start()),
     };
   }
 

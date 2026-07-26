@@ -7,6 +7,8 @@ const path = require("node:path");
 const {
   handleClaudeStop,
   handleClaudeTurnGate,
+  handleCodexStop,
+  handleCodexTurnGate,
   handleCodexNotification,
   reportClaudeContextWindow,
   resolveClaudeThreadId,
@@ -15,6 +17,10 @@ const {
   installClaudeAdapters,
   uninstallClaudeAdapters,
 } = require("../src/services/claude-adapter-installation");
+const {
+  installCodexAdapters,
+  uninstallCodexAdapters,
+} = require("../src/services/codex-adapter-installation");
 const {
   parseNotification,
 } = require("../scripts/stmem-codex-adapter");
@@ -62,6 +68,20 @@ test("Claude prompt gate blocks a registered thread while rebuild is pending", (
     threadId: "claude-thread",
     blocked: true,
   });
+});
+
+test("Claude prompt gate fails closed when rebuild state cannot be read", () => {
+  const result = handleClaudeTurnGate({
+    session_id: "claude-thread",
+    hook_event_name: "UserPromptSubmit",
+  }, {
+    config: { "claude-thread": { runtime: "claude" } },
+    blocked: () => { throw new Error("rebuild-state unreadable"); },
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, "state_unavailable");
 });
 
 test("Claude Stop and Codex turn/completed normalize to the same settled-turn entry", async () => {
@@ -117,6 +137,46 @@ test("Codex CLI agent-turn-complete notify payload reaches the same settled-turn
   assert.equal(result.handled, true);
   assert.equal(result.status, "completed");
   assert.deepEqual(calls, ["codex-cli-thread"]);
+});
+
+test("Codex synchronous Stop hook reaches TURN_SETTLED and prompt gate blocks pending", async () => {
+  const calls = [];
+  const config = { "codex-hook-thread": { runtime: "codex" } };
+  const settled = await handleCodexStop({
+    session_id: "codex-hook-thread",
+    hook_event_name: "Stop",
+  }, {
+    config,
+    execute: async threadId => {
+      calls.push(threadId);
+      return { executed: false, reason: "not_pending" };
+    },
+  });
+  const gate = handleCodexTurnGate({
+    session_id: "codex-hook-thread",
+    hook_event_name: "UserPromptSubmit",
+  }, {
+    config,
+    blocked: () => true,
+  });
+
+  assert.equal(settled.handled, true);
+  assert.deepEqual(calls, ["codex-hook-thread"]);
+  assert.equal(gate.blocked, true);
+});
+
+test("Codex prompt gate fails closed when rebuild state is unreadable", () => {
+  const result = handleCodexTurnGate({
+    session_id: "codex-hook-thread",
+    hook_event_name: "UserPromptSubmit",
+  }, {
+    config: { "codex-hook-thread": { runtime: "codex" } },
+    blocked: () => { throw new Error("state unavailable"); },
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, "state_unavailable");
 });
 
 test("Codex adapter refuses a registered Claude thread id", async () => {
@@ -243,4 +303,48 @@ test("Claude adapter refuses an orphaned Stone wrapper without migration state",
     nodePath: "/usr/bin/node",
     adapterScriptPath: "/opt/stone/scripts/stmem-claude-adapter.js",
   }), /迁移状态缺失/);
+});
+
+test("Codex adapter installation preserves existing hooks and is idempotent", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-codex-hooks-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const hooksPath = path.join(root, "hooks.json");
+  const statePath = path.join(root, "adapter.json");
+  fs.writeFileSync(hooksPath, JSON.stringify({
+    description: "user hooks",
+    hooks: {
+      Stop: [{ hooks: [{ type: "command", command: "existing-stop" }] }],
+      UserPromptSubmit: [{
+        hooks: [{ type: "command", command: "existing-gate" }],
+      }],
+    },
+  }));
+  const options = {
+    hooksPath,
+    statePath,
+    nodePath: "/usr/bin/node",
+    adapterScriptPath: "/opt/stone/scripts/stmem-codex-adapter.js",
+  };
+
+  installCodexAdapters(options);
+  installCodexAdapters(options);
+  const installed = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+  assert.equal(installed.description, "user hooks");
+  assert.equal(installed.hooks.Stop.length, 2);
+  assert.match(installed.hooks.Stop[1].hooks[0].command, /--stop/);
+  assert.equal(installed.hooks.Stop[1].hooks[0].timeout, 35 * 60);
+  assert.equal(installed.hooks.UserPromptSubmit.length, 2);
+  assert.match(installed.hooks.UserPromptSubmit[1].hooks[0].command, /--gate/);
+
+  uninstallCodexAdapters(options);
+  const restored = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+  assert.deepEqual(restored, {
+    description: "user hooks",
+    hooks: {
+      Stop: [{ hooks: [{ type: "command", command: "existing-stop" }] }],
+      UserPromptSubmit: [{
+        hooks: [{ type: "command", command: "existing-gate" }],
+      }],
+    },
+  });
 });

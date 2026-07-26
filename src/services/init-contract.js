@@ -24,6 +24,29 @@ const INIT_SCHEMA = {
     windowDays: { type: "integer", minimum: 1, default: 3 },
     keepToolPairs: { type: "integer", minimum: 0, default: 30 },
     contextWindowTokens: { type: ["integer", "null"], minimum: 1 },
+    automaticRebuild: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", default: true },
+        triggerRatio: { type: ["number", "null"], exclusiveMinimum: 0, exclusiveMaximum: 1 },
+        triggerTokens: { type: ["integer", "null"], minimum: 1 },
+        lifecycle: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            mode: { type: "string", enum: ["managed", "supervisor"], default: "supervisor" },
+            startCommand: { type: ["string", "null"] },
+            stopCommand: { type: ["string", "null"] },
+            healthCheckCommand: { type: ["string", "null"] },
+            cwd: { type: ["string", "null"] },
+            timeoutMs: { type: ["integer", "null"], minimum: 1 },
+            healthTimeoutMs: { type: ["integer", "null"], minimum: 1 },
+            healthIntervalMs: { type: ["integer", "null"], minimum: 1 },
+          },
+        },
+      },
+    },
     automaticFullMining: { type: "boolean", default: true },
     automaticMemoryMaintenance: { type: "boolean", default: true },
   },
@@ -45,6 +68,7 @@ function buildInitTemplate(runtime = "codex") {
     minerMode: "subagent",
     windowDays: 3,
     keepToolPairs: 30,
+    automaticRebuild: { enabled: true },
     automaticFullMining: true,
     automaticMemoryMaintenance: true,
   };

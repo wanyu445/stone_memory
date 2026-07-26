@@ -451,7 +451,29 @@ async function renderSettings(library) {
       <div id="setting-api-fields" class="field full"></div>
       <div class="field"><label for="setting-window">默认保留对话天数</label><input id="setting-window" name="windowDays" type="number" min="1" max="365" value="${config.windowDays}"></div>
       <div class="field"><label for="setting-tools">默认保留工具链组数</label><input id="setting-tools" name="keepToolPairs" type="number" min="0" max="500" value="${config.keepToolPairs}"></div>
-      <div class="field full"><label for="setting-context-window">上下文窗口上限（tokens，可选）</label><input id="setting-context-window" name="contextWindowTokens" type="number" min="1000" step="1000" value="${config.contextWindowTokens||""}" placeholder="例如 1000000"><small>Claude 建议填写；Codex 通常能自动识别。手动值优先。</small></div>
+      <label class="check-card full"><input type="checkbox" name="automaticRebuildEnabled" ${config.automaticRebuild.enabled ? "checked" : ""}><span><strong>自动保护长期记忆</strong>接近上下文上限时等待本轮结束，再安全停止、rebuild、校验并恢复运行时。关闭后不影响归档、挖掘或手动 rebuild。</span></label>
+      <section class="automatic-rebuild-panel full">
+        <div class="field-grid">
+          <div class="field"><label for="setting-lifecycle-mode">运行时管理方式</label><select id="setting-lifecycle-mode"><option value="managed" ${config.automaticRebuild.lifecycle.mode === "managed" ? "selected" : ""}>由 Stone 启动并托管</option><option value="supervisor" ${config.automaticRebuild.lifecycle.mode === "supervisor" ? "selected" : ""}>已有进程管理器</option></select></div>
+          <div class="field"><label for="setting-start-command">启动命令</label><input id="setting-start-command" value="${escapeHtml(config.automaticRebuild.lifecycle.startCommand || "")}" placeholder="例如 pm2 start my-agent"><small>Stone 只会执行你明确登记的命令。</small></div>
+          <div class="field managed-lifecycle-field"><label for="setting-runtime-cwd">工作目录</label><input id="setting-runtime-cwd" value="${escapeHtml(config.automaticRebuild.lifecycle.cwd || "")}" placeholder="/path/to/agent"></div>
+          <div class="field supervisor-lifecycle-field"><label for="setting-stop-command">停止命令</label><input id="setting-stop-command" value="${escapeHtml(config.automaticRebuild.lifecycle.stopCommand || "")}" placeholder="例如 pm2 stop my-agent"></div>
+          <div class="field"><label for="setting-health-command">健康检查命令（托管模式可选）</label><input id="setting-health-command" value="${escapeHtml(config.automaticRebuild.lifecycle.healthCheckCommand || "")}" placeholder="例如 curl -f http://127.0.0.1:3000/health"><small>进程管理器模式必填；退出码 0 表示健康，停止后必须变为非 0。</small></div>
+        </div>
+        <div class="integrity ${config.automaticRebuild.enabled && !config.automaticRebuild.ready ? "warning" : ""}">
+          当前状态：${escapeHtml(config.automaticRebuild.state.status || (config.automaticRebuild.enabled ? "等待配置" : "已关闭"))}
+          ${config.automaticRebuild.state.rebuildPending ? ` · 已排队（最高 ${Number(config.automaticRebuild.state.highWaterTokens || 0).toLocaleString()} tokens）` : ""}
+          ${config.automaticRebuild.errors.length ? `<br>${escapeHtml(config.automaticRebuild.errors.join("；"))}` : ""}
+        </div>
+      </section>
+      <details class="automatic-rebuild-advanced full"><summary><strong>自动 rebuild 高级设置</strong><small>普通用户无需修改 token 参数</small></summary><div class="field-grid">
+        <div class="field"><label for="setting-trigger-ratio">触发比例</label><input id="setting-trigger-ratio" type="number" min="0.01" max="0.99" step="0.01" value="${config.automaticRebuild.triggerRatio ?? ""}" placeholder="默认 0.86"></div>
+        <div class="field"><label for="setting-trigger-tokens">固定触发值（tokens）</label><input id="setting-trigger-tokens" type="number" min="1" step="1000" value="${config.automaticRebuild.triggerTokens ?? ""}" placeholder="留空则使用比例"></div>
+        <div class="field"><label for="setting-context-window">上下文窗口上限（tokens）</label><input id="setting-context-window" type="number" min="1" step="1000" value="${config.contextWindowTokens||""}" placeholder="通常自动识别"><small>手动值优先于 Claude status line / Codex model_context_window。</small></div>
+        <div class="field"><label for="setting-command-timeout">停止/启动超时（毫秒）</label><input id="setting-command-timeout" type="number" min="1" value="${config.automaticRebuild.lifecycle.timeoutMs || 30000}"></div>
+        <div class="field"><label for="setting-health-timeout">健康检查总超时（毫秒）</label><input id="setting-health-timeout" type="number" min="1" value="${config.automaticRebuild.lifecycle.healthTimeoutMs || 30000}"></div>
+        <div class="field"><label for="setting-health-interval">健康检查间隔（毫秒）</label><input id="setting-health-interval" type="number" min="1" value="${config.automaticRebuild.lifecycle.healthIntervalMs || 500}"></div>
+      </div></details>
       <label class="check-card full"><input type="checkbox" name="automaticFullMining" ${config.automaticFullMining ? "checked" : ""}><span><strong>自动挖掘全量对话</strong>处理 SQLite archive 中所有尚未挖掘的历史日期。</span></label>
       <label class="check-card full"><input type="checkbox" name="automaticMemoryMaintenance" ${config.automaticMemoryMaintenance ? "checked" : ""}><span><strong>自动执行记忆挖掘 / 压缩</strong>监听创建后的新对话，并按已配置水位执行压缩。</span></label>
       <div class="integrity full">纯对话 archive 保存在本地共享 SQLite 的 messages 表；memory/archive/full 才是按天保存的原始线程文件备份。</div>
@@ -462,12 +484,39 @@ async function renderSettings(library) {
       const toggle = apiFields.querySelector("#toggle-key"), keyInput = apiFields.querySelector("#setting-key");
       if (toggle) toggle.onclick = () => { const visible = keyInput.type === "text"; keyInput.type = visible ? "password" : "text"; toggle.setAttribute("aria-label", visible ? "显示 API Key" : "隐藏 API Key"); toggle.title = visible ? "显示 API Key" : "隐藏 API Key"; };
     };
+    const lifecycleMode = card.querySelector("#setting-lifecycle-mode");
+    const renderLifecycleSettings = () => {
+      card.querySelectorAll(".managed-lifecycle-field").forEach(field => { field.hidden = lifecycleMode.value !== "managed"; });
+      card.querySelectorAll(".supervisor-lifecycle-field").forEach(field => { field.hidden = lifecycleMode.value !== "supervisor"; });
+    };
     miner.onchange = renderApiSettings; renderApiSettings();
+    lifecycleMode.onchange = renderLifecycleSettings; renderLifecycleSettings();
     card.querySelector("#settings-form").onsubmit = async event => {
       event.preventDefault();
       const form = event.currentTarget, button = form.querySelector("button[type=submit]");
       const values = Object.fromEntries(new FormData(form).entries());
-      values.windowDays = Number(values.windowDays); values.keepToolPairs = Number(values.keepToolPairs); values.contextWindowTokens = values.contextWindowTokens ? Number(values.contextWindowTokens) : 0;
+      const optionalNumber = selector => {
+        const value = form.querySelector(selector).value.trim();
+        return value ? Number(value) : null;
+      };
+      values.windowDays = Number(values.windowDays); values.keepToolPairs = Number(values.keepToolPairs);
+      values.contextWindowTokens = optionalNumber("#setting-context-window");
+      values.automaticRebuild = {
+        enabled: form.elements.automaticRebuildEnabled.checked,
+        triggerRatio: optionalNumber("#setting-trigger-ratio"),
+        triggerTokens: optionalNumber("#setting-trigger-tokens"),
+        lifecycle: {
+          mode: lifecycleMode.value,
+          startCommand: form.querySelector("#setting-start-command").value.trim() || null,
+          stopCommand: lifecycleMode.value === "supervisor" ? (form.querySelector("#setting-stop-command").value.trim() || null) : null,
+          healthCheckCommand: form.querySelector("#setting-health-command").value.trim() || null,
+          cwd: form.querySelector("#setting-runtime-cwd").value.trim() || null,
+          timeoutMs: optionalNumber("#setting-command-timeout"),
+          healthTimeoutMs: optionalNumber("#setting-health-timeout"),
+          healthIntervalMs: optionalNumber("#setting-health-interval"),
+        },
+      };
+      delete values.automaticRebuildEnabled;
       values.automaticFullMining = form.elements.automaticFullMining.checked;
       values.automaticMemoryMaintenance = form.elements.automaticMemoryMaintenance.checked;
       button.disabled = true; button.textContent = "正在保存…";

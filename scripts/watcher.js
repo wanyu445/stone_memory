@@ -28,6 +28,7 @@ const { MemoryStore } = require("../src/storage/memory-store");
 const { findThreadSessionFile } = require("../src/lib/thread-session-file");
 const { latestContextUsage } = require("../src/lib/thread-context-usage");
 const { updateContextUsage } = require("../src/services/rebuild-log");
+const { observeThreadUsage } = require("../src/services/automatic-rebuild-coordinator");
 const LOG_DIR = path.join(os.homedir(), ".stone_memory", "logs");
 let workerLockDir = null;
 
@@ -239,9 +240,10 @@ async function flushSync(tid) {
         await checkAndMine(tid);
       }
       const config = loadConfig()[tid] || {};
-      if (config.automaticFullMining === true) {
-        const usage = latestContextUsage(findThreadSessionFile(config.sessionDir, tid), config.runtime || "claude");
-        if (usage) updateContextUsage(tid, usage);
+      const usage = latestContextUsage(findThreadSessionFile(config.sessionDir, tid), config.runtime || "claude");
+      if (usage) {
+        updateContextUsage(tid, usage);
+        observeThreadUsage(tid, usage, config);
       }
     }
   } finally {

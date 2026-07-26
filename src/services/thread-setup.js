@@ -4,6 +4,10 @@ const os = require("os");
 const { CONFIG_PATH, loadConfig } = require("../config");
 const { MemoryStore } = require("../storage/memory-store");
 const { findThreadSessionFile } = require("../lib/thread-session-file");
+const {
+  resolveAutomaticRebuildConfig,
+  validateAutomaticRebuildInput,
+} = require("./automatic-rebuild-config");
 
 const STONE = path.join(os.homedir(), ".stone_memory");
 const GLOBAL_KEYS = new Set(["runtimes", "threadId", "apiKeys"]);
@@ -17,6 +21,36 @@ function saveConfig(config) {
   const temp = `${CONFIG_PATH}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temp, JSON.stringify(config, null, 2), "utf8");
   fs.renameSync(temp, CONFIG_PATH);
+}
+
+function automaticRebuildConfig(input, existing = null) {
+  if (input !== undefined) validateAutomaticRebuildInput(input);
+  const raw = input === undefined ? (existing || { enabled: true }) : (input || {});
+  const resolved = resolveAutomaticRebuildConfig({ automaticRebuild: raw });
+  const invalid = resolved.errors.filter(error => (
+    error.includes("triggerTokens") || error.includes("triggerRatio")
+  ));
+  if (invalid.length) throw new Error(invalid.join("; "));
+  const result = { enabled: raw.enabled !== false };
+  if (raw.triggerRatio != null) result.triggerRatio = Number(raw.triggerRatio);
+  if (raw.triggerTokens != null) result.triggerTokens = Number(raw.triggerTokens);
+  const lifecycle = raw.lifecycle && typeof raw.lifecycle === "object" ? raw.lifecycle : null;
+  if (lifecycle) {
+    result.lifecycle = {
+      mode: lifecycle.mode === "managed" ? "managed" : "supervisor",
+      startCommand: String(lifecycle.startCommand || "").trim() || null,
+      stopCommand: String(lifecycle.stopCommand || "").trim() || null,
+      healthCheckCommand: String(lifecycle.healthCheckCommand || "").trim() || null,
+      cwd: String(lifecycle.cwd || "").trim() || null,
+      timeoutMs: Number(lifecycle.timeoutMs) > 0 ? Number(lifecycle.timeoutMs) : undefined,
+      healthTimeoutMs: Number(lifecycle.healthTimeoutMs) > 0 ? Number(lifecycle.healthTimeoutMs) : undefined,
+      healthIntervalMs: Number(lifecycle.healthIntervalMs) > 0 ? Number(lifecycle.healthIntervalMs) : undefined,
+    };
+    for (const key of Object.keys(result.lifecycle)) {
+      if (result.lifecycle[key] === undefined) delete result.lifecycle[key];
+    }
+  }
+  return result;
 }
 
 function validateThreadInput(input, config = loadConfig(), { allowExisting = false } = {}) {
@@ -38,6 +72,9 @@ function validateThreadInput(input, config = loadConfig(), { allowExisting = fal
     if (!String(input.apiProvider || "").trim() || (!String(input.apiKey || "").trim() && !existingKey)) throw new Error("API 模式需要厂商和 API Key");
     if (!String(input.model || existingModel || "").trim()) throw new Error("API 模式需要填写上游实际可用的模型名；Stone Memory 不预设模型名");
     if (input.apiProvider !== "deepseek" && !String(input.baseUrl || existingBaseUrl || "").trim()) throw new Error("非 DeepSeek API 模式需要填写兼容 chat/completions 的 Base URL");
+  }
+  if (input.automaticRebuild !== undefined) {
+    automaticRebuildConfig(input.automaticRebuild, config[input.threadId]?.automaticRebuild);
   }
 }
 
@@ -79,6 +116,7 @@ function createThread(input, { allowExisting = false, requireSession = true } = 
     contextWindowTokens: input.contextWindowTokens === undefined || input.contextWindowTokens === ""
       ? (existing.contextWindowTokens || null)
       : (Math.max(0, Number(input.contextWindowTokens) || 0) || null),
+    automaticRebuild: automaticRebuildConfig(input.automaticRebuild, existing.automaticRebuild),
     automaticFullMining: input.automaticFullMining !== false,
     automaticMemoryMaintenance: input.automaticMemoryMaintenance !== false,
   };
@@ -131,4 +169,11 @@ function createThread(input, { allowExisting = false, requireSession = true } = 
   };
 }
 
-module.exports = { createThread, validateThreadInput, validateSessionBinding, normalizeName, saveConfig };
+module.exports = {
+  automaticRebuildConfig,
+  createThread,
+  validateThreadInput,
+  validateSessionBinding,
+  normalizeName,
+  saveConfig,
+};

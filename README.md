@@ -15,6 +15,7 @@ Stone Memory 是一个本地优先、可解释的 AI 记忆与线程生命周期
 - relation 生命周期、work 项目证据和多词共同签名时间轴
 - 周级 `daily → coarse` 精简与长期 `coarse → hidden`
 - watcher supervisor + 每线程 worker 自动维护
+- Claude Code / Codex 回合边界自动 rebuild 与运行时恢复
 - 内置本地 Web 管理界面
 
 ## 架构
@@ -553,6 +554,59 @@ subagent 模式不依赖外部 API，通过宿主 Agent 的 CLI 执行挖掘/审
   }
 }
 ```
+
+## 自动 rebuild
+
+自动 rebuild 默认开启，但只有在明确配置 AI 项目的生命周期后才会执行；Stone 不会猜测或查杀未知进程。watcher 会独立于自动挖掘持续读取上下文用量。达到阈值时只记录 sticky pending 和 high-water，等 Claude Stop、Codex turn completed 或外部集成明确报告本轮结束后，才依次停止运行时、执行现有 `rebuild --apply`、解析 `rebuild --check` 的 `healthy:true`、重新启动并确认健康。
+
+推荐从 Web 设置页配置。等价的 batch 配置如下：
+
+```json
+{
+  "automaticRebuild": {
+    "enabled": true,
+    "triggerRatio": 0.86,
+    "lifecycle": {
+      "mode": "supervisor",
+      "stopCommand": "pm2 stop my-agent",
+      "startCommand": "pm2 start my-agent",
+      "healthCheckCommand": "curl -fsS http://127.0.0.1:3000/health"
+    }
+  }
+}
+```
+
+`triggerTokens`（如填写）优先于 `contextWindowTokens × triggerRatio`；`contextWindowTokens` 未填写时，Codex 使用线程中的 `model_context_window`，Claude Code 使用 status line 提供的窗口上限。默认比例为 `0.86`。
+
+生命周期有两种模式：
+
+- `supervisor`：提供 stop、start、health check，适用于 PM2、systemd、Docker 或自定义脚本。
+- `managed`：提供 start command 和 cwd，先运行 `stmem auto-rebuild --thread <id> --start`。Stone 会记录并核验 process group 的启动身份；未提供 health check 时要求进程稳定存活后才算启动成功。Windows 上请使用 `supervisor` 模式，由外部进程管理器可靠停止整棵进程树。
+
+Claude Code 适配器会保留并转发原有 status line，同时追加可卸载的 Stop 和
+`UserPromptSubmit` hooks。Stop hook 会同步等 rebuild 完成；如果失败后 pending
+仍存在，prompt hook 会阻止下一轮进入：
+
+```bash
+stmem auto-rebuild --install-claude
+stmem auto-rebuild --uninstall-claude
+```
+
+Codex CLI 可在 `~/.codex/config.toml` 的 `notify` 命令中调用 `scripts/stmem-codex-adapter.js`；脚本接受 Codex 追加的 `agent-turn-complete` JSON 参数。使用 app-server 的项目可把 `turn/completed` JSON 通过 stdin 传给同一脚本。已有 notify dispatcher 的用户应把该脚本作为其中一个同步处理器，不必替换其他通知。其他 Agent 项目只需在本轮真正结束后同步调用统一入口：
+
+```bash
+stmem auto-rebuild --thread <id> --turn-settled
+```
+
+Codex app-server、聊天网关和其他外部 Agent 的入站层还必须在接收下一轮前同步调用
+`stmem auto-rebuild --thread <id> --gate`。未阻断时退出码为 0；pending 时返回
+JSON 中的 `blocked:true` 并以 75 退出。Codex CLI 的 notify 处理器也必须同步等待
+脚本退出，确保 rebuild 期间不会接受下一轮。
+
+只要尝试过 stop，后续任何失败都会尽力 restart，并保留 pending 供下一个 settled turn 重试。关闭 `automaticRebuild.enabled` 只停用这条自动生命周期，不影响归档、挖掘或手动 rebuild。
+
+当前 Windows 平台不会执行自动 rebuild：Stone 暂时无法在 rebuild 超时后可靠确认整棵
+子进程树都已退出，因此会保留 pending 并报错；手动 rebuild 和其他功能不受影响。
 
 ## operations 文件说明
 

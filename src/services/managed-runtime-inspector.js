@@ -1,6 +1,9 @@
 const fs = require("fs");
 const path = require("path");
-const { processIdentity } = require("../lib/process-identity");
+const {
+  processAlive,
+  processIdentity,
+} = require("../lib/process-identity");
 
 const UNSAFE_SHELL_CHARACTERS = new Set(["|", "&", ";", "<", ">", "(", ")", "`", "\n", "\r"]);
 
@@ -145,8 +148,53 @@ function findMatchingManagedRuntimes(spec, { platform = process.platform } = {})
   );
 }
 
+function inspectManagedRuntimeOwnership(runtime, lifecycle, {
+  env = process.env,
+  alive = processAlive,
+  identity = processIdentity,
+  parseStartCommand = parseManagedStartCommand,
+  findMatches = findMatchingManagedRuntimes,
+} = {}) {
+  if (!runtime || !Number.isInteger(runtime.pid) || runtime.pid <= 0
+    || !runtime.processIdentity) {
+    return { running: null, reason: "runtime_ownership_not_recorded" };
+  }
+  try {
+    const spec = parseStartCommand(lifecycle?.startCommand, {
+      cwd: lifecycle?.cwd,
+      env,
+    });
+    const matches = findMatches(spec);
+    if (runtime.stoppedAt) {
+      return matches.length
+        ? { running: null, reason: "runtime_instances_present_after_recorded_stop" }
+        : { running: false, reason: "owned_runtime_recorded_stopped" };
+    }
+    if (!alive(runtime.pid)) {
+      return { running: false, reason: "owned_runtime_exited" };
+    }
+    if (identity(runtime.pid) !== runtime.processIdentity) {
+      return { running: null, reason: "runtime_identity_mismatch" };
+    }
+    if (matches.length > 1) {
+      return { running: null, reason: "duplicate_runtime_instances" };
+    }
+    const owned = matches[0];
+    if (!owned || owned.pid !== runtime.pid
+      || owned.processIdentity !== runtime.processIdentity
+      || (runtime.processGroupId != null
+        && owned.processGroupId !== runtime.processGroupId)) {
+      return { running: null, reason: "runtime_ownership_mismatch" };
+    }
+    return { running: true, reason: "owned_unique_runtime" };
+  } catch {
+    return { running: null, reason: "runtime_inspection_unavailable" };
+  }
+}
+
 module.exports = {
   findMatchingManagedRuntimes,
+  inspectManagedRuntimeOwnership,
   parseManagedStartCommand,
   tokenizeDirectCommand,
 };

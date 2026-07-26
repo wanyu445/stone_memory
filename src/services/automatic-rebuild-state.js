@@ -153,7 +153,10 @@ function createAutomaticRebuildState({
     ));
   }
 
-  function noteConfigEnabled(threadId, enabled, { lifecycleMode = null } = {}) {
+  function noteConfigEnabled(threadId, enabled, {
+    lifecycleMode = null,
+    runtimeInspection = null,
+  } = {}) {
     return update(threadId, current => {
       const next = { ...current };
       if (lifecycleMode) next.lifecycleMode = lifecycleMode;
@@ -162,11 +165,13 @@ function createAutomaticRebuildState({
         next.resumeTurnAdmission = current.rebuildPending ? "available" : null;
         next.resumeTurnAdmittedAt = null;
         delete next.disableRequestedAt;
+        delete next.runtimeInspectionReason;
         return next;
       }
       next.disableGeneration = (Number(current.disableGeneration) || 0) + 1;
       next.resumeTurnAdmission = null;
       next.resumeTurnAdmittedAt = null;
+      delete next.runtimeInspectionReason;
       const status = String(current.status || "");
       if (status.startsWith("disabled_") || status === "disable_requested") {
         next.disableRequestedAt = current.disableRequestedAt || now();
@@ -185,17 +190,24 @@ function createAutomaticRebuildState({
         next.runtimeRunning = null;
         next.stopAttempted = true;
       } else {
-        const runtimeRunning = typeof current.runtimeRunning === "boolean"
-          ? current.runtimeRunning
-          : current.managedRuntime?.stoppedAt
-            ? false
-            : null;
+        const runtimeRunning = typeof runtimeInspection?.running === "boolean"
+          ? runtimeInspection.running
+          : runtimeInspection?.running === null
+            ? null
+            : typeof current.runtimeRunning === "boolean"
+              ? current.runtimeRunning
+              : current.managedRuntime?.stoppedAt
+                ? false
+                : null;
         next.status = runtimeRunning === true
           ? "disabled_idle_runtime_running"
           : runtimeRunning === false
             ? "disabled_idle_runtime_stopped"
             : "disabled_idle_runtime_status_unknown";
         next.runtimeRunning = runtimeRunning;
+        if (runtimeInspection?.reason) {
+          next.runtimeInspectionReason = runtimeInspection.reason;
+        }
         next.stopAttempted = false;
       }
       next.disableRequestedAt = now();

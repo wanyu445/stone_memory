@@ -343,7 +343,7 @@ test("managed lifecycle does not call a just-spawned process healthy unless it s
     },
   });
 
-  await assert.rejects(controller.start(), /did not remain healthy/);
+  await assert.rejects(controller.start(), /did not remain healthy|已停止|冒充/);
 });
 
 test("managed lifecycle does not accept an old healthy endpoint when the new owned process exited", async () => {
@@ -375,6 +375,152 @@ test("managed lifecycle does not accept an old healthy endpoint when the new own
   });
 
   await assert.rejects(controller.start(), /owned|归属|存活|healthy/);
+});
+
+test("managed idempotent start rejects when the owned process exits while health stays green", async () => {
+  const owned = { pid: 123, processGroupId: 123, processIdentity: "owned" };
+  let statusCalls = 0;
+  let healthCalls = 0;
+  const controller = createRuntimeLifecycleController({
+    mode: "managed",
+    startCommand: "node agent.js --token very-secret-value",
+    cwd: "/srv/agent",
+    healthCheckCommand: "curl health",
+    healthTimeoutMs: 20,
+    healthIntervalMs: 1,
+  }, {
+    threadId: "thread-1",
+    state: {
+      read: () => ({ managedRuntime: owned }),
+      setManagedRuntime() {},
+    },
+    commandRunner: async () => ({
+      status: ++healthCalls === 1 ? 1 : 0,
+      stdout: "",
+      stderr: "",
+    }),
+    managedProcess: {
+      status() {
+        statusCalls += 1;
+        return statusCalls === 1 ? "owned" : "stopped";
+      },
+      isAlive: () => false,
+      findMatches: () => [{ pid: 123 }],
+      async start() { throw new Error("must not spawn"); },
+      async stop() {},
+    },
+  });
+
+  await assert.rejects(controller.start(), error => {
+    assert.match(error.message, /owned|归属|存活|healthy/);
+    assert.doesNotMatch(error.message, /very-secret-value/);
+    return true;
+  });
+  assert.ok(statusCalls >= 2);
+});
+
+test("managed idempotent start rejects a duplicate that appears while waiting for health", async () => {
+  const owned = { pid: 123, processGroupId: 123, processIdentity: "owned" };
+  let matchCalls = 0;
+  const controller = createRuntimeLifecycleController({
+    mode: "managed",
+    startCommand: "node agent.js",
+    cwd: "/srv/agent",
+    healthCheckCommand: "curl health",
+    healthTimeoutMs: 20,
+    healthIntervalMs: 1,
+  }, {
+    threadId: "thread-1",
+    state: {
+      read: () => ({ managedRuntime: owned }),
+      setManagedRuntime() {},
+    },
+    commandRunner: async () => ({ status: 0, stdout: "", stderr: "" }),
+    managedProcess: {
+      status: () => "owned",
+      isAlive: () => true,
+      findMatches() {
+        matchCalls += 1;
+        return matchCalls === 1
+          ? [{ pid: 123 }]
+          : [{ pid: 123 }, { pid: 456 }];
+      },
+      async start() { throw new Error("must not spawn"); },
+      async stop() {},
+    },
+  });
+
+  await assert.rejects(controller.start(), /duplicate|额外.*runtime|重复/);
+  assert.ok(matchCalls >= 2);
+});
+
+test("managed idempotent start rejects identity loss while waiting for health", async () => {
+  const owned = { pid: 123, processGroupId: 123, processIdentity: "owned" };
+  let statusCalls = 0;
+  const controller = createRuntimeLifecycleController({
+    mode: "managed",
+    startCommand: "node agent.js",
+    cwd: "/srv/agent",
+    healthCheckCommand: "curl health",
+    healthTimeoutMs: 20,
+    healthIntervalMs: 1,
+  }, {
+    threadId: "thread-1",
+    state: {
+      read: () => ({ managedRuntime: owned }),
+      setManagedRuntime() {},
+    },
+    commandRunner: async () => ({ status: 0, stdout: "", stderr: "" }),
+    managedProcess: {
+      status() {
+        statusCalls += 1;
+        return statusCalls === 1 ? "owned" : "unknown";
+      },
+      isAlive: () => false,
+      findMatches: () => [{ pid: 123 }],
+      async start() { throw new Error("must not spawn"); },
+      async stop() {},
+    },
+  });
+
+  await assert.rejects(controller.start(), /owned|归属|身份|存活/);
+  assert.ok(statusCalls >= 2);
+});
+
+test("managed idempotent start stays spawn-free when ownership, uniqueness, and health remain valid", async () => {
+  const owned = { pid: 123, processGroupId: 123, processIdentity: "owned" };
+  let spawnCalls = 0;
+  let statusCalls = 0;
+  let matchCalls = 0;
+  const controller = createRuntimeLifecycleController({
+    mode: "managed",
+    startCommand: "node agent.js",
+    cwd: "/srv/agent",
+    healthCheckCommand: "curl health",
+    healthTimeoutMs: 20,
+    healthIntervalMs: 1,
+  }, {
+    threadId: "thread-1",
+    state: {
+      read: () => ({ managedRuntime: owned }),
+      setManagedRuntime() {},
+    },
+    commandRunner: async () => ({ status: 0, stdout: "", stderr: "" }),
+    managedProcess: {
+      status() { statusCalls += 1; return "owned"; },
+      isAlive: () => true,
+      findMatches() { matchCalls += 1; return [{ pid: 123 }]; },
+      async start() { spawnCalls += 1; },
+      async stop() {},
+    },
+  });
+
+  const result = await controller.start();
+
+  assert.equal(result.started, false);
+  assert.equal(spawnCalls, 0);
+  assert.ok(statusCalls >= 2);
+  assert.ok(matchCalls >= 2);
 });
 
 test("managed lifecycle stops a newly spawned runtime when ownership persistence fails", async () => {

@@ -5,6 +5,12 @@ const { processAlive, processIdentity } = require("./process-identity");
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 const INCOMPLETE_OWNER_GRACE_MS = 250;
 
+function lockTimeout(lockDir) {
+  const error = new Error(`file lock timeout: ${lockDir}`);
+  error.code = "FILE_LOCK_TIMEOUT";
+  return error;
+}
+
 function writeOwner(ownerPath) {
   fs.writeFileSync(ownerPath, JSON.stringify({
     pid: process.pid,
@@ -61,7 +67,7 @@ function withFileLockSync(lockDir, fn, { timeoutMs = 5000, staleMs = 30000 } = {
   const started = Date.now();
   while (true) {
     if (tryAcquire(lockDir, staleMs)) break;
-    if (Date.now() - started >= timeoutMs) throw new Error(`file lock timeout: ${lockDir}`);
+    if (Date.now() - started >= timeoutMs) throw lockTimeout(lockDir);
     Atomics.wait(sleeper, 0, 0, 10);
   }
   try { return fn(); }
@@ -75,7 +81,7 @@ async function withFileLock(lockDir, fn, {
 } = {}) {
   const started = Date.now();
   while (!tryAcquire(lockDir, staleMs)) {
-    if (Date.now() - started >= timeoutMs) throw new Error(`file lock timeout: ${lockDir}`);
+    if (Date.now() - started >= timeoutMs) throw lockTimeout(lockDir);
     await new Promise(resolve => setTimeout(resolve, retryMs));
   }
   try { return await fn(); }

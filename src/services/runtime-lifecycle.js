@@ -274,6 +274,24 @@ function createRuntimeLifecycleController(config, {
         + "Stone 不会自动杀死未知进程；请停止额外实例，或切换 supervisor",
       );
     };
+    const managedHealthyProbe = async runtime => {
+      const status = processStatus(runtime);
+      if (status === "unknown") {
+        throw new Error("无法确认已记录 PID/process group 的归属，拒绝把 runtime 判定为健康");
+      }
+      if (status !== "owned") {
+        throw new Error("Stone-owned runtime 已停止，拒绝使用其他 health endpoint 冒充");
+      }
+      const activeMatches = await findMatches();
+      if (canInspectMatches
+        && !activeMatches.some(match => Number(match.pid) === Number(runtime.pid))) {
+        throw new Error("已记录 runtime 与当前启动命令身份不匹配，拒绝把 runtime 判定为健康");
+      }
+      if (activeMatches.some(match => Number(match.pid) !== Number(runtime.pid))) {
+        throw duplicateError(activeMatches);
+      }
+      return config.healthCheckCommand ? commandHealth() : true;
+    };
     const withinLifecycleLock = operation => (
       lifecycleLockHeld ? operation() : withLifecycleLock(threadId, operation)
     );
@@ -325,10 +343,11 @@ function createRuntimeLifecycleController(config, {
           if (matches.some(match => Number(match.pid) !== Number(current.pid))) {
             throw duplicateError(matches);
           }
-          const probe = config.healthCheckCommand
-            ? commandHealth
-            : async () => managedProcess.isAlive(current);
-          await waitForHealth(probe, true, healthOptions);
+          await waitForHealth(
+            () => managedHealthyProbe(current),
+            true,
+            healthOptions,
+          );
           return { started: false, runtime: current };
         }
         if (matches.length) throw conflictError(matches);
@@ -340,14 +359,7 @@ function createRuntimeLifecycleController(config, {
         try {
           state.setManagedRuntime(threadId, runtime);
           ownershipPersisted = true;
-          const probe = async () => {
-            if (processStatus(runtime) !== "owned") return false;
-            const activeMatches = await findMatches();
-            if (activeMatches.some(match => Number(match.pid) !== Number(runtime.pid))) {
-              throw duplicateError(activeMatches);
-            }
-            return config.healthCheckCommand ? commandHealth() : true;
-          };
+          const probe = () => managedHealthyProbe(runtime);
           if (config.healthCheckCommand) await waitForHealth(probe, true, healthOptions);
           else await waitForStableHealth(probe, healthOptions);
           return { started: true, runtime };

@@ -70,6 +70,63 @@ test("TURN_SETTLED runs the protected lifecycle and clears pending only after he
   ]);
 });
 
+test("the policy gate linearizes a successful disable save after stop initiation", async () => {
+  const events = [];
+  let enabled = true;
+  let generation = 0;
+  const state = pendingState(events);
+  state.read = () => ({
+    rebuildPending: true,
+    disableGeneration: generation,
+  });
+  const coordinator = createAutomaticRebuildCoordinator({
+    loadThreadConfig: () => ({
+      ...threadConfig(),
+      automaticRebuild: {
+        ...threadConfig().automaticRebuild,
+        enabled,
+      },
+    }),
+    state,
+    lifecycleFactory: () => ({
+      async stop() {
+        events.push("stop-initiated");
+        await Promise.resolve();
+        events.push("stop-settled");
+      },
+      async start() { events.push("start"); },
+    }),
+    rebuildRunner: {
+      async apply() { events.push("rebuild"); return { stdout: "rebuilt" }; },
+      async check() { events.push("check"); return { healthy: true }; },
+    },
+    withThreadLock: async (_threadId, operation) => operation(),
+    withPolicyLock: async (_threadId, operation) => {
+      const result = await operation();
+      enabled = false;
+      generation += 1;
+      events.push("disable-saved");
+      return result;
+    },
+  });
+
+  const result = await coordinator.executePendingRebuild("thread-1", {
+    turnSettled: true,
+  });
+
+  assert.equal(result.reason, "disabled_supervisor_restored");
+  assert.deepEqual(events.slice(0, 6), [
+    "phase:stopping",
+    "phase:stopping",
+    "stop-initiated",
+    "stop-settled",
+    "disable-saved",
+    "phase:disabled_supervisor_rollback",
+  ]);
+  assert.equal(events.includes("rebuild"), false);
+  assert.equal(events.includes("start"), true);
+});
+
 test("unhealthy integrity result keeps pending and still restarts the runtime", async () => {
   const events = [];
   const coordinator = createAutomaticRebuildCoordinator({

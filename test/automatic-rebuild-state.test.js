@@ -162,6 +162,38 @@ test("an idle managed disable reports a retained stopped runtime without pretend
   assert.equal(disabled.runtimeRunning, false);
 });
 
+test("an idle managed disable uses a fresh read-only ownership inspection", () => {
+  for (const [running, status] of [
+    [true, "disabled_idle_runtime_running"],
+    [false, "disabled_idle_runtime_stopped"],
+    [null, "disabled_idle_runtime_status_unknown"],
+  ]) {
+    const store = memoryStore({
+      automaticRebuild: {
+        status: "watching",
+        rebuildPending: false,
+        managedRuntime: { pid: 123, processIdentity: "owned" },
+      },
+    });
+    const automatic = createAutomaticRebuildState({ store });
+
+    const disabled = automatic.noteConfigEnabled("thread-1", false, {
+      lifecycleMode: "managed",
+      runtimeInspection: {
+        running,
+        reason: running === null ? "runtime_identity_mismatch" : "owned_unique_runtime",
+      },
+    });
+
+    assert.equal(disabled.status, status);
+    assert.equal(disabled.runtimeRunning, running);
+    assert.equal(
+      disabled.runtimeInspectionReason,
+      running === null ? "runtime_identity_mismatch" : "owned_unique_runtime",
+    );
+  }
+});
+
 test("disable while preparing stop records that no stop command was executed", () => {
   const store = memoryStore({
     automaticRebuild: {

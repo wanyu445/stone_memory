@@ -22,7 +22,10 @@ const {
 const {
   createRuntimeLifecycleController,
 } = require("./runtime-lifecycle");
-const { withAutomaticRebuildLock } = require("./automatic-rebuild-lock");
+const {
+  withAutomaticRebuildLock,
+  withAutomaticRebuildPolicyLock,
+} = require("./automatic-rebuild-lock");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const REBUILD_SCRIPT = path.join(PROJECT_ROOT, "scripts", "stmem-rebuild.js");
@@ -135,6 +138,7 @@ function createAutomaticRebuildCoordinator({
   lifecycleFactory = (config, options) => createRuntimeLifecycleController(config, options),
   rebuildRunner = defaultRebuildRunner,
   withThreadLock = defaultThreadLock,
+  withPolicyLock = withAutomaticRebuildPolicyLock,
   readContextUsage = threadId => readRebuildState(threadId).contextUsage || {},
   platform = process.platform,
 } = {}) {
@@ -370,8 +374,17 @@ function createAutomaticRebuildCoordinator({
           });
           return { executed: false, reason: "disabled_before_stop" };
         }
-        state.setPhase(threadId, "stopping", { stopAttempted: true });
-        if (!automaticEnabled()) {
+        const stopStarted = await withPolicyLock(threadId, async () => {
+          if (!automaticEnabled()) return false;
+          state.setPhase(threadId, "stopping", { stopAttempted: true });
+          if (!automaticEnabled()) return false;
+          stopAttempted = true;
+          // Config publication must not overtake managed ownership checks or the
+          // eventual stop signal. Release the policy gate only after stop settles.
+          await lifecycle.stop();
+          return true;
+        });
+        if (!stopStarted) {
           state.setPhase(threadId, "disabled_cancelled_before_stop", {
             lifecycleMode: lockedResolved.config.lifecycle.mode,
             runtimeRunning: null,
@@ -379,8 +392,6 @@ function createAutomaticRebuildCoordinator({
           });
           return { executed: false, reason: "disabled_before_stop" };
         }
-        stopAttempted = true;
-        await lifecycle.stop();
         if (!automaticEnabled()) return await settleAfterDisable("after_stop");
 
         state.setPhase(threadId, "rebuilding");

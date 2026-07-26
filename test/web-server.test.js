@@ -244,9 +244,20 @@ test("strict init binding rejects a display name used as thread id", t => {
   );
 });
 
-test("runtime usage extraction uses Claude cache totals and Codex input tokens", () => {
+test("runtime usage extraction uses Claude cache totals and Codex active context total", () => {
   const claude={timestamp:"2026-01-01",message:{model:"claude",usage:{input_tokens:144,cache_creation_input_tokens:0,cache_read_input_tokens:180864}}};
   assert.equal(usageFromRow(claude,"claude").usedTokens,181008);
-  const codex={timestamp:"2026-01-01",type:"event_msg",payload:{type:"token_count",info:{last_token_usage:{input_tokens:216081,cached_input_tokens:214784},model_context_window:258400}}};
-  assert.deepEqual(usageFromRow(codex,"codex"),{usedTokens:216081,detectedMaxTokens:258400,observedAt:"2026-01-01",source:"codex_token_count"});
+  const codex={timestamp:"2026-01-01",type:"event_msg",payload:{type:"token_count",info:{last_token_usage:{input_tokens:216081,cached_input_tokens:214784,output_tokens:4312,total_tokens:220393},total_token_usage:{total_tokens:900000},model_context_window:258400}}};
+  assert.deepEqual(usageFromRow(codex,"codex"),{usedTokens:220393,detectedMaxTokens:258400,observedAt:"2026-01-01",source:"codex_token_count"});
+});
+
+test("automatic rebuild settings distinguish disabled runtime running and stopped states", () => {
+  const app = fs.readFileSync(
+    path.resolve(__dirname, "../src/web/public/app.js"),
+    "utf8",
+  );
+  assert.match(app, /disabled_idle_runtime_running.*runtime 仍在运行/s);
+  assert.match(app, /disabled_handoff_required.*runtime 当前未运行/s);
+  assert.match(app, /runtimeRunning === true.*运行中.*runtimeRunning === false.*已停止/s);
+  assert.match(app, /managed runtime 不会自动启动.*supervisor 只会撤销 Stone 已造成的 stop/s);
 });

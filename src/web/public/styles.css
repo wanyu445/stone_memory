@@ -111,6 +111,14 @@ td.context { min-width: 320px; max-width: 460px; line-height: 1.5; }
 .check-card.full { grid-column: 1 / -1; }
 .check-card strong { display: block; margin-bottom: 5px; }
 .check-card span { color: var(--muted); font-size: 14px; line-height: 1.55; }
+.automatic-rebuild-panel { padding: 20px; margin: -4px 0 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: rgba(234,242,229,.45); }
+.automatic-rebuild-panel .integrity { margin: 0; }
+.automatic-rebuild-advanced { margin-bottom: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+.automatic-rebuild-advanced > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; cursor: pointer; list-style: none; }
+.automatic-rebuild-advanced > summary::-webkit-details-marker { display: none; }
+.automatic-rebuild-advanced > summary small { color: var(--muted); font-weight: 400; }
+.automatic-rebuild-advanced[open] > summary { border-bottom: 1px solid var(--line); }
+.automatic-rebuild-advanced > .field-grid { padding: 20px; }
 .summary-box { margin-bottom: 24px; padding: 18px; background: var(--moss-100); border-radius: var(--radius-md); }
 .summary-box dl { display: grid; grid-template-columns: 130px 1fr; gap: 8px; margin: 0; font-size: 14px; }
 .summary-box dt { color: var(--muted); }

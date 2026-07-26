@@ -3,7 +3,7 @@ const fs = require("fs");
 function usageFromRow(row, runtime) {
   if (runtime === "codex") {
     const info = row?.type === "event_msg" && row.payload?.type === "token_count" ? row.payload.info : null;
-    const usedTokens = Number(info?.last_token_usage?.input_tokens);
+    const usedTokens = Number(info?.last_token_usage?.total_tokens);
     if (!Number.isFinite(usedTokens)) return null;
     const maxTokens = Number(info?.model_context_window);
     return { usedTokens, detectedMaxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : null,

@@ -44,6 +44,14 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem rebuild --thread <id> --apply           实际写入
   stmem rebuild --thread <id> --check           检查活动线程结构完整性
   stmem rebuild --thread <id> --repair          备份并修复可恢复的线程断链
+  stmem auto-rebuild --thread <id>              查看自动 rebuild 状态
+  stmem auto-rebuild --thread <id> --turn-settled  在明确 turn 边界执行 pending
+  stmem auto-rebuild --thread <id> --gate        入站前检查；阻断时退出码 75
+  stmem auto-rebuild --thread <id> --start|--stop|--health  管理登记的 runtime
+  stmem auto-rebuild --install-claude           安装兼容 status line 的 Claude hooks
+  stmem auto-rebuild --uninstall-claude         卸载 Stone 的 Claude 适配器
+  stmem auto-rebuild --install-codex            安装同步 Stop/gate Codex hooks
+  stmem auto-rebuild --uninstall-codex          卸载 Stone 的 Codex hooks
   stmem rules list|import|update|delete|enable|disable --thread <id>  管理人设/规则
   stmem memory update|anchor --thread <id> --batch-file <json>  编辑摘要与锚点
   stmem watcher [on|off]                        watcher 总开关启停
@@ -59,7 +67,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
 }
 
 // 纯帮助/诊断命令不得改变 watcher 状态；其余命令维持原有自动拉起行为。
-if (!new Set(["init", "ai-help", "capabilities", "doctor"]).has(cmd)) ensureWatcher();
+if (!new Set(["init", "ai-help", "capabilities", "doctor", "auto-rebuild"]).has(cmd)) ensureWatcher();
 
 switch (cmd) {
   case "ai-help":
@@ -103,6 +111,9 @@ switch (cmd) {
     break;
   case "rebuild":
     require(path.join(SCRIPTS, "stmem-rebuild"));
+    break;
+  case "auto-rebuild":
+    require(path.join(SCRIPTS, "stmem-auto-rebuild"));
     break;
   case "rules":
     require(path.join(SCRIPTS, "stmem-rules"));

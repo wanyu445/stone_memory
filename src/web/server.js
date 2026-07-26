@@ -15,6 +15,8 @@ const { latestSuccessfulRebuild, readRebuildState } = require("../services/rebui
 const { sessionFile } = require("../services/rebuild-workbench");
 const { parseFeelingTime, feelingToUtc, automaticRetainWindow } = require("../services/thread-rebuilder");
 const { parseRebuildDryRun } = require("../services/rebuild-dry-run");
+const { resolveAutomaticRebuildConfig } = require("../services/automatic-rebuild-config");
+const { readAutomaticRebuildState } = require("../services/automatic-rebuild-state");
 
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_UPLOAD = 512 * 1024 * 1024;
@@ -160,6 +162,7 @@ async function executeMiningJob(job) {
 function publicThreadSettings(threadId) {
   const config = loadConfig(), entry = config[threadId];
   if (!entry) throw new Error(`记忆体不存在：${threadId}`);
+  const automaticRebuild = resolveAutomaticRebuildConfig(entry);
   return {
     threadId, libraryName: entry.label || threadId, ai: entry.ai || "", user: entry.user || "",
     userGender: entry.userGender || "unspecified", runtime: entry.runtime || "claude", purpose: entry.purpose || "accompany",
@@ -170,6 +173,15 @@ function publicThreadSettings(threadId) {
     hasApiKey: !!(entry.apiProvider && config.apiKeys?.[entry.apiProvider]?.key),
     windowDays: entry.windowDays ?? 3, keepToolPairs: entry.keepToolPairs ?? 30,
     contextWindowTokens: entry.contextWindowTokens || null,
+    automaticRebuild: {
+      enabled: automaticRebuild.enabled,
+      triggerRatio: entry.automaticRebuild?.triggerRatio ?? null,
+      triggerTokens: entry.automaticRebuild?.triggerTokens ?? null,
+      lifecycle: automaticRebuild.lifecycle,
+      ready: automaticRebuild.ready,
+      errors: automaticRebuild.errors,
+      state: readAutomaticRebuildState(threadId),
+    },
     automaticFullMining: entry.automaticFullMining !== false,
     automaticMemoryMaintenance: entry.automaticMemoryMaintenance !== false,
   };
@@ -330,7 +342,30 @@ async function handleApi(req, res, url) {
     if (req.method === "PATCH") {
       const body = await readJson(req);
       const current = publicThreadSettings(threadId);
-      const input = { ...current, ...body, threadId, runtime: current.runtime, purpose: current.purpose };
+      const currentAutomaticRebuild = {
+        enabled: current.automaticRebuild.enabled,
+        triggerRatio: current.automaticRebuild.triggerRatio,
+        triggerTokens: current.automaticRebuild.triggerTokens,
+        lifecycle: current.automaticRebuild.lifecycle,
+      };
+      const automaticRebuild = body.automaticRebuild === undefined
+        ? currentAutomaticRebuild
+        : {
+          ...currentAutomaticRebuild,
+          ...body.automaticRebuild,
+          lifecycle: {
+            ...current.automaticRebuild.lifecycle,
+            ...(body.automaticRebuild?.lifecycle || {}),
+          },
+        };
+      const input = {
+        ...current,
+        ...body,
+        automaticRebuild,
+        threadId,
+        runtime: current.runtime,
+        purpose: current.purpose,
+      };
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-web-config-"));
       const file = path.join(dir, "config.json");
       fs.writeFileSync(file, JSON.stringify(input), { encoding: "utf8", mode: 0o600 });
@@ -338,6 +373,29 @@ async function handleApi(req, res, url) {
         runStmem(["init", "--thread", threadId, "--batch-file", file]);
         return json(res, 200, { success: true, config: publicThreadSettings(threadId) });
       } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    }
+  }
+
+  const automaticRebuildMatch = url.pathname.match(/^\/api\/libraries\/([^/]+)\/automatic-rebuild\/(status|start|stop|health)$/);
+  if (automaticRebuildMatch) {
+    const threadId = decodeURIComponent(automaticRebuildMatch[1]);
+    const settings = publicThreadSettings(threadId);
+    const action = automaticRebuildMatch[2];
+    if (req.method === "GET" && action === "status") {
+      return json(res, 200, settings.automaticRebuild);
+    }
+    if (req.method === "POST" && ["start", "stop", "health"].includes(action)) {
+      const output = await runStmemAsync([
+        "auto-rebuild",
+        "--thread",
+        threadId,
+        `--${action}`,
+      ], { maxOutput: 50_000 });
+      return json(res, 200, {
+        action,
+        result: JSON.parse(output),
+        state: readAutomaticRebuildState(threadId),
+      });
     }
   }
 

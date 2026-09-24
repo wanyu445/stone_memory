@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#f6f2ea">
+  <title>Stone Memory · 你画我猜</title>
+  <script src="/developer-kit/runtime.js"></script>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="stone-theme-enabled">
+  <stone-module-page eyebrow="DRAW TOGETHER" title="你画我猜" description="让共同记忆真的变成一场游戏。画作留在图库，经历留在彼此的线程里。">
+    <span slot="meta">当前记忆体：<strong data-stone-library>正在读取……</strong></span>
+
+    <nav class="view-tabs" aria-label="页面">
+      <button class="active" data-view="game">房间</button>
+      <button data-view="words">词库</button>
+      <button data-view="gallery">图库</button>
+    </nav>
+
+    <main id="game-view" class="view active">
+      <section id="empty-room" class="panel lobby">
+        <div class="lobby-mark" aria-hidden="true">✎</div>
+        <p class="eyebrow">A ROOM FOR US</p>
+        <h2>开一个房间</h2>
+        <p>给两位玩家取好名字，再邀请一个已连接的 AI 进入房间。AI 的游戏回复只会回到这里。</p>
+        <div class="lobby-options">
+          <label>你的名字<input id="human-name" maxlength="24" value="你"></label>
+          <label>AI 名字<input id="agent-name" maxlength="24" value="AI"></label>
+          <label>轮数<select id="max-rounds"><option>4</option><option selected>6</option><option>8</option><option>10</option></select></label>
+          <label>第一位画家<select id="first-drawer"><option value="human">你</option><option value="agent">AI</option></select></label>
+        </div>
+        <button id="create-room" class="primary wide">创建房间</button>
+      </section>
+
+      <section id="room" class="room hidden">
+        <header class="room-head panel">
+          <div><p class="eyebrow">ROOM <span id="room-code">------</span></p><h2 id="turn-title">等待开始</h2></div>
+          <div class="scores"><span><b id="human-label">你</b> <strong id="human-score">0</strong></span><i>:</i><span><strong id="ai-score">0</strong> <b id="agent-label">AI</b></span></div>
+        </header>
+
+        <section id="lobby-controls" class="panel room-lobby hidden">
+          <p id="agent-status">房间已经准备好了。先邀请 AI 通过 MCP 进入房间。</p>
+          <div class="invite-box">
+            <p id="invite-text"></p>
+            <button id="copy-invite" class="quiet compact" type="button">复制邀请语</button>
+          </div>
+          <button id="start-game" class="primary wide" disabled>等待 AI 进入……</button>
+        </section>
+
+        <section id="play-area" class="play-area hidden">
+          <div class="round-strip">
+            <span id="round-label">第1轮</span>
+            <strong id="secret-word">等待题目</strong>
+            <span id="phase-label">作画中</span>
+          </div>
+
+          <section class="canvas-card panel">
+            <canvas id="canvas" width="1000" height="700" aria-label="绘画画布"></canvas>
+            <div id="canvas-blocker" class="canvas-blocker hidden"><span id="canvas-message">等待 AI 作画……</span></div>
+            <div id="drawing-tools" class="drawing-tools">
+              <button class="color selected" data-color="#18230f" style="--swatch:#18230f" aria-label="黑色"></button>
+              <button class="color" data-color="#d35d4f" style="--swatch:#d35d4f" aria-label="红色"></button>
+              <button class="color" data-color="#3977b8" style="--swatch:#3977b8" aria-label="蓝色"></button>
+              <button class="color" data-color="#4e8b57" style="--swatch:#4e8b57" aria-label="绿色"></button>
+              <label class="width-label">粗细<input id="brush-width" type="range" min="3" max="28" value="11"></label>
+              <button id="undo" class="quiet compact">撤销</button>
+              <button id="clear" class="quiet compact">清空</button>
+              <button id="submit-drawing" class="primary compact">画好了</button>
+            </div>
+          </section>
+
+          <section class="panel conversation-panel">
+            <div id="event-list" class="event-list" aria-live="polite"></div>
+            <div class="composer-tabs">
+              <button class="active" data-compose="guess">猜答案</button>
+              <button data-compose="chat">说句话</button>
+            </div>
+            <form id="composer" class="composer">
+              <input id="message" maxlength="1200" autocomplete="off" placeholder="输入你的答案">
+              <button class="primary" type="submit">发送</button>
+            </form>
+          </section>
+
+          <div class="round-actions">
+            <button id="reveal-round" class="quiet">放弃并揭晓</button>
+            <button id="next-round" class="primary hidden">下一轮</button>
+            <button id="end-game" class="danger">结束游戏</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <main id="words-view" class="view">
+      <section class="panel word-editor">
+        <p class="eyebrow">MY WORD PACK</p><h2>添加自己的题目</h2>
+        <form id="word-form">
+          <label>词语<input id="word" maxlength="40" required placeholder="例如：雾潮岛"></label>
+          <label>可接受的别称<input id="aliases" maxlength="300" placeholder="用逗号分隔"></label>
+          <div class="form-row">
+            <label>分类<input id="category" maxlength="30" value="我们的词"></label>
+            <label>难度<select id="difficulty"><option>简单</option><option selected>普通</option><option>困难</option></select></label>
+          </div>
+          <button class="primary wide">加入词库</button>
+        </form>
+      </section>
+      <section class="panel"><div class="section-head"><h2>当前词库</h2><span id="word-count">0个</span></div><div id="word-list" class="word-list"></div></section>
+    </main>
+
+    <main id="gallery-view" class="view">
+      <section class="panel"><div class="section-head"><div><p class="eyebrow">ONLY THE FINISHED PICTURES</p><h2>画作图库</h2></div><span id="gallery-count">0张</span></div><div id="gallery" class="gallery"></div></section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+  </stone-module-page>
+  <script src="./app.js"></script>
+</body>
+</html>

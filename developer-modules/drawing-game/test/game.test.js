@@ -129,6 +129,7 @@ test("agent views never leak an unfinished human answer through round, words, ga
     assert.equal(wrong.agent.actionTool, "stmem_drawing_game_agent_action");
     assert.match(wrong.agent.note, /猜词只能调用 stmem_drawing_game_agent_action/u);
     assert.match(wrong.agent.note, /不要调用独立 guess/u);
+    assert.deepEqual(wrong.events.map(event => event.kind), ["guess"]);
     assert.doesNotMatch(JSON.stringify(wrong), new RegExp(answer, "u"));
   } finally { item.cleanup(); }
 });
@@ -162,9 +163,13 @@ test("agent wait returns a heartbeat timeout and keeps its cursor stable", () =>
     assert.equal(waited.wait.timedOut, true);
     assert.equal(waited.wait.cursor, started.room.eventCursor);
     assert.equal(waited.wait.continueWaiting, true);
-    assert.equal(waited.room.agentJoined, true);
-    assert.match(waited.wait.note, /仍在房间中/u);
+    assert.deepEqual(waited.room, {
+      code: created.room.code,
+      status: "active",
+      eventCursor: started.room.eventCursor,
+    });
     assert.deepEqual(waited.events, []);
+    assert.ok(Buffer.byteLength(JSON.stringify(waited)) < 220);
 
     call(item.context, "chat", { roomCode: created.room.code, actor: "human", text: "超时以后还能收到我" });
     const resumed = call(item.context, "agent-wait", {
@@ -174,6 +179,45 @@ test("agent wait returns a heartbeat timeout and keeps its cursor stable", () =>
     });
     assert.equal(resumed.wait.timedOut, false);
     assert.equal(resumed.events.at(-1).text, "超时以后还能收到我");
+  } finally { item.cleanup(); }
+});
+
+test("agent drawing receipts do not echo submitted strokes or earlier events", () => {
+  const item = fixture();
+  try {
+    const created = call(item.context, "room-create");
+    call(item.context, "agent-join", { roomCode: created.room.code });
+    call(item.context, "game-start", { roomCode: created.room.code, firstDrawer: "agent" });
+    const strokes = [{ color: "#123456", width: 8, points: [[101, 202], [303, 404]] }];
+    const drawn = call(item.context, "agent-action", { roomCode: created.room.code, kind: "draw", strokes });
+    assert.deepEqual(drawn.events.map(event => event.kind), ["drawing-plan"]);
+    assert.equal(drawn.round.drawing, null);
+    assert.doesNotMatch(JSON.stringify(drawn), /"points":/u);
+  } finally { item.cleanup(); }
+});
+
+test("compact agent receipts preserve both sides of room conversation", () => {
+  const item = fixture();
+  try {
+    const created = call(item.context, "room-create");
+    const joined = call(item.context, "agent-join", { roomCode: created.room.code });
+    call(item.context, "game-start", { roomCode: created.room.code, firstDrawer: "human" });
+    const human = call(item.context, "chat", { roomCode: created.room.code, actor: "human", text: "你看这像什么？" });
+    const received = call(item.context, "agent-wait", {
+      roomCode: created.room.code,
+      afterSeq: joined.room.eventCursor,
+      timeoutMs: 50,
+    });
+    assert.equal(received.events.at(-1).text, "你看这像什么？");
+    const replied = call(item.context, "agent-action", {
+      roomCode: created.room.code,
+      kind: "chat",
+      text: "我正在看，先让我猜猜。",
+    });
+    assert.deepEqual(replied.events.map(event => [event.actor, event.text]), [
+      ["agent", "我正在看，先让我猜猜。"],
+    ]);
+    assert.ok(human.room.eventCursor < replied.room.eventCursor);
   } finally { item.cleanup(); }
 });
 

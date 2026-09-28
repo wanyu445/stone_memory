@@ -99,7 +99,56 @@ const tools = [
 ];
 
 function textResult(value) {
-  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], isError: false };
+  return { content: [{ type: "text", text: JSON.stringify(value) }], isError: false };
+}
+
+function compactAgentResult(result) {
+  const room = result?.room ? {
+    code: result.room.code,
+    status: result.room.status,
+    phase: result.room.phase,
+    roundNo: result.room.roundNo,
+    maxRounds: result.room.maxRounds,
+    drawer: result.room.drawer,
+    scores: result.room.scores,
+    eventCursor: result.room.eventCursor,
+    agentJoined: result.room.agentJoined,
+    agentOnline: result.room.agentOnline,
+  } : null;
+  for (const key of Object.keys(room || {})) if (room[key] === undefined) delete room[key];
+  const round = result?.round ? {
+    id: result.round.id,
+    number: result.round.number,
+    drawer: result.round.drawer,
+    status: result.round.status,
+    word: result.round.word || undefined,
+    wordLength: result.round.wordLength,
+    hasImage: result.round.hasImage,
+    winner: result.round.winner || undefined,
+  } : null;
+  for (const key of Object.keys(round || {})) if (round[key] === undefined) delete round[key];
+  const events = (result?.events || []).map(event => ({
+    seq: event.seq,
+    kind: event.kind,
+    actor: event.actor,
+    text: event.text,
+    ...(event.meta && Object.keys(event.meta).length ? { meta: event.meta } : {}),
+  }));
+  const agent = result?.agent ? {
+    role: result.agent.role,
+    actions: result.agent.actions,
+    ...(result.agent.roundId ? { roundId: result.agent.roundId } : {}),
+    ...(result.agent.imageAction ? { imageAction: result.agent.imageAction } : {}),
+  } : undefined;
+  const compact = { room, ...(round ? { round } : {}), events };
+  if (agent) compact.agent = agent;
+  if (result?.wait) compact.wait = {
+    cursor: result.wait.cursor,
+    timedOut: result.wait.timedOut,
+    continueWaiting: result.wait.continueWaiting,
+  };
+  if (result?.historyCleared) compact.historyCleared = true;
+  return compact;
 }
 
 module.exports = {
@@ -110,12 +159,12 @@ module.exports = {
       throw new Error("unknown drawing-game tool");
     }
     const result = await context.runCommand(action, args);
-    if (action !== "image-read") return textResult(result);
+    if (action !== "image-read") return textResult(compactAgentResult(result));
     const summary = { ...result };
     delete summary.data;
     return {
       content: [
-        { type: "text", text: JSON.stringify(summary, null, 2) },
+        { type: "text", text: JSON.stringify(summary) },
         { type: "image", data: result.data, mimeType: result.mime },
       ],
       isError: false,

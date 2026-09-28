@@ -37,3 +37,34 @@ test("drawing-game MCP delegates writes through the governed command bridge", as
   assert.equal(result.isError, false);
   assert.equal(JSON.parse(result.content[0].text).room.code, "123456");
 });
+
+test("drawing-game MCP returns compact agent receipts", async () => {
+  const context = {
+    async runCommand() {
+      return {
+        room: {
+          id: "room-id", code: "123456", status: "active", phase: "guessing",
+          roundNo: 2, maxRounds: 6, drawer: "human", scores: { human: 1, agent: 0 },
+          eventCursor: 18, createdAt: "old", updatedAt: "new", agentJoinedAt: "old",
+        },
+        round: {
+          id: "round-id", number: 2, drawer: "human", status: "guessing", word: "",
+          wordLength: 2, hasImage: true, drawing: [{ points: [[1, 2], [3, 4]] }],
+        },
+        events: [{ id: "event-id", seq: 18, kind: "chat", actor: "human", text: "猜猜看", meta: {}, createdAt: "now" }],
+        settings: { humanName: "37", agentName: "47" },
+        words: [], gallery: [],
+        agent: { role: "guesser", actionTool: "long-repeated-tool-name", actions: ["guess", "agent-wait"], imageAction: "stmem_drawing_game_image_read", roundId: "round-id", note: "a very long repeated instruction" },
+      };
+    },
+  };
+  const result = await provider.call(context, "agent_state", { roomCode: "123456" });
+  const text = result.content[0].text;
+  const parsed = JSON.parse(text);
+  assert.ok(Buffer.byteLength(text) < 600);
+  assert.equal(parsed.room.id, undefined);
+  assert.equal(parsed.round.drawing, undefined);
+  assert.equal(parsed.settings, undefined);
+  assert.equal(parsed.agent.note, undefined);
+  assert.deepEqual(parsed.events, [{ seq: 18, kind: "chat", actor: "human", text: "猜猜看" }]);
+});

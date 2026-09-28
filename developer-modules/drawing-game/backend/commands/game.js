@@ -71,7 +71,7 @@ function run(context, input) {
     seedWords(db);
     const handlers = {
       state: () => readState(db, context, payload),
-      "agent-state": () => readState(db, context, { ...payload, viewer: "agent" }),
+      "agent-state": () => readState(db, context, { ...payload, viewer: "agent", excludeDrawing: true }),
       "agent-join": () => agentJoin(db, context, payload),
       "agent-wait": () => agentWait(db, context, payload),
       "room-create": () => createRoom(db, context, payload, input.threadId),
@@ -208,7 +208,7 @@ function agentJoin(db, context, payload) {
   db.prepare("UPDATE rooms SET agent_joined_at=COALESCE(agent_joined_at,?),agent_last_seen_at=?,updated_at=? WHERE id=?")
     .run(now, now, now, room.id);
   if (firstJoin) appendEvent(db, room.id, "agent-join", "agent", `${readSettings(db).agentName}进入了房间。`);
-  return readState(db, context, { roomCode: room.code, viewer: "agent" });
+  return readState(db, context, { roomCode: room.code, viewer: "agent", excludeDrawing: true });
 }
 
 function agentWait(db, context, payload) {
@@ -223,7 +223,7 @@ function agentWait(db, context, payload) {
     const room = requireRoom(db, initial.code);
     const cursor = Number(room.event_seq || 0);
     if (cursor > afterSeq || room.status === "ended") {
-      const result = readState(db, context, { roomCode: room.code, viewer: "agent", afterSeq });
+      const result = readState(db, context, { roomCode: room.code, viewer: "agent", afterSeq, excludeDrawing: true });
       return {
         ...result,
         wait: {
@@ -235,17 +235,17 @@ function agentWait(db, context, payload) {
       };
     }
     if (Date.now() >= deadline) {
-      const result = readState(db, context, { roomCode: room.code, viewer: "agent", afterSeq });
       return {
-        ...result,
+        room: {
+          code: room.code,
+          status: room.status,
+          eventCursor: cursor,
+        },
+        events: [],
         wait: {
-          afterSeq,
           cursor,
           timedOut: true,
           continueWaiting: room.status !== "ended",
-          note: room.status === "ended"
-            ? "房间已经结束。"
-            : "本次等待正常超时，你仍在房间中；请立刻以 cursor 作为 afterSeq 再次调用 stmem_drawing_game_agent_wait。",
         },
       };
     }
@@ -411,21 +411,22 @@ function saveSettings(db, context, payload) {
 function agentAction(db, context, payload) {
   const kind = cleanText(payload.kind, 40);
   const common = { ...payload, actor: "agent" };
+  const beforeSeq = Number(requireRoom(db, payload.roomCode).event_seq || 0);
   if (kind === "chat") {
     addChat(db, context, { ...common, text: payload.text });
-    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent" });
+    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent", afterSeq: beforeSeq, excludeDrawing: true });
   }
   if (kind === "guess") {
     addGuess(db, context, { ...common, answer: payload.answer });
-    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent" });
+    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent", afterSeq: beforeSeq, excludeDrawing: true });
   }
   if (kind === "reveal") {
     revealRound(db, context, common);
-    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent" });
+    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent", afterSeq: beforeSeq, excludeDrawing: true });
   }
   if (kind === "next") {
     nextRound(db, context, common);
-    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent" });
+    return readState(db, context, { roomCode: payload.roomCode, viewer: "agent", afterSeq: beforeSeq, excludeDrawing: true });
   }
   if (kind === "draw") {
     const room = requireActiveRoom(db, payload.roomCode);
@@ -434,7 +435,7 @@ function agentAction(db, context, payload) {
     db.prepare("UPDATE rounds SET drawing_json=? WHERE id=?").run(JSON.stringify(strokes), currentRound(db, room).id);
     appendEvent(db, room.id, "drawing-plan", "agent", `${readSettings(db).agentName}开始画了。`, { strokeCount: strokes.length });
     touchRoom(db, room.id);
-    return readState(db, context, { roomCode: room.code, viewer: "agent", includeDrawing: true });
+    return readState(db, context, { roomCode: room.code, viewer: "agent", afterSeq: beforeSeq, excludeDrawing: true });
   }
   throw new Error("不支持的AI游戏动作");
 }
@@ -481,7 +482,7 @@ function readState(db, context, payload = {}) {
       word: reveal ? round.word : "",
       wordLength: [...round.word].length,
       hasImage: Boolean(round.image_file),
-      drawing: payload.includeDrawing === true || round.drawer === "agent" ? parseJson(round.drawing_json, null) : null,
+      drawing: payload.excludeDrawing !== true && (payload.includeDrawing === true || round.drawer === "agent") ? parseJson(round.drawing_json, null) : null,
       winner: round.winner,
     } : null,
     events,

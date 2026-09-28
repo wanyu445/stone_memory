@@ -140,7 +140,7 @@ function metadata(id, entry, now) {
 function main() {
   const flags = options(process.argv.slice(2));
   if (flags.help) {
-    console.log("node scripts/migrate-legacy-memory-layout.js --memory <legacy-id> [--apply --services-stopped]\nDry run by default. Stop Stone Memory Web and watcher before --apply. See scripts/legacy-layout-migration.md.");
+    console.log("node scripts/migrate-legacy-memory-layout.js --memory <legacy-id> [--apply --services-stopped]\nDry run by default. Before --apply, stop Web and every watcher; --services-stopped is your confirmation, not an automatic global service check. Apply backs up stmem.json under ~/.stone_memory/backups/layout-migration, keeps old files and SQLite, and creates an unbound canonical memory. Bind its thread separately before restarting services.");
     return;
   }
   if (!flags.memory || !safeName.test(flags.memory) || reservedKeys.has(flags.memory)) throw new Error("Supply a safe --memory <legacy-id>");

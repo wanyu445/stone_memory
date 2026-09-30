@@ -2,8 +2,8 @@
   "use strict";
   const api = window.StoneDeveloperModule;
   const readerTools = window.StoneNotebookReader;
-  const threadId = api?.threadId || "";
-  const base = `/api/libraries/${encodeURIComponent(threadId)}/notebooks`;
+  const memoryId = api?.memoryId || "";
+  const base = `/api/libraries/${encodeURIComponent(memoryId)}/notebooks`;
   const $ = selector => document.querySelector(selector);
   const bookshelf = $("#bookshelf");
   const shelfStage = $(".shelf-stage");
@@ -95,7 +95,7 @@
   readingModeSelect.addEventListener("change", event => applyReadingMode(event.currentTarget.value));
 
   async function loadStatus() {
-    if (!threadId) throw new Error("缺少当前记忆体，请返回插件工坊重新进入");
+    if (!memoryId) throw new Error("缺少当前记忆体，请返回插件工坊重新进入");
     const data = await api.api(base);
     state.topics = data.topics || [];
     $("#topic-count").textContent = `/ ${data.topicCount}`;
@@ -303,7 +303,7 @@
         finally{delete modal.dataset.busy;modal.querySelectorAll("button").forEach(b=>b.disabled=false);}
       });
     };
-    let persistedView=null;try{persistedView=JSON.parse(sessionStorage.getItem(`sentence-view:${threadId}:${topic.id}`));}catch{}
+    let persistedView=null;try{persistedView=JSON.parse(sessionStorage.getItem(`sentence-view:${memoryId}:${topic.id}`));}catch{}
     const view=sentenceViews.get(topic.id)||{page:Math.max(1,Number(persistedView?.page)||1),q:String(persistedView?.q||"")};sentenceViews.set(topic.id,view);
     const search=paper.querySelector("input[type=search]"),list=paper.querySelector("[data-sentence-list]"),navigation=paper.querySelector("[data-pagination]");
     search.value=view.q;
@@ -323,7 +323,7 @@
       navigation.querySelector("[data-prev]").onclick=()=>{view.page--;paintPage(true);};
       navigation.querySelector("[data-next]").onclick=()=>{view.page++;paintPage(true);};
       navigation.querySelector("select").onchange=event=>{view.page=Number(event.target.value);paintPage(true);};
-      try{sessionStorage.setItem(`sentence-view:${threadId}:${topic.id}`,JSON.stringify(view));}catch{}
+      try{sessionStorage.setItem(`sentence-view:${memoryId}:${topic.id}`,JSON.stringify(view));}catch{}
       if(moveFocus){const top=paper.querySelector("[data-list-top]");top.focus({preventScroll:true});top.scrollIntoView({block:"start"});}
     };
     search.oninput=()=>{view.q=search.value;view.page=1;paintPage();};paintPage();
@@ -412,7 +412,7 @@
   $("#new-note").onclick = () => {
     const form = $("#note-form");
     if(state.currentTopic?.kind==="sentence-book"){
-      let pending;try{pending=JSON.parse(localStorage.getItem(`sentence-pending:${threadId}:${state.currentTopic.id}`)||"null");}catch{}
+      let pending;try{pending=JSON.parse(localStorage.getItem(`sentence-pending:${memoryId}:${state.currentTopic.id}`)||"null");}catch{}
       if(pending){
         form.reset();ensureSentenceFields(form);form.elements.topicId.value=state.currentTopic.id;form.elements.noteId.value="";
         for(const key of ["title","body"])form.elements[key].value=pending[key]||"";
@@ -432,7 +432,7 @@
     form.elements.expectedRevision.value = "";
     ensureSentenceFields(form);
     if(state.currentTopic?.kind==="sentence-book"){
-      try{const draft=JSON.parse(sessionStorage.getItem(`sentence-draft:${threadId}:${state.currentTopic.id}`)||"null");if(draft)for(const [key,value] of Object.entries(draft))if(form.elements[key])form.elements[key].value=value;}catch{}
+      try{const draft=JSON.parse(sessionStorage.getItem(`sentence-draft:${memoryId}:${state.currentTopic.id}`)||"null");if(draft)for(const [key,value] of Object.entries(draft))if(form.elements[key])form.elements[key].value=value;}catch{}
     }
     noteDialog.classList.toggle("cq-page",state.currentTopic?.kind === "sentence-book");
     noteDialog.showModal();
@@ -639,7 +639,7 @@
   $("#note-form").addEventListener("input",event=>{
     const form=event.currentTarget;if(state.currentTopic?.kind!=="sentence-book"||form.elements.noteId.value)return;
     const draft={};for(const key of ["body","speaker","collector","note","note_author","conversation_title","tags"])draft[key]=form.elements[key]?.value||"";
-    try{sessionStorage.setItem(`sentence-draft:${threadId}:${state.currentTopic.id}`,JSON.stringify(draft));}catch{}
+    try{sessionStorage.setItem(`sentence-draft:${memoryId}:${state.currentTopic.id}`,JSON.stringify(draft));}catch{}
   });
   noteDialog.addEventListener("cancel",event=>{if($("#note-form").dataset.busy)event.preventDefault();});
   $("#note-form").addEventListener("submit", async event => {
@@ -662,13 +662,13 @@
         if(!match)throw Error("上次保存结果仍未确认，已暂停重复写入。请稍后再次点击核对。");
         saved=await api.api(`${base}/entries/${encodeURIComponent(match.id)}`);
       }else{
-        if(metadata&&!noteId)localStorage.setItem(`sentence-pending:${threadId}:${topicId}`,JSON.stringify(payload));
+        if(metadata&&!noteId)localStorage.setItem(`sentence-pending:${memoryId}:${topicId}`,JSON.stringify(payload));
         try{saved=await api.api(noteId ? `${base}/entries/${encodeURIComponent(noteId)}` : `${base}/entries`, { method: noteId ? "PATCH" : "POST", body: JSON.stringify(payload) });}
         catch(error){if(metadata&&!noteId){target.dataset.pendingWrite="true";target.elements.save.textContent="重新读取核对";}throw error;}
       }
-      if(metadata&&!noteId)localStorage.removeItem(`sentence-pending:${threadId}:${topicId}`);
+      if(metadata&&!noteId)localStorage.removeItem(`sentence-pending:${memoryId}:${topicId}`);
       delete target.dataset.pendingWrite;delete target.dataset.sourceToken;
-      if(metadata&&!noteId){try{sessionStorage.removeItem(`sentence-draft:${threadId}:${topicId}`);}catch{}const view=sentenceViews.get(topicId);if(view){view.q="";view.page=1;}}
+      if(metadata&&!noteId){try{sessionStorage.removeItem(`sentence-draft:${memoryId}:${topicId}`);}catch{}const view=sentenceViews.get(topicId);if(view){view.q="";view.page=1;}}
       noteDialog.close(); await loadStatus(); await openTopic(topicId);
       if (saved.visibility === "visible") await readNote(saved.id);
     } catch (error) { formError(target, error.message); }

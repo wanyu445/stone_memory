@@ -37,6 +37,17 @@ test("direct apply distinguishes the running session from inherited env vars", (
   assert.equal(isUnsafeActiveClaudeApply("claude", { CLAUDE_CODE_SESSION_ID: "session-1" }, { threadId: "session-1" }), true);
 });
 
+test("direct apply compares Claude session ids instead of memory ids", () => {
+  const env = { CLAUDE_CODE_SESSION_ID: "session-1", CLAUDE_PID: "12345" };
+  const alive = () => true;
+  assert.equal(isUnsafeActiveClaudeApply("claude", env, {
+    targetSessionId: "session-1", memoryId: "memory-1", isProcessAlive: alive,
+  }), true);
+  assert.equal(isUnsafeActiveClaudeApply("claude", env, {
+    targetSessionId: "session-2", memoryId: "memory-1", isProcessAlive: alive,
+  }), false);
+});
+
 test("rebuild queue keeps one latest request per thread and applies through CLI args", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-rebuild-queue-"));
   const file = path.join(dir, "pending.json");

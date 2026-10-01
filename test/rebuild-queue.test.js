@@ -21,6 +21,22 @@ test("direct apply is blocked only inside an active Claude Code session", () => 
   assert.equal(isUnsafeActiveClaudeApply("codex", { CLAUDE_CODE_SESSION_ID: "session-1" }), false);
 });
 
+test("direct apply distinguishes the running session from inherited env vars", () => {
+  const alive = () => true;
+  const dead = () => false;
+  const unknown = () => null;
+  const env = { CLAUDE_CODE_SESSION_ID: "session-1", CLAUDE_PID: "12345" };
+  // same thread, session still running: block
+  assert.equal(isUnsafeActiveClaudeApply("claude", env, { threadId: "session-1", isProcessAlive: alive }), true);
+  // same thread, but the session that exported the vars already exited (detached script): allow
+  assert.equal(isUnsafeActiveClaudeApply("claude", env, { threadId: "session-1", isProcessAlive: dead }), false);
+  // rebuilding a different thread from inside a session never touches this session's chain: allow
+  assert.equal(isUnsafeActiveClaudeApply("claude", env, { threadId: "other-thread", isProcessAlive: alive }), false);
+  // liveness unknown (no CLAUDE_PID): stay conservative
+  assert.equal(isUnsafeActiveClaudeApply("claude", { CLAUDE_CODE_SESSION_ID: "session-1" }, { threadId: "session-1", isProcessAlive: unknown }), true);
+  assert.equal(isUnsafeActiveClaudeApply("claude", { CLAUDE_CODE_SESSION_ID: "session-1" }, { threadId: "session-1" }), true);
+});
+
 test("rebuild queue keeps one latest request per thread and applies through CLI args", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-rebuild-queue-"));
   const file = path.join(dir, "pending.json");

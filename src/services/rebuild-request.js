@@ -54,8 +54,33 @@ function rebuildRequestCliArgs(request) {
   return args;
 }
 
-function isUnsafeActiveClaudeApply(runtime, env = process.env) {
-  return runtime !== "codex" && Boolean(String(env.CLAUDE_CODE_SESSION_ID || "").trim());
+function isProcessAlive(pid) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 0) return null;
+  try {
+    process.kill(value, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === "EPERM";
+  }
 }
 
-module.exports = { normalizeRebuildRequest, rebuildRequestCliArgs, isUnsafeActiveClaudeApply };
+// Claude Code >= 2.1.28x exports CLAUDE_CODE_SESSION_ID / CLAUDE_PID into every
+// child shell, and those variables are inherited by detached scripts (nohup, &)
+// that outlive the session. The hazard this guard protects against is replacing
+// the thread file of the *currently running* session before its tool result
+// returns. So we only block when:
+//   1. the target thread is the exporting session itself (or unknown), and
+//   2. that session process is still alive (or liveness cannot be determined).
+function isUnsafeActiveClaudeApply(runtime, env = process.env, options = {}) {
+  if (runtime === "codex") return false;
+  const sessionId = String(env.CLAUDE_CODE_SESSION_ID || "").trim();
+  if (!sessionId) return false;
+  const threadId = String(options.threadId || "").trim();
+  if (threadId && threadId !== sessionId) return false;
+  const alive = (options.isProcessAlive || isProcessAlive)(env.CLAUDE_PID);
+  if (alive === false) return false;
+  return true;
+}
+
+module.exports = { normalizeRebuildRequest, rebuildRequestCliArgs, isUnsafeActiveClaudeApply, isProcessAlive };

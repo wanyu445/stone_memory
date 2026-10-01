@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
-const { getCfg, getThreadDir, listThreadIds, getMemoryRuntimeConfig } = require("../../config");
+const { getCfg, getThreadDir, listThreadIds, listMemoryIds, getMemoryRuntimeConfig } = require("../../config");
 const { runSubagent } = require("../../services/subagent-runner");
 const { readFeelings: readDatabaseFeelings, readFeatures: readDatabaseFeatures } = require("../../storage/memory-reader");
 const { MemoryStore } = require("../../storage/memory-store");
@@ -55,4 +55,4 @@ function resolveThread(args = {}, cfg) {
 }
 
 
-module.exports = { fs, path, os, execFileSync, getCfg, getThreadDir, listThreadIds, runSubagent, readDatabaseFeelings, readDatabaseFeatures, MemoryStore, resolveMcpThread, buildMcpRebuildRequest, buildMcpRebuildPreviewArgs, buildMcpRebuildExecuteArgs, buildMcpMineArgs, NotebookService, listMemories, PROJECT_ROOT, SEARCH_ONLY, NOTEBOOK_STEWARD_MODE, SEARCH_THREAD_ID, MAX_DEEP_SEARCH_TOOL_CALLS, MAX_NOTEBOOK_STEWARD_TOOL_CALLS, rebuildPreviews, feelingDate, loadConfig, log, resolveThread };
+module.exports = { fs, path, os, execFileSync, getCfg, getThreadDir, listThreadIds, listMemoryIds, runSubagent, readDatabaseFeelings, readDatabaseFeatures, MemoryStore, resolveMcpThread, buildMcpRebuildRequest, buildMcpRebuildPreviewArgs, buildMcpRebuildExecuteArgs, buildMcpMineArgs, NotebookService, listMemories, PROJECT_ROOT, SEARCH_ONLY, NOTEBOOK_STEWARD_MODE, SEARCH_THREAD_ID, MAX_DEEP_SEARCH_TOOL_CALLS, MAX_NOTEBOOK_STEWARD_TOOL_CALLS, rebuildPreviews, feelingDate, loadConfig, log, resolveThread };

@@ -1,4 +1,4 @@
-const { path, getCfg, getThreadDir, listThreadIds, MemoryStore, loadConfig } = require("./shared");
+const { path, getCfg, getThreadDir, listMemoryIds, MemoryStore, loadConfig } = require("./shared");
 
 /** 手动检查当前待办 */
 function toolTriggersCheck(args) {
@@ -7,7 +7,7 @@ function toolTriggersCheck(args) {
   if (!cfg) return "未配置 stmem.json";
   const lines = ["📋 系统待办检查", ""];
   let found = false;
-  for (const tid of listThreadIds()) {
+  for (const tid of listMemoryIds()) {
     const memoryDir = path.join(getThreadDir(tid), "memory");
     const store = new MemoryStore({ memoryDir, threadId: tid });
     try {
@@ -47,10 +47,10 @@ function toolTriggersCheck(args) {
 function toolStatus() {
   try {
   const cfg = loadConfig();
-  if (!cfg || listThreadIds().length === 0) return "未配置 stmem.json 或无线程";
+  if (!cfg || listMemoryIds().length === 0) return "未配置 stmem.json 或无记忆体";
 
   const lines = [];
-  for (const tid of listThreadIds()) {
+  for (const tid of listMemoryIds()) {
     const dir = getThreadDir(tid);
     let archiveCount = 0, feelingCount = 0, featureCount = 0, blockedCount = 0;
     try {

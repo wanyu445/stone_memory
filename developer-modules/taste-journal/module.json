@@ -1,0 +1,31 @@
+{
+  "id": "taste-journal",
+  "title": "味觉档案",
+  "version": "1.1.0",
+  "sdkVersion": 2,
+  "scope": "memory",
+  "summary": "奶茶、甜品、外卖的口味小档案馆：聊天里随口一提，AI 记一笔；月历打卡、集章复购、配置对比和月度报告，帮你记住每一种味道值不值得再见。",
+  "contributor": "@lykketutu",
+  "status": "社区实验",
+  "eyebrow": "TASTE ARCHIVE · DESSERT SHOP",
+  "actionLabel": "打开味觉档案 →",
+  "metaLabel": "Taste journal · v1.1",
+  "features": ["月历打卡", "集章复购", "配置对比", "月度报告"],
+  "permissions": ["core:read", "mcp:tools", "mcp:write"],
+  "entry": {
+    "frontend": "frontend/index.html",
+    "mcp": "backend/mcp.js",
+    "commands": {
+      "list": "backend/commands/list.js",
+      "add": "backend/commands/add.js",
+      "update": "backend/commands/update.js",
+      "stats": "backend/commands/stats.js",
+      "digest": "backend/commands/digest.js"
+    }
+  },
+  "storage": {
+    "files": ["journal.json", "settings.json", "digests.json", "drafts.json"],
+    "browser": ["taste-journal-ui-prefs"]
+  },
+  "order": 46
+}

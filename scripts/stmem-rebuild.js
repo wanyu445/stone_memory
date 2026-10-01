@@ -169,8 +169,9 @@ function main() {
   const request = requestFromArgs(args, threadId, getCfg);
   if (apply) {
     const runtime = binding?.provider || getCfg("runtime", threadId, "claude");
+    const targetSessionId = binding?.externalThreadId || getCfg("externalThreadId", threadId, threadId);
     const { isUnsafeActiveClaudeApply } = require("../src/services/rebuild-request");
-    if (isUnsafeActiveClaudeApply(runtime, process.env, { threadId })) {
+    if (isUnsafeActiveClaudeApply(runtime, process.env, { targetSessionId })) {
       console.error("检测到当前命令运行在 Claude Code 活动会话内，禁止同步 rebuild --apply：这会在工具结果返回前替换线程文件并破坏 UUID 链。请使用 stmem_memory_rebuild，或改用 stmem rebuild --queue 后重载 Claude Code。");
       process.exit(1);
     }

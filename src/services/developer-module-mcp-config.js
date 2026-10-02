@@ -31,9 +31,10 @@ function moduleIdsForMemory(memoryId) {
 
 function resolveCurrentBinding(env = process.env, memoryIds = require("../config").listMemoryIds()) {
   const explicit = String(env.STMEM_CURRENT_THREAD_ID || "").trim();
+  const legacy = String(env.STMEM_THREAD_ID || "").trim();
   const codex = String(env.CODEX_THREAD_ID || "").trim();
   const claude = String(env.CLAUDE_CODE_SESSION_ID || "").trim();
-  const externalThreadId = explicit || codex || claude;
+  const externalThreadId = explicit || legacy || codex || claude;
   const explicitMemoryId = String(env.STMEM_MEMORY_ID || "").trim();
   const explicitBindingId = String(env.STMEM_BINDING_ID || "").trim();
   for (const memoryId of explicitMemoryId ? [safeMemoryId(explicitMemoryId, memoryIds)] : memoryIds) {

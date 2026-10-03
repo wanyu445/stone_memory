@@ -1,0 +1,60 @@
+{
+  "$schema": "https://stone-memory.local/schemas/ui-theme-v3.json",
+  "version": 3,
+  "name": "月满中秋",
+  "assets": {
+    "logo": null
+  },
+  "tokens": {
+    "colors": {
+      "canvas": "#f5f1e8",
+      "canvasWarm": "#fffaf0",
+      "ink": "#3f4542",
+      "inkSoft": "#69716c",
+      "inkFaint": "#969b91",
+      "accent": "#d6aa55",
+      "accentStrong": "#b98732",
+      "accentSoft": "#f6e9c7",
+      "surface": "#fffdf7",
+      "surfaceSoft": "#f4eedf",
+      "line": "#dfd3b8",
+      "lineSoft": "#eee6d5",
+      "status": "#7f9b83",
+      "danger": "#b9685f",
+      "warning": "#c79246",
+      "info": "#718b96",
+      "conflict": "#ad716b",
+      "fusion": "#8d7d91"
+    },
+    "radii": {
+      "extraSmall": "9px",
+      "small": "16px",
+      "medium": "26px",
+      "large": "36px",
+      "pill": "999px"
+    },
+    "shadows": {
+      "card": "0 10px 30px 0 rgba(143, 117, 67, 0.07)",
+      "panel": "0 16px 44px 0 rgba(125, 105, 70, 0.09)",
+      "floating": "0 20px 56px rgba(115, 96, 64, 0.12)",
+      "button": "0 10px 24px rgba(185, 135, 50, 0.16)"
+    },
+    "spacing": {
+      "one": "6px",
+      "two": "10px",
+      "three": "14px",
+      "four": "18px",
+      "five": "24px",
+      "six": "32px"
+    },
+    "typography": {
+      "display": "Georgia, \"Noto Serif SC\", serif",
+      "body": "Inter, \"Noto Sans SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    },
+    "motion": {
+      "fast": "180ms",
+      "normal": "200ms",
+      "easing": "ease"
+    }
+  }
+}

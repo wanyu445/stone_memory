@@ -75,6 +75,8 @@ test("memory creation uses one lightweight dialog instead of entering the legacy
   assert.match(creation, /创建并进入/);
   assert.match(creation, /升级旧版记忆体/);
   assert.match(creation, /layout-upgrade/);
+  assert.match(app, /promptedLegacyUpgrades/);
+  assert.match(app, /queueMicrotask\(\(\)=>createMemoryDraft\(null,legacy\)\)/);
   assert.doesNotMatch(creation, /resetCreateForm|wizard\(\)/);
 });
 

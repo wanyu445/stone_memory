@@ -6,6 +6,7 @@ const state = {
   form: { libraryName: "", threadId: "", ai: "", user: "", userGender: "unspecified", runtime: "codex", scenario: "life-supervision", sessionDir: "", minerMode: "subagent", apiProvider: "", apiKey: "", baseUrl: "", model: "", windowDays: 1, keepToolPairs: 15, automaticFullMining: true, automaticMemoryMaintenance: true, automaticCompression: false },
   feelingBatch: { active:false, memoryId:null, pending:new Map() },
 };
+const promptedLegacyUpgrades = new Set();
 
 // 正式发布前在这里补齐公共账号；空值会显示为“待配置”，不会跳往错误地址。
 const projectContact = {
@@ -517,8 +518,10 @@ async function createLibrary() {
 
 function lobby() {
     app.innerHTML = `<section class="lobby stone-page-transition-pending" data-transition-message="正在整理今日纹路…" aria-busy="true"><div class="shell"><div class="lobby-head"><p>—— 蒲苇韧如丝，磐石无转移 ——</p></div><div class="library-grid">${state.libraries.map(library => `<button class="library-card" data-id="${escapeHtml(library.memoryId || library.threadId)}">${stoneSvg("mini-stone")}<h2>${escapeHtml(library.libraryName)}</h2><p>${library.upgradeRequired ? "旧版记忆体 · 点击升级" : !library.configured ? "尚未配置 · 点击继续" : !library.bound ? "尚未绑定对话窗口" : library.lastMinedAt ? "记忆正在生长" : "等待第一次记忆挖掘"}</p><div class="library-stats"><span>${library.counts.feelings} 条摘要</span><span>${library.counts.features} 条特征</span></div></button>`).join("")}<button class="library-card new-card" id="new-library"><div><span>＋</span><strong>创建新的记忆体</strong></div></button></div></div></section>`;
-    document.querySelectorAll(".library-card").forEach(card => card.onclick = () => { const library=state.libraries.find(item=>(item.memoryId||item.threadId)===card.dataset.id); library?.upgradeRequired?createMemoryDraft(card,library):library?.configured?openLibrary(card.dataset.id):createMemoryDraft(card,library); });
+  document.querySelectorAll(".library-card").forEach(card => card.onclick = () => { const library=state.libraries.find(item=>(item.memoryId||item.threadId)===card.dataset.id); library?.upgradeRequired?createMemoryDraft(card,library):library?.configured?openLibrary(card.dataset.id):createMemoryDraft(card,library); });
   document.querySelector("#new-library").onclick = event => createMemoryDraft(event.currentTarget);
+  const legacy=state.libraries.find(library=>library.upgradeRequired&&!promptedLegacyUpgrades.has(library.memoryId));
+  if(legacy){promptedLegacyUpgrades.add(legacy.memoryId);queueMicrotask(()=>createMemoryDraft(null,legacy));}
 }
 
 async function openLibrary(identifier, view = "overview") {

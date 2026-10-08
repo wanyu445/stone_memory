@@ -393,7 +393,7 @@ async function main() {
   }
   const threadIds = threadFlag ? [threadFlag] : listMemoryIds();
   if (!threadIds.length) {
-    log("没有配置任何线程，请先运行 stmem init --thread <id>");
+    log("没有配置任何记忆体，请先运行 stmem memory create");
     process.exit(1);
   }
   if (threadFlag) {

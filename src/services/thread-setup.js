@@ -63,6 +63,9 @@ function validateSessionBinding(input) {
 
 function createThread(input, { allowExisting = false, requireSession = true } = {}) {
   const config = loadConfig();
+  if (!String(input?.memoryId || "").trim() && !config[input?.threadId]) {
+    throw new Error("旧布局创建入口已关闭；请先创建新版记忆体并显式传入 memoryId");
+  }
   validateThreadInput(input, config, { allowExisting });
   input = normalizeScenarioConfig(input, allowExisting ? config[input.threadId] : undefined);
   const sessionFile = requireSession ? validateSessionBinding(input) : null;

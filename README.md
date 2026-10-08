@@ -145,7 +145,7 @@ stmem ai-help
 stmem capabilities --json
 ```
 
-旧版一次性 `stmem init` 流程仍受支持，但新流程优先使用 `memory create/settings` 与 `binding add`，不要再把线程 ID 当作记忆体身份。
+旧版一次性 `stmem init --thread` 创建入口已经关闭。新记忆体必须使用 `memory create/settings` 与 `binding add`，不再把线程 ID 当作记忆体身份；`stmem init --memory` 仅保留为显式指定新版记忆体的兼容接入方式。
 
 </details>
 

@@ -58,6 +58,24 @@ test("formal CLI previews and upgrades a legacy layout without replacing its dat
   assert.equal(bindings.bindings[0].provider, "codex");
 });
 
+test("stmem init refuses to create any new legacy layout", t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-no-legacy-init-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const sessions = path.join(home, "sessions");
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(path.join(sessions, "old-entry.jsonl"), "{}\n");
+  const batch = path.join(home, "init.json");
+  fs.writeFileSync(batch, JSON.stringify({ libraryName: "不应创建", threadId: "old-entry", ai: "A", user: "U",
+    runtime: "codex", scenario: "coding", sessionDir: sessions, minerMode: "subagent" }));
+  for (const extra of [["--validate"], []]) {
+    const result = run(home, ["init", "--batch-file", batch, ...extra]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /旧布局创建入口已关闭/);
+  }
+  assert.equal(fs.existsSync(path.join(home, ".stone_memory", "runtimes")), false);
+  assert.equal(fs.existsSync(path.join(home, ".stone_memory", "stmem.json")), false);
+});
+
 test("legacy libraries are marked for an explicit Web upgrade", t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-layout-web-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));

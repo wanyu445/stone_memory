@@ -8,4 +8,4 @@ for (const threadId of threads) {
   console.log(`    记忆体 ID: ${threadId}`);
   console.log(`    ${getCfg("runtime", threadId, "claude")} · ${getCfg("purpose", threadId, "accompany")}\n`);
 }
-if (!threads.length) console.log("  还没有记忆体。运行 stmem init 开始。");
+if (!threads.length) console.log("  还没有记忆体。运行 stmem memory create 开始。");

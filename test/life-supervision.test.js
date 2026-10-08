@@ -47,12 +47,13 @@ test("init template, validation, persistence and prompt CLI select life supervis
   delete input.purpose;
   const file = path.join(home, "init.json");
   fs.writeFileSync(file, JSON.stringify(input));
-  assert.equal(JSON.parse(cli("init", "--batch-file", file, "--validate")).valid, true);
-  cli("init", "--batch-file", file);
-  const entry = getMemoryRuntimeConfig(input.threadId);
+  const memory = JSON.parse(cli("memory", "create", "--name", "监督")).memory;
+  assert.equal(JSON.parse(cli("init", "--memory", memory.memoryId, "--batch-file", file, "--validate")).valid, true);
+  cli("init", "--memory", memory.memoryId, "--batch-file", file);
+  const entry = getMemoryRuntimeConfig(memory.memoryId);
   assert.equal(entry.scenario, "life-supervision");
   assert.equal(entry.purpose, "accompany");
-  assert.match(JSON.parse(cli("prompt", "show", "--thread", input.threadId, "--task", "feelings")).text, /私人监督笔记/);
+  assert.match(JSON.parse(cli("prompt", "show", "--memory", memory.memoryId, "--task", "feelings")).text, /私人监督笔记/);
 });
 
 test("both runtime/channel plans use the supervision summary and companion feature task", async t => {
@@ -92,8 +93,8 @@ test("Web creates a supervision memory and rejects mining prompt edits", async t
   assert.equal(getMemoryRuntimeConfig(id).scenario, "life-supervision");
   assert.equal(getMemoryRuntimeConfig(id).purpose, "accompany");
   const overview = await request("/api/home");
-  assert.equal(overview.supervisionCount, 2);
-  assert.equal(overview.companionCount, 0);
+  assert.equal(overview.supervisionCount, 1);
+  assert.equal(overview.companionCount, 1);
   const promptsUrl = `/api/libraries/${id}/mining/prompts`;
   assert.match((await request(promptsUrl)).summaryPrompt, /生活监督 Agent/);
   const rejected = await fetch(base + promptsUrl, {

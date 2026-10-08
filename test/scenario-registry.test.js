@@ -97,7 +97,7 @@ test("CLI switches scenarios without moving history and prompt validation does n
   assert.doesNotMatch(cli("prompt", "show", "--thread", "two", "--task", "feelings").text, /Changed/);
 });
 
-test("init accepts scenario-only input and preserves a switched scenario on legacy updates", t => {
+test("init requires a canonical memory and validates scenario-only input", t => {
   const root = fixture(t), sessions = path.join(root, "sessions");
   fs.mkdirSync(sessions);
   fs.writeFileSync(path.join(sessions, "rollout-thread-example.jsonl"), "{}\n");
@@ -108,19 +108,20 @@ test("init accepts scenario-only input and preserves a switched scenario on lega
     env: { ...process.env, HOME: root, USERPROFILE: root }, encoding: "utf8", windowsHide: true,
   });
   fs.writeFileSync(file, JSON.stringify(input));
-  assert.equal(JSON.parse(run("init", "--batch-file", file, "--validate")).valid, true);
   const configFile = path.join(root, ".stone_memory", "stmem.json");
+  assert.throws(() => run("init", "--batch-file", file, "--validate"), /旧布局创建入口已关闭/);
   assert.equal(fs.existsSync(configFile), false);
-  run("init", "--batch-file", file);
+  const memory = JSON.parse(run("memory", "create", "--name", "Example")).memory;
+  const beforeValidation = fs.readFileSync(configFile, "utf8");
+  assert.equal(JSON.parse(run("init", "--memory", memory.memoryId, "--batch-file", file, "--validate")).valid, true);
+  assert.equal(fs.readFileSync(configFile, "utf8"), beforeValidation);
+  run("init", "--memory", memory.memoryId, "--batch-file", file);
   assert.equal(JSON.parse(fs.readFileSync(configFile))[input.threadId].purpose, "coding");
-  run("scenario", "set", "--thread", input.threadId, "--scenario", "study", "--apply");
-  const legacy = { ...input, purpose: "coding" }; delete legacy.scenario;
-  fs.writeFileSync(file, JSON.stringify(legacy));
-  run("init", "--batch-file", file);
-  assert.equal(JSON.parse(fs.readFileSync(configFile))[input.threadId].scenario, "study");
+  run("scenario", "set", "--memory", memory.memoryId, "--scenario", "study", "--apply");
+  assert.equal(JSON.parse(run("scenario", "set", "--memory", memory.memoryId, "--scenario", "study")).scenario, "study");
   const before = fs.readFileSync(configFile, "utf8");
   fs.writeFileSync(file, JSON.stringify({ ...input, scenario: "does-not-exist" }));
-  assert.throws(() => run("init", "--batch-file", file, "--validate"));
+  assert.throws(() => run("init", "--memory", memory.memoryId, "--batch-file", file, "--validate"));
   assert.equal(fs.readFileSync(configFile, "utf8"), before);
 });
 

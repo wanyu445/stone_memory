@@ -14,12 +14,10 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem capabilities [--json]                  声明内置导入、挖掘与重建能力
   stmem doctor --memory <id> [--json]           只读诊断配置、Binding 与运行状态
   stmem delete --thread <id> [--dry-run]        删除线程配置及数据
-  stmem init --thread <真实线程ID>              交互式初始化
   stmem init --new [--name <名称>]              新建未配置记忆体草稿
   stmem init --memory <id> --batch-file <json>  为记忆体绑定首个线程
   stmem init --template [--runtime codex] [--scenario life-supervision]       输出 AI 可填写的 JSON 模板
-  stmem init --batch-file <json> --validate     严格校验配置和真实线程文件
-  stmem init --batch-file <json>                使用与前端相同的正式接口初始化
+  stmem init --memory <id> --batch-file <json> --validate 严格校验配置和真实线程文件
   stmem fork --parent <id> --thread <id>        将线程登记为共享父级记忆的子线程
   stmem feature-phrases [--memory <id>]         从所有清洗后的 features 提取通用检索词
   stmem feature-evidence [--memory <id>]        回查 archive 与 feelings 的词频证据

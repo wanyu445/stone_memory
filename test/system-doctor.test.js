@@ -10,6 +10,6 @@ test("doctor fails closed for an unknown thread without recommending source chan
   assert.equal(result.ok, false);
   assert.equal(result.code, "THREAD_NOT_CONFIGURED");
   assert.equal(result.sourceModificationRequired, false);
-  assert.match(result.nextCommand, /^stmem init --template/);
+  assert.match(result.nextCommand, /^stmem memory create/);
   assert.ok(result.forbiddenActions.some(item => item.includes("不要修改源码")));
 });

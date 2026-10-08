@@ -67,7 +67,7 @@ function diagnoseThread(threadId, { projectDir = path.resolve(__dirname, "..", "
       threadId,
       "THREAD_NOT_CONFIGURED",
       `配置中不存在真实线程 ID：${threadId || "(未提供)"}`,
-      "stmem init --template --runtime <codex|claude>",
+      "stmem memory create --name <名称>",
       checks,
     );
   }
@@ -80,12 +80,12 @@ function diagnoseThread(threadId, { projectDir = path.resolve(__dirname, "..", "
       threadId,
       "CONFIG_INVALID",
       `线程配置缺少字段：${missing.join(", ")}`,
-      `stmem init --thread ${threadId}`,
+      `stmem memory migrate-layout --memory ${threadId}`,
       checks,
     );
   }
   if (!["claude", "codex"].includes(entry.runtime)) {
-    return failure(threadId, "RUNTIME_INVALID", `不支持的 runtime：${entry.runtime}`, `stmem init --thread ${threadId}`, checks);
+    return failure(threadId, "RUNTIME_INVALID", `不支持的 runtime：${entry.runtime}`, `stmem memory migrate-layout --memory ${threadId}`, checks);
   }
   if (!fs.existsSync(entry.sessionDir)) {
     checks.session = { rootExists: false, root: entry.sessionDir, fileFound: false };
@@ -93,7 +93,7 @@ function diagnoseThread(threadId, { projectDir = path.resolve(__dirname, "..", "
       threadId,
       "SESSION_DIR_NOT_FOUND",
       `线程文件搜索目录不存在：${entry.sessionDir}`,
-      `stmem init --thread ${threadId}`,
+      `stmem memory migrate-layout --memory ${threadId}`,
       checks,
     );
   }
@@ -105,7 +105,7 @@ function diagnoseThread(threadId, { projectDir = path.resolve(__dirname, "..", "
       threadId,
       "SESSION_FILE_NOT_FOUND",
       `sessionDir 中找不到文件名包含真实 threadId “${threadId}” 的 JSONL`,
-      `stmem init --thread ${threadId}`,
+      `stmem memory migrate-layout --memory ${threadId}`,
       checks,
     );
   }

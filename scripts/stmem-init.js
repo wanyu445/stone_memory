@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * stmem init — 交互式初始化新线程
+ * stmem init — 为已创建的记忆体接入线程
  *
  * 用法:
- *   stmem init --thread <id>                    交互式
- *   stmem init --batch-file <path>              安全读取机器配置
+ *   stmem init --memory <id> --batch-file <path> 安全读取机器配置
  *   stmem init --batch-file <path> --validate   只校验，不写入
  *   stmem init --template [--runtime codex]     输出机器可填写模板
  *   stmem init --schema                         输出 JSON Schema
@@ -140,6 +139,7 @@ async function main() {
     }
     const threadId = argumentThreadId || raw.threadId;
     if (!threadId) throw new Error("batch 文件必须填写真实 threadId");
+    if (!memoryId && !loadCfg()[threadId]) throw new Error("旧布局创建入口已关闭；请先运行 stmem memory create，再用 --memory <id> 接入线程");
     input = { ...raw, memoryId, threadId, libraryName: raw.libraryName || raw.label || threadId };
     if (args.includes("--validate")) {
       validateThreadInput(input, loadCfg(), { allowExisting: true });
@@ -154,13 +154,12 @@ async function main() {
     if (!argumentThreadId) {
       console.log("用法:\n"
         + "  stmem init --new [--name <名称>]\n"
-        + "  stmem init --thread <真实线程ID>\n"
         + "  stmem init --memory <记忆体ID> --thread <真实线程ID> --batch-file <json>\n"
         + "  stmem init --template --runtime codex --scenario life-supervision\n"
-        + "  stmem init --batch-file <json> --validate\n"
-        + "  stmem init --batch-file <json>");
+        + "  stmem init --memory <记忆体ID> --batch-file <json> --validate");
       process.exit(1);
     }
+    if (!memoryId && !loadCfg()[argumentThreadId]) throw new Error("旧布局创建入口已关闭；请先运行 stmem memory create，再用 --memory <id> 接入线程");
     input = await interactiveInit(argumentThreadId);
   }
   const tc = createThread(input, { allowExisting: true });

@@ -288,6 +288,24 @@ stmem binding revert --memory <id> --batch <batchId>
 stmem binding revert --memory <id> --batch <batchId> --apply
 ```
 
+已导入的对话更正时间戳时，可在「记忆 → 数据导入」选择「同文覆盖 · 修正原始时间戳」，上传新版文件，先预览，再确认覆盖。按角色、完整正文和相邻对话识别旧导入记录；不按日期整段删除。孤立短句、重复句或正文变化导致的不确定旧记录会保留，预览会说明数量。
+
+CLI 支持多个来源文件的同文覆盖，`sources.json` 是文件路径组成的 JSON 数组：
+
+```bash
+stmem import --memory <id> --sources-file sources.json --replace-matching --dry-run
+stmem import --memory <id> --sources-file sources.json --replace-matching --expect-hash <previewHash> --apply
+```
+
+若新版正文也经过整理，需要明确替换整份旧导入文件，可使用 `--replace-import-file` 代替 `--replace-matching`。旧文件必须位于当前记忆体的 `memory/import/done/` 目录；仅替换来源格式、角色、原正文和原时间戳与该旧文件精确一致的现存记录。此方式目前仅有 CLI，前端同文覆盖不会自动升级为整批删除：
+
+```bash
+stmem import --memory <id> --source corrected.jsonl --replace-import-file <oldImportedFile> --dry-run
+stmem import --memory <id> --source corrected.jsonl --replace-import-file <oldImportedFile> --expect-hash <previewHash> --apply
+```
+
+两种覆盖均要求全部输入是有效纯对话。确认时先备份旧原文和日期状态，再以数据库事务应用；已有新版不会重复导入，预览变化、相关日期正在挖掘、Binding 记录或原文锚点冲突会拒绝覆盖。保留原 full 归档和已有摘要，受影响日期标记为需要手动重新挖掘，不自动启动挖掘。逐行备份位于当前记忆体 `memory/backups/import-replacement/`；需要恢复时应核对该备份和之后新增的数据，定向恢复，不能用旧整库快照覆盖后续数据。
+
 切换主 Binding 使用 `stmem binding switch`。它会先验证目标窗口、备份并生成确认计划；实际切换必须复用该计划返回的 token，不要跳过预览。
 
 </details>

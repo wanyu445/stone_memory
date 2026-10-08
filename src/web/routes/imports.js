@@ -43,6 +43,20 @@ async function handleImports(req, res, url) {
     if(!tokens.length)throw new Error("请先上传并确认至少一个对话文件");
     const items=tokens.map(token=>({token,item:previews.get(token)}));
     if(items.some(row=>!row.item))throw new Error("有一个导入预览已经过期，请重新上传");
+    if (input.mode === "replace-matching") {
+      const manifestDir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-web-import-manifest-"));
+      const manifest = path.join(manifestDir, "sources.json");
+      fs.writeFileSync(manifest, JSON.stringify(items.map(row => row.item.filePath)), { mode: 0o600 });
+      try {
+        const args = ["import", "--memory", threadId, "--sources-file", manifest, "--replace-matching"];
+        const preview = !input.confirmedPlan;
+        const result = JSON.parse(runStmem(preview ? [...args, "--dry-run"] : [...args, "--expect-hash", String(input.confirmedPlan), "--apply"]));
+        if (!preview) for (const { token, item } of items) { fs.rmSync(path.dirname(item.filePath), { recursive: true, force: true }); previews.delete(token); }
+        const { backupFile, ...safeResult } = result;
+        return json(res, 200, { ...safeResult, backedUp: !!backupFile });
+      } finally { fs.rmSync(manifestDir, { recursive: true, force: true }); }
+    }
+    if (input.mode && input.mode !== "append") throw new Error("未知导入方式");
     const imported={imported:0,fullBacked:0,files:0};
     for(const {token,item} of items){
       runStmem(["import","--thread",threadId,"--source",item.filePath,"--apply"]);

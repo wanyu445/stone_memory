@@ -67,11 +67,11 @@ function safeStmemFailure(stderr, command, status) {
   const lines = redactWebSecrets(stderr).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   const marked = lines.reverse().find(line =>
     /^\[(?:memory-miner|memory-compressor)\]\s+(?:subagent\s+)?error:/i.test(line)
-    || /^\[(?:tool-policy|module|init|memory|api-profile)\]\s+error:/i.test(line)
+    || /^\[(?:tool-policy|module|init|memory|api-profile|import)\]\s+error:/i.test(line)
     || /^\[binding\]\s+/i.test(line));
   if (marked) {
     return marked.replace(/^\[(?:memory-miner|memory-compressor)\]\s+/i, "")
-      .replace(/^\[(?:tool-policy|module|init|memory|api-profile)\]\s+/i, "")
+      .replace(/^\[(?:tool-policy|module|init|memory|api-profile|import)\]\s+/i, "")
       .replace(/^\[binding\]\s+/i, "").slice(0, 800);
   }
   // 不把任意 stderr（可能包含私密对话或模型原文）直接回显给前端；
@@ -1919,6 +1919,20 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
     if(!tokens.length)throw new Error("请先上传并确认至少一个对话文件");
     const items=tokens.map(token=>({token,item:previews.get(token)}));
     if(items.some(row=>!row.item))throw new Error("有一个导入预览已经过期，请重新上传");
+    if (input.mode === "replace-matching") {
+      const manifestDir = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-web-import-manifest-"));
+      const manifest = path.join(manifestDir, "sources.json");
+      fs.writeFileSync(manifest, JSON.stringify(items.map(row => row.item.filePath)), { mode: 0o600 });
+      try {
+        const args = ["import", "--memory", threadId, "--sources-file", manifest, "--replace-matching"];
+        const preview = !input.confirmedPlan;
+        const result = JSON.parse(runStmem(preview ? [...args, "--dry-run"] : [...args, "--expect-hash", String(input.confirmedPlan), "--apply"]));
+        if (!preview) for (const { token, item } of items) { fs.rmSync(path.dirname(item.filePath), { recursive: true, force: true }); previews.delete(token); }
+        const { backupFile, ...safeResult } = result;
+        return json(res, 200, { ...safeResult, backedUp: !!backupFile });
+      } finally { fs.rmSync(manifestDir, { recursive: true, force: true }); }
+    }
+    if (input.mode && input.mode !== "append") throw new Error("未知导入方式");
     const imported={imported:0,fullBacked:0,files:0};
     for(const {token,item} of items){
       runStmem(["import","--thread",threadId,"--source",item.filePath,"--apply"]);

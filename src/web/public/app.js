@@ -475,6 +475,13 @@ async function uploadFiles(files) {
 
 function renderImports() {
   const list = document.querySelector("#import-list"); if (!list) return;
+  const apply = document.querySelector("#apply-import");
+  state.importPlan = null;
+  document.querySelector("#cover-preview")?.replaceChildren();
+  if (apply && !state.importBusy && (state.importBusy === false || !["正在导入…", "正在预览…", "正在识别…"].includes(apply.textContent))) {
+    apply.disabled = !state.imports.length;
+    apply.textContent = document.querySelector("#import-mode")?.value === "replace-matching" ? "预览同文覆盖" : state.imports.length ? `导入 ${state.imports.length} 个文件` : "导入当前记忆体";
+  }
   list.innerHTML = state.imports.map((item, index) => `<article class="import-card" data-index="${index}"><div class="import-head"><div><strong>${escapeHtml(item.filename)}</strong><div class="import-meta">原始记录 ${item.totalRows} 条 · 将导入纯对话 ${item.valid} 条 · 自动过滤 ${(item.invalid || 0) + (item.filtered || 0)} 条${item.filtered ? `（其中内部运输/模板 ${item.filtered} 条）` : ""} · ${item.firstDate || "-"} 至 ${item.lastDate || "-"}</div></div></div>${previewTable(item)}${pagination(item)}</article>`).join("");
   list.querySelectorAll(".import-card").forEach(card => {
     const index = Number(card.dataset.index), item = state.imports[index];
@@ -1150,12 +1157,20 @@ function renderCompressionReport(kind,data) {
 }
 
 function renderConversationImport(library) {
-  state.imports=[];
+  state.imports=[]; state.importPlan=null; state.importBusy=false;
   document.querySelectorAll(".side-nav button").forEach(button=>button.classList.toggle("active",button.dataset.view==="maintenance"));
   const main=document.querySelector("#workspace-main");
-  main.innerHTML=`<div class="dashboard-head"><div><p class="eyebrow">对话维护</p><h1>对话导入</h1><p class="lead">支持 Claude Code、Claude.ai、Codex、ChatGPT 官方导出、通用 JSON/JSONL 和 SQLite；确认识别结果后再写入当前记忆体。</p></div><button class="ghost" id="back-maintenance">返回记忆</button></div><section class="section-card"><div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="上传对话文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 002 2h10a2 2 0 002-2v-4"/></svg><strong>把文件拖到这里</strong><p>或者点击打开文件资源管理器</p><button class="secondary" type="button">选择文件</button><input id="file-input" type="file" accept=".json,.jsonl,.db,.sqlite,.sqlite3" multiple hidden></div><div class="import-list" id="import-list"></div><div class="wizard-actions"><span></span><button class="primary" id="apply-import" disabled>导入当前记忆体</button></div></section>`;
+  main.innerHTML=`<div class="dashboard-head"><div><p class="eyebrow">对话维护</p><h1>对话导入</h1><p class="lead">支持 Claude Code、Claude.ai、Codex、ChatGPT 官方导出、通用 JSON/JSONL 和 SQLite；确认识别结果后再写入当前记忆体。</p></div><button class="ghost" id="back-maintenance">返回记忆</button></div><section class="section-card"><div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="上传对话文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 002 2h10a2 2 0 002-2v-4"/></svg><strong>把文件拖到这里</strong><p>或者点击打开文件资源管理器</p><button class="secondary" type="button">选择文件</button><input id="file-input" type="file" accept=".json,.jsonl,.db,.sqlite,.sqlite3" multiple hidden></div><div class="field"><label for="import-mode">导入方式</label><select id="import-mode"><option value="append">追加新对话</option><option value="replace-matching">同文覆盖 · 修正原始时间戳</option></select><p class="help">同文覆盖按角色、正文和相邻对话匹配旧导入记录，不按日期整段删除。无法确定的记录会保留。</p></div><div class="import-list" id="import-list"></div><div id="cover-preview"></div><div class="wizard-actions"><span></span><button class="primary" id="apply-import" disabled>导入当前记忆体</button></div></section>`;
   const input=main.querySelector("#file-input"),zone=main.querySelector("#dropzone"),apply=main.querySelector("#apply-import");
-  const receive=async files=>{await uploadFiles(files);apply.disabled=!state.imports.length;apply.textContent=state.imports.length?`导入 ${state.imports.length} 个文件`:"导入当前记忆体";};
+  const mode=main.querySelector("#import-mode");
+  mode.onchange=()=>renderImports();
+  const receive=async files=>{
+    if(state.importBusy)return;
+    state.importBusy=true;state.importPlan=null;main.querySelector("#cover-preview").replaceChildren();
+    apply.disabled=true;input.disabled=true;mode.disabled=true;apply.textContent="正在识别…";
+    try { await uploadFiles(files); }
+    finally { state.importBusy=false;input.disabled=false;mode.disabled=false;renderImports(); }
+  };
   zone.onclick=event=>{if(event.target.tagName!=="INPUT")input.click();};
   zone.onkeydown=event=>{if(["Enter"," "].includes(event.key)){event.preventDefault();input.click();}};
   zone.ondragover=event=>{event.preventDefault();zone.classList.add("dragging");};
@@ -1163,12 +1178,38 @@ function renderConversationImport(library) {
   zone.ondrop=event=>{event.preventDefault();zone.classList.remove("dragging");receive(event.dataTransfer.files);};
   input.onchange=()=>receive(input.files);
   main.querySelector("#back-maintenance").onclick=()=>renderManagement(library);
+  const requestImport=confirmedPlan=>api(`/api/libraries/${encodeURIComponent(library.threadId)}/imports`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({importTokens:state.imports.map(item=>item.token),mode:mode.value,...(confirmedPlan?{confirmedPlan}:{})})});
+  const busy=value=>{state.importBusy=value;apply.disabled=value;input.disabled=value;mode.disabled=value;};
+  const showResult=result=>{
+    state.imports=[];state.importPlan=null;
+    const cover=mode.value==="replace-matching";
+    main.querySelector("#import-list").replaceChildren();
+    main.querySelector("#cover-preview").innerHTML=`<section class="summary-box" role="status"><h2>${cover?"同文覆盖已完成":"导入已完成"}</h2><p>${cover?`已替换 ${result.replaced} 条旧记录，新增 ${result.imported} 条；已有新版不会重复导入。`:`已导入 ${result.imported} 条纯对话。`}</p>${cover?`<p>旧记录已备份，旧摘要保留。${result.ambiguous?`还有 ${result.ambiguous} 条匹配不确定，未覆盖对应旧记录。`:""}</p><p>需要重新挖掘的日期：${escapeHtml(result.affectedDates.join("、")||"无变化，无需重挖")}</p>`:""}</section>`;
+    main.querySelector("#cover-preview").insertAdjacentHTML("beforeend",`<div class="wizard-actions"><span></span><button class="secondary" id="finish-import">返回记忆管理</button></div>`);
+    main.querySelector("#finish-import").onclick=()=>renderManagement(library);
+    showToast(cover?"同文覆盖完成，旧记录已备份":"导入完成");
+  };
   apply.onclick=async()=>{
-    apply.disabled=true;apply.textContent="正在导入…";
-    try{
-      const result=await api(`/api/libraries/${encodeURIComponent(library.threadId)}/imports`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({importTokens:state.imports.map(item=>item.token)})});
-      state.imports=[];showToast(`已导入 ${result.imported} 条纯对话`);renderManagement(library);
-    }catch(error){showToast(error.message,"error");apply.disabled=false;apply.textContent=`导入 ${state.imports.length} 个文件`;}
+    if(state.importBusy||!state.imports.length)return;
+    busy(true);apply.textContent=mode.value==="replace-matching"?"正在预览…":"正在导入…";
+    try {
+      const result=await requestImport();
+      if(mode.value!=="replace-matching"){showResult(result);return;}
+      state.importPlan=result;
+      const host=main.querySelector("#cover-preview");
+      const dates=[...new Set(result.entries.filter(row=>row.action==="replace").map(row=>row.newDate))];
+      host.innerHTML=`<section class="summary-box" aria-label="覆盖预览"><h2>可确认覆盖 ${result.replace} 条旧记录</h2><p>新增 ${result.add} 条；${result.alreadyPresent} 条新版已存在，不重复导入。</p><p>${result.unmatched} 条未找到对应旧文，仅保留或追加新版；${result.ambiguous} 条匹配不确定，对应旧记录继续保留。</p><p>覆盖后的日期：${escapeHtml(dates.join("、")||"没有匹配到可覆盖的旧记录")}</p><p>会先备份旧记录。旧摘要保留，完成后由你手动重新挖掘。</p><div class="wizard-actions"><button class="ghost" id="cancel-cover">返回修改</button><button class="primary" id="confirm-cover">确认覆盖并导入</button></div></section>`;
+      host.querySelector("#cancel-cover").onclick=()=>{state.importPlan=null;host.replaceChildren();};
+      host.querySelector("#confirm-cover").onclick=async()=>{
+        if(state.importBusy||!state.importPlan)return;
+        const button=host.querySelector("#confirm-cover");button.disabled=true;host.querySelector("#cancel-cover").disabled=true;
+        busy(true);button.textContent="正在备份并覆盖…";
+        try { showResult(await requestImport(state.importPlan.expectedHash)); }
+        catch(error){state.importPlan=null;host.innerHTML=`<div class="empty" role="alert">${escapeHtml(error.message)}。请重新预览，确认结果后再覆盖。</div>`;showToast(error.message,"error");}
+        finally {busy(false);apply.disabled=!state.imports.length;apply.textContent="预览同文覆盖";}
+      };
+    } catch(error){showToast(error.message,"error");}
+    finally {busy(false);apply.disabled=!state.imports.length;apply.textContent=mode.value==="replace-matching"?"预览同文覆盖":state.imports.length?`导入 ${state.imports.length} 个文件`:"导入当前记忆体";}
   };
   renderImports();
 }

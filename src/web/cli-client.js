@@ -8,10 +8,10 @@ function safeStmemFailure(stderr, command, status) {
   const lines = String(stderr || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   const marked = lines.reverse().find(line =>
     /^\[(?:memory-miner|memory-compressor)\]\s+(?:subagent\s+)?error:/i.test(line)
-    || /^\[(?:tool-policy|module)\]\s+error:/i.test(line));
+    || /^\[(?:tool-policy|module|import)\]\s+error:/i.test(line));
   if (marked) {
     return marked.replace(/^\[(?:memory-miner|memory-compressor)\]\s+/i, "")
-      .replace(/^\[(?:tool-policy|module)\]\s+/i, "").slice(0, 800);
+      .replace(/^\[(?:tool-policy|module|import)\]\s+/i, "").slice(0, 800);
   }
   // 不把任意 stderr（可能包含私密对话或模型原文）直接回显给前端；
   // 只提取脚本明确标记的错误或常见系统错误。

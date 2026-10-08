@@ -5,15 +5,17 @@ const { getThreadDir, listMemoryIds } = require("../src/config");
 const { ingestRecords } = require("../src/services/thread-ingest");
 const { readImportSource } = require("../src/services/import-source");
 const { MemoryStore } = require("../src/storage/memory-store");
+const { planMatchingReplacement, publicMatchingPlan, applyMatchingReplacement } = require("../src/services/import-matching-replacement");
 
 function parseArgs(argv) {
   const args = [...argv];
   if (args[0] === "import") args.shift();
   const options = { apply: false };
-  const values = { "--thread": "thread", "--memory": "memory", "--source": "source", "--dir": "dir", "--table": "table", "--map-time": "timeField", "--map-role": "roleField", "--map-content": "contentField" };
+  const values = { "--thread": "thread", "--memory": "memory", "--source": "source", "--sources-file": "sourcesFile", "--dir": "dir", "--table": "table", "--map-time": "timeField", "--map-role": "roleField", "--map-content": "contentField", "--replace-import-file": "originalFile", "--expect-hash": "expectedHash" };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--apply") { options.apply = true; continue; }
     if (args[i] === "--dry-run") { options.apply = false; continue; }
+    if (args[i] === "--replace-matching") { options.replaceMatching = true; continue; }
     const key = values[args[i]];
     if (!key || !args[i + 1]) throw new Error(`未知或缺少参数：${args[i]}`);
     options[key] = args[++i];
@@ -60,6 +62,31 @@ function main() {
   const fullDir = path.join(memoryDir, "archive", "full");
   const importDir = path.join(threadDir, "memory", "import");
   const doneDir = path.join(importDir, "done");
+  if (options.replaceMatching || options.originalFile) {
+    if (options.replaceMatching && options.originalFile) throw new Error("同文覆盖和原文件覆盖不能混用");
+    if (options.dir || (!!options.source === !!options.sourcesFile)) throw new Error("覆盖导入必须指定一个来源文件或来源清单");
+    const sources = options.source ? [options.source] : JSON.parse(fs.readFileSync(options.sourcesFile, "utf8"));
+    if (!Array.isArray(sources) || !sources.length || sources.some(file => typeof file !== "string")) throw new Error("来源清单无效");
+    const batches = sources.map(file => { const source = readImportSource({ filePath: path.resolve(file), table: options.table, timeField: options.timeField, roleField: options.roleField, contentField: options.contentField }); return { records: source.records, format: source.preview.format }; });
+    let originalBatch = null;
+    if (options.originalFile) {
+      const originalPath = fs.realpathSync(options.originalFile), donePath = fs.realpathSync(doneDir);
+      if (!originalPath.startsWith(donePath + path.sep)) throw new Error("旧文件必须来自当前记忆体已导入文件目录");
+      const original = readImportSource({ filePath: originalPath });
+      originalBatch = { records: original.records, format: original.preview.format };
+    }
+    const store = new MemoryStore({ memoryDir, threadId: tid });
+    try {
+      const plan = planMatchingReplacement(store, batches, { originalBatch });
+      if (!options.apply) { console.log(JSON.stringify({ dryRun: true, ...publicMatchingPlan(plan) })); return; }
+      const result = applyMatchingReplacement(store, batches, { expectedHash: options.expectedHash, fullDir, originalBatch });
+      fs.mkdirSync(doneDir, { recursive: true });
+      for (const file of sources) fs.copyFileSync(file, path.join(doneDir, `${Date.now()}-${process.pid}-${path.basename(file)}`));
+      console.log(JSON.stringify(result)); return;
+    } finally { store.close(); }
+  }
+  if (options.sourcesFile) throw new Error("来源清单仅适用于覆盖导入");
+  if (options.expectedHash) throw new Error("--expect-hash 必须配合同文覆盖或原文件覆盖");
   const files = sourceFiles(options, importDir, doneDir);
   if (!files.length) throw new Error("没有找到可导入的 JSON、JSONL 或 SQLite 文件");
   console.log(`[import] 线程: ${tid}，模式: ${options.apply ? "写入" : "预览"}`);
@@ -85,4 +112,4 @@ function main() {
   if (failed) process.exitCode = 1;
 }
 
-try { main(); } catch (error) { console.error(error.message); process.exitCode = 1; }
+try { main(); } catch (error) { console.error(`[import] error: ${error.message}`); process.exitCode = 1; }

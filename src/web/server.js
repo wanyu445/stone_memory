@@ -1931,7 +1931,6 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
 
   const layoutUpgradeMatch = url.pathname.match(/^\/api\/memories\/([^/]+)\/layout-upgrade$/);
   if (req.method === "POST" && layoutUpgradeMatch) {
-    if (isRemote) throw new Error("旧布局升级只能在运行 Stone Memory 的本机完成");
     const memoryId = decodeURIComponent(layoutUpgradeMatch[1]);
     const before = listLibraries().find(item => item.memoryId === memoryId);
     if (!before) throw new Error(`记忆体不存在：${memoryId}`);

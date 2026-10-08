@@ -134,3 +134,11 @@ test("local Web upgrades a legacy card and leaves an unverifiable window unbound
   assert.equal(body.bindingRequired, true);
   assert.equal(body.library.watcherEnabled, false);
 });
+
+test("authenticated Web layout upgrades are not restricted to loopback addresses", () => {
+  const server = fs.readFileSync(path.join(root, "src", "web", "server.js"), "utf8");
+  const route = server.slice(server.indexOf("const layoutUpgradeMatch"), server.indexOf('if (req.method === "POST" && url.pathname === "/api/libraries")'));
+  assert.doesNotMatch(route, /旧布局升级只能在运行 Stone Memory 的本机完成/);
+  assert.doesNotMatch(route, /if \(isRemote\)/);
+  assert.match(server, /if \(isRemote && \(body\.threadId \|\| body\.sessionDir/);
+});

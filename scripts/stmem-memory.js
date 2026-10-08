@@ -14,6 +14,7 @@ function usage() {
   stmem memory create [--name <名称>]
   stmem memory settings --memory <id>
   stmem memory settings --memory <id> --batch-file <json> --validate|--apply
+  stmem memory migrate-layout --memory <旧版ID> [--batch-file <json>] [--apply]
   stmem memory repair --memory <id> [--apply]
   stmem memory delete --memory <id> [--apply]
   stmem memory update|batch-update|anchor --thread <兼容记忆体ID> --batch-file <json>`;
@@ -41,6 +42,12 @@ function runMemoryCommand(args = process.argv.slice(3)) {
     const result = updateMemorySettings(memoryId, patch, { apply: args.includes("--apply") });
     console.log(JSON.stringify({ memoryId, ...result }, null, 2));
     return result;
+  }
+  if (action === "migrate-layout") {
+    const migrationArgs = args.slice(1);
+    if (!migrationArgs.includes("--memory") && !migrationArgs.includes("--thread")) throw new Error("请指定 --memory <旧版ID>");
+    const normalized = migrationArgs.map(arg => arg === "--thread" ? "--memory" : arg);
+    return require("./migrate-legacy-memory-layout").main([...normalized, "--formal-cli"]);
   }
   if (action === "delete") {
     const memoryId = value(args, "--memory") || value(args, "--thread");

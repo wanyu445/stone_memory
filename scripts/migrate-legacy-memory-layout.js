@@ -11,12 +11,14 @@ const safeName = /^(?!\.{1,2}$)(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$))
 const reservedKeys = new Set(["runtimes", "threadId", "apiKeys", "web", "memories"]);
 
 function options(argv) {
-  const result = { memory: null, apply: false, servicesStopped: false };
+  const result = { memory: null, batchFile: null, apply: false, servicesStopped: false, formalCli: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--memory" && argv[i + 1]) result.memory = argv[++i];
+    else if (argv[i] === "--batch-file" && argv[i + 1]) result.batchFile = argv[++i];
     else if (argv[i] === "--apply") result.apply = true;
     else if (argv[i] === "--dry-run") result.apply = false;
     else if (argv[i] === "--services-stopped") result.servicesStopped = true;
+    else if (argv[i] === "--formal-cli") result.formalCli = true;
     else if (argv[i] === "--help" || argv[i] === "-h") result.help = true;
     else throw new Error(`Unknown argument: ${argv[i]}`);
   }
@@ -105,7 +107,7 @@ function oldFlag(entry, module, key, fallback) {
   return fallback;
 }
 
-function metadata(id, entry, now) {
+function metadata(id, entry, now, patch = {}) {
   const modules = {
     ...(entry.watcherModules || {}),
     archive: oldFlag(entry, "archive", "automaticFullMining", true),
@@ -115,10 +117,11 @@ function metadata(id, entry, now) {
   };
   return {
     memory: {
-      schemaVersion: 1, memoryId: id, label: entry.label || id, status: "active",
-      purpose: entry.purpose || null, scenario: entry.scenario || entry.purpose || "accompany",
-      ai: entry.ai || "", user: entry.user || "",
-      userGender: entry.userGender || "unspecified",
+      schemaVersion: 1, memoryId: id, label: patch.label || entry.label || id, status: "active",
+      purpose: patch.purpose || patch.scenario || entry.purpose || null,
+      scenario: patch.scenario || patch.purpose || entry.scenario || entry.purpose || "accompany",
+      ai: patch.ai ?? entry.ai ?? "", user: patch.user ?? entry.user ?? "",
+      userGender: patch.userGender || entry.userGender || "unspecified",
       relationshipTimeline: Array.isArray(entry.relationshipTimeline) ? entry.relationshipTimeline : [],
       mcpModules: Array.isArray(entry.mcpModules) ? entry.mcpModules : ["notebook-lab", "dream-lab"],
       mcpModuleConfigVersion: Number(entry.mcpModuleConfigVersion) || 1,
@@ -132,13 +135,15 @@ function metadata(id, entry, now) {
       createdAt: entry.createdAt || now, updatedAt: entry.updatedAt || entry.createdAt || now,
     },
     bindings: { schemaVersion: 1, revision: 0, primaryBindingId: null, bindings: [] },
-    watcher: { schemaVersion: 1, enabled: typeof entry.watcherEnabled === "boolean" ? entry.watcherEnabled : Object.values(modules).some(Boolean), modules },
+    // A canonical worker must not start until the legacy window has been
+    // validated and recorded as a formal Binding.
+    watcher: { schemaVersion: 1, enabled: false, modules },
     receipt: { schemaVersion: 1, status: "complete", memoryId: id, origin: "legacy-runtime-v0", completedAt: now },
   };
 }
 
-function main() {
-  const flags = options(process.argv.slice(2));
+function main(argv = process.argv.slice(2)) {
+  const flags = options(argv);
   if (flags.help) {
     console.log("node scripts/migrate-legacy-memory-layout.js --memory <legacy-id> [--apply --services-stopped]\nDry run by default. Before --apply, stop Web and every watcher; --services-stopped is your confirmation, not an automatic global service check. Apply backs up stmem.json under ~/.stone_memory/backups/layout-migration, keeps old files and SQLite, and creates an unbound canonical memory. Bind its thread separately before restarting services.");
     return;
@@ -163,9 +168,13 @@ function main() {
   if (entries.some(item => !item.directory && reserved.has(item.relative))) throw new Error("Legacy directory already contains canonical metadata");
   const files = entries.filter(item => !item.directory);
   const bytes = files.reduce((total, item) => total + item.bytes, 0);
-  const summary = { memoryId: flags.memory, files: files.length, bytes, activeWatcherPid: watcherPid, legacySourcePreserved: true, sqliteChanged: false };
+  const patch = flags.batchFile ? JSON.parse(fs.readFileSync(flags.batchFile, "utf8")) : {};
+  const unknown = Object.keys(patch).filter(key => !["label", "purpose", "scenario", "ai", "user", "userGender"].includes(key));
+  if (unknown.length) throw new Error(`Unsupported migration fields: ${unknown.join(", ")}`);
+  const preview = metadata(flags.memory, legacy, new Date().toISOString(), patch);
+  const summary = { memoryId: flags.memory, files: files.length, bytes, activeWatcherPid: watcherPid, legacySourcePreserved: true, sqliteChanged: false, settings: preview.memory };
   if (!flags.apply) { console.log(JSON.stringify({ dryRun: true, blocked: watcherPid !== null, ...summary }, null, 2)); return; }
-  if (!flags.servicesStopped) throw new Error("Stop Web and watcher, then pass --services-stopped");
+  if (!flags.formalCli && !flags.servicesStopped) throw new Error("Stop Web and watcher, then pass --services-stopped");
   if (watcherPid !== null) throw new Error(`Watcher PID ${watcherPid} is still active`);
   if (typeof fs.statfsSync !== "function") throw new Error("Node version cannot check free disk space");
   const space = fs.statfsSync(dataRoot);
@@ -189,7 +198,7 @@ function main() {
     fs.mkdirSync(stage, { mode: 0o700 });
     staged = true;
     copyVerified(source, stage, entries);
-    const next = metadata(flags.memory, legacy, new Date().toISOString());
+    const next = metadata(flags.memory, legacy, new Date().toISOString(), patch);
     scaffold(stage, next.memory.ai);
     for (const [file, value] of Object.entries({ "memory.json": next.memory, "bindings.json": next.bindings, "watcher.json": next.watcher, ".layout-v1.json": next.receipt }))
       writeJson(path.join(stage, file), value);
@@ -210,5 +219,9 @@ function main() {
   console.log(JSON.stringify({ applied: true, backup, bindingRequired: true, ...summary }, null, 2));
 }
 
-try { main(); }
-catch (error) { console.error(`[layout-migration] ${error.message}`); process.exitCode = 1; }
+if (require.main === module) {
+  try { main(); }
+  catch (error) { console.error(`[layout-migration] ${error.message}`); process.exitCode = 1; }
+}
+
+module.exports = { main, options, metadata };

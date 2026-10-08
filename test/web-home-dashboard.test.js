@@ -73,6 +73,8 @@ test("memory creation uses one lightweight dialog instead of entering the legacy
   assert.ok(creation.indexOf("情感陪伴") < creation.indexOf("编程日志"));
   assert.doesNotMatch(creation, />学习<|>陪伴<|>编程</);
   assert.match(creation, /创建并进入/);
+  assert.match(creation, /升级旧版记忆体/);
+  assert.match(creation, /layout-upgrade/);
   assert.doesNotMatch(creation, /resetCreateForm|wizard\(\)/);
 });
 

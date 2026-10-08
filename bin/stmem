@@ -59,6 +59,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem memory update|anchor --memory <id> --batch-file <json>  编辑摘要与锚点
   stmem memory create [--name <名称>]            创建未绑定窗口的记忆体
   stmem memory settings --memory <id> --batch-file <json> --validate|--apply 读取或修改记忆体设置
+  stmem memory migrate-layout --memory <旧版ID> [--batch-file <json>] [--apply] 升级旧版目录布局
   stmem memory delete --memory <id> [--apply]     预览或可恢复删除空草稿
   stmem api-profile set --batch-file <json> --validate|--apply  保存全局 API 凭据配置
   stmem watcher [status|on|off] --memory <id>   查看/修改该记忆体 watcher 期望状态

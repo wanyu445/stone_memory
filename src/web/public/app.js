@@ -339,8 +339,9 @@ function welcome() {
 }
 
 function createMemoryDraft(button, memory = null) {
+  const upgrading=memory?.upgradeRequired===true;
   const overlay=document.createElement("div");overlay.className="editor-overlay create-memory-overlay";
-  overlay.innerHTML=`<form class="editor-panel create-memory-dialog"><button class="ghost editor-close" type="button" aria-label="关闭">关闭</button><p class="eyebrow">NEW MEMORY</p><h2>${memory?"完成记忆体设置":"创建记忆体"}</h2><p class="lead">先建立记忆本身。对话绑定、历史导入与自动化可以进入记忆体后再设置。</p><div class="field-grid"><div class="field full"><label for="quick-memory-name">记忆体名字</label><input id="quick-memory-name" name="libraryName" value="${escapeHtml(memory?.libraryName||"")}" required autofocus></div><div class="field"><label for="quick-ai-name">AI 名字</label><input id="quick-ai-name" name="ai" required></div><div class="field"><label for="quick-user-name">用户名字</label><input id="quick-user-name" name="user" required></div><div class="field full"><label for="quick-purpose">挖掘场景</label><select id="quick-purpose" name="scenario"><option value="life-supervision">生活监督</option><option value="accompany">情感陪伴</option><option value="coding">编程日志</option></select><small>决定今后生成摘要和特征时关注什么。</small></div></div><div class="wizard-actions">${memory?'<button class="danger-button" id="delete-draft-memory" type="button">删除这个空记忆体</button>':'<span></span>'}<button class="primary" type="submit">创建并进入</button></div></form>`;
+  overlay.innerHTML=`<form class="editor-panel create-memory-dialog"><button class="ghost editor-close" type="button" aria-label="关闭">关闭</button><p class="eyebrow">${upgrading?"MEMORY UPGRADE":"NEW MEMORY"}</p><h2>${upgrading?"升级旧版记忆体":memory?"完成记忆体设置":"创建记忆体"}</h2><p class="lead">${upgrading?"确认新版记忆体信息。历史数据会保留，旧目录不会删除。":"先建立记忆本身。对话绑定、历史导入与自动化可以进入记忆体后再设置。"}</p><div class="field-grid"><div class="field full"><label for="quick-memory-name">记忆体名字</label><input id="quick-memory-name" name="libraryName" value="${escapeHtml(memory?.libraryName||"")}" required autofocus></div><div class="field"><label for="quick-ai-name">AI 名字</label><input id="quick-ai-name" name="ai" value="${escapeHtml(memory?.ai||"")}" required></div><div class="field"><label for="quick-user-name">用户名字</label><input id="quick-user-name" name="user" value="${escapeHtml(memory?.user||"")}" required></div><div class="field full"><label for="quick-purpose">挖掘场景</label><select id="quick-purpose" name="scenario"><option value="life-supervision">生活监督</option><option value="accompany">情感陪伴</option><option value="coding">编程日志</option></select><small>决定今后生成摘要和特征时关注什么。</small></div></div><div class="wizard-actions">${memory&&!upgrading?'<button class="danger-button" id="delete-draft-memory" type="button">删除这个空记忆体</button>':'<span></span>'}<button class="primary" type="submit">${upgrading?"确认升级":"创建并进入"}</button></div></form>`;
   document.body.append(overlay);
   const close=()=>{overlay.remove();if(button){button.disabled=false;}};
   overlay.querySelector(".editor-close").onclick=close;
@@ -353,12 +354,14 @@ function createMemoryDraft(button, memory = null) {
   });
   overlay.querySelector("form").onsubmit=async event=>{
     event.preventDefault();const submit=event.currentTarget.querySelector('button[type="submit"]'),values=Object.fromEntries(new FormData(event.currentTarget).entries());
-    submit.disabled=true;submit.textContent="正在创建…";
+    submit.disabled=true;submit.textContent=upgrading?"正在升级…":"正在创建…";
     try{
-      const result=await api("/api/libraries",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...values,...(memory?{memoryId:memory.memoryId}:{})})});
-      overlay.remove();await loadLibraries();showToast(`“${result.library.libraryName}”已经创建`);await openLibrary(result.library.memoryId);
-    }catch(error){showToast(error.message,"error");submit.disabled=false;submit.textContent="创建并进入";}
+      const endpoint=upgrading?`/api/memories/${encodeURIComponent(memory.memoryId)}/layout-upgrade`:"/api/libraries";
+      const result=await api(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...values,...(!upgrading&&memory?{memoryId:memory.memoryId}:{})})});
+      overlay.remove();await loadLibraries();showToast(upgrading?(result.bindingRequired?`“${result.library.libraryName}”已经升级，请重新绑定对话窗口`:`“${result.library.libraryName}”已经升级`):`“${result.library.libraryName}”已经创建`);await openLibrary(result.library.memoryId);
+    }catch(error){showToast(error.message,"error");submit.disabled=false;submit.textContent=upgrading?"确认升级":"创建并进入";}
   };
+  overlay.querySelector("#quick-purpose").value=memory?.scenario||memory?.purpose||"life-supervision";
   requestAnimationFrame(()=>overlay.querySelector("#quick-memory-name")?.focus());
 }
 
@@ -513,8 +516,8 @@ async function createLibrary() {
 }
 
 function lobby() {
-    app.innerHTML = `<section class="lobby stone-page-transition-pending" data-transition-message="正在整理今日纹路…" aria-busy="true"><div class="shell"><div class="lobby-head"><p>—— 蒲苇韧如丝，磐石无转移 ——</p></div><div class="library-grid">${state.libraries.map(library => `<button class="library-card" data-id="${escapeHtml(library.memoryId || library.threadId)}">${stoneSvg("mini-stone")}<h2>${escapeHtml(library.libraryName)}</h2><p>${!library.configured ? "尚未配置 · 点击继续" : !library.bound ? "尚未绑定对话窗口" : library.lastMinedAt ? "记忆正在生长" : "等待第一次记忆挖掘"}</p><div class="library-stats"><span>${library.counts.feelings} 条摘要</span><span>${library.counts.features} 条特征</span></div></button>`).join("")}<button class="library-card new-card" id="new-library"><div><span>＋</span><strong>创建新的记忆体</strong></div></button></div></div></section>`;
-  document.querySelectorAll(".library-card").forEach(card => card.onclick = () => { const library=state.libraries.find(item=>(item.memoryId||item.threadId)===card.dataset.id); library?.configured?openLibrary(card.dataset.id):createMemoryDraft(card,library); });
+    app.innerHTML = `<section class="lobby stone-page-transition-pending" data-transition-message="正在整理今日纹路…" aria-busy="true"><div class="shell"><div class="lobby-head"><p>—— 蒲苇韧如丝，磐石无转移 ——</p></div><div class="library-grid">${state.libraries.map(library => `<button class="library-card" data-id="${escapeHtml(library.memoryId || library.threadId)}">${stoneSvg("mini-stone")}<h2>${escapeHtml(library.libraryName)}</h2><p>${library.upgradeRequired ? "旧版记忆体 · 点击升级" : !library.configured ? "尚未配置 · 点击继续" : !library.bound ? "尚未绑定对话窗口" : library.lastMinedAt ? "记忆正在生长" : "等待第一次记忆挖掘"}</p><div class="library-stats"><span>${library.counts.feelings} 条摘要</span><span>${library.counts.features} 条特征</span></div></button>`).join("")}<button class="library-card new-card" id="new-library"><div><span>＋</span><strong>创建新的记忆体</strong></div></button></div></div></section>`;
+    document.querySelectorAll(".library-card").forEach(card => card.onclick = () => { const library=state.libraries.find(item=>(item.memoryId||item.threadId)===card.dataset.id); library?.upgradeRequired?createMemoryDraft(card,library):library?.configured?openLibrary(card.dataset.id):createMemoryDraft(card,library); });
   document.querySelector("#new-library").onclick = event => createMemoryDraft(event.currentTarget);
 }
 

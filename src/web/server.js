@@ -429,6 +429,7 @@ function publicThreadSettings(threadId, { redactLocalPaths = false } = {}) {
   const actions = watcherActions(entry);
   return {
     memoryId, threadId: memoryId, externalThreadId: entry.externalThreadId || (layout !== "memory-v1" ? legacyThreadId : null),
+    layout, upgradeRequired: layout === "legacy-runtime-v0" || layout === "legacy",
     libraryName: entry.label || memoryId, ai: entry.ai || "", user: entry.user || "",
     scenario: scenarioId(entry), userGender: entry.userGender || "unspecified", runtime: entry.runtime || "claude", purpose: entry.purpose || "accompany",
     sessionDir: redactLocalPaths ? "" : (entry.sessionDir || ""), minerMode: entry.minerMode || "subagent", apiProvider: entry.apiProvider || "",
@@ -570,7 +571,7 @@ function listLibraries() {
       const latestArchived = store.db.prepare("SELECT MAX(timestamp) timestamp FROM messages WHERE thread_id=?").get(threadId);
       const latest = store.db.prepare("SELECT MAX(completed_at) completedAt FROM mining_day_state WHERE thread_id=? AND status='completed'").get(threadId);
       return {
-        memoryId, scenario: scenarioId(tc), configured: true, bound, bindingCount, threadId, externalThreadId: tc.externalThreadId || (context.layout !== "memory-v1" ? threadId : null), libraryName: tc.label || memoryId, runtime: tc.runtime || null, purpose: tc.purpose || "accompany", createdAt,
+        memoryId, layout: context.layout, upgradeRequired: context.layout === "legacy-runtime-v0", scenario: scenarioId(tc), configured: true, bound, bindingCount, threadId, externalThreadId: tc.externalThreadId || (context.layout !== "memory-v1" ? threadId : null), libraryName: tc.label || memoryId, runtime: tc.runtime || null, purpose: tc.purpose || "accompany", createdAt,
         ai: tc.ai || "", user: tc.user || "", counts,
         lastArchivedAt: latestArchived?.timestamp || null, lastMinedAt: latest?.completedAt || null,
         watcherEnabled: watcherEnabled(tc),
@@ -583,7 +584,7 @@ function listLibraries() {
   });
   const configuredMemoryIds = new Set(configured.map(item => item.memoryId));
   const drafts = listMemories(config).filter(memory => !configuredMemoryIds.has(memory.memoryId)).map(memory => ({
-    memoryId: memory.memoryId, configured: false, threadId: null, libraryName: memory.label,
+    memoryId: memory.memoryId, layout: "memory-v1", upgradeRequired: false, configured: false, threadId: null, libraryName: memory.label,
     runtime: null, purpose: null, ai: "", user: "", createdAt: memory.createdAt,
     counts: { messages: 0, feelings: 0, features: 0, coarse: 0, hidden: 0 },
     lastArchivedAt: null, lastMinedAt: null,
@@ -1926,6 +1927,45 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       fs.rmSync(path.dirname(item.filePath),{recursive:true,force:true});previews.delete(token);
     }
     return json(res,200,imported);
+  }
+
+  const layoutUpgradeMatch = url.pathname.match(/^\/api\/memories\/([^/]+)\/layout-upgrade$/);
+  if (req.method === "POST" && layoutUpgradeMatch) {
+    if (isRemote) throw new Error("旧布局升级只能在运行 Stone Memory 的本机完成");
+    const memoryId = decodeURIComponent(layoutUpgradeMatch[1]);
+    const before = listLibraries().find(item => item.memoryId === memoryId);
+    if (!before) throw new Error(`记忆体不存在：${memoryId}`);
+    if (!before.upgradeRequired) return json(res, 200, { changed: false, library: before });
+    const body = await readJson(req);
+    const payload = {
+      label: String(body.libraryName || before.libraryName || memoryId).trim(),
+      ai: String(body.ai || before.ai || "").trim(),
+      user: String(body.user || before.user || "").trim(),
+      scenario: String(body.scenario || before.scenario || before.purpose || "accompany").trim(),
+      purpose: String(body.scenario || before.scenario || before.purpose || "accompany").trim(),
+      userGender: String(body.userGender || "unspecified"),
+    };
+    if (!payload.label || !payload.ai || !payload.user) throw new Error("请补全记忆体名字、AI 名字和用户名字");
+    runStmemBatch(["memory", "migrate-layout", "--memory", memoryId], payload);
+    runStmemBatch(["memory", "migrate-layout", "--memory", memoryId, "--apply"], payload);
+    let bindingCreated = false, bindingWarning = null;
+    try {
+      const bindingPlan = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", memoryId]));
+      if (bindingPlan.changed) {
+        runStmem(["binding", "migrate-legacy", "--memory", memoryId, "--apply"]);
+        bindingCreated = true;
+      }
+    } catch (error) {
+      bindingWarning = "旧窗口无法自动验证，请升级后在接入设置中重新绑定";
+    }
+    runStmem(["watcher", "set", "--memory", memoryId,
+      "--archive", before.automaticFullMining ? "on" : "off",
+      "--miner", before.automaticMemoryMaintenance ? "on" : "off",
+      "--compression", before.automaticCompression ? "on" : "off",
+      "--dream", before.automaticDream ? "on" : "off"]);
+    runStmem(["watcher", before.watcherEnabled && bindingCreated ? "on" : "off", "--memory", memoryId]);
+    const library = listLibraries().find(item => item.memoryId === memoryId);
+    return json(res, 200, { changed: true, library, bindingCreated, bindingRequired: !library?.bound, bindingWarning });
   }
 
   if (req.method === "POST" && url.pathname === "/api/libraries") {

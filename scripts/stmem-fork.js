@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+console.error("stmem fork 已关闭：fork/分支线程现在应作为同一记忆体的 Binding 接入，不能再创建子记忆体");
+process.exit(1);
+/* Legacy implementation retained temporarily for repository archaeology.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -44,3 +47,4 @@ console.log(`✅ ${childId} 已关联到父线程 ${parentId}`);
 console.log(`   父级 feelings/features: 每次 rebuild 动态可见`);
 console.log(`   子线程记忆回流: ${child.memoriesFlowToParent ? "开启" : "关闭"}`);
 console.log(`   近期 full: 仍只读取子线程自身`);
+*/

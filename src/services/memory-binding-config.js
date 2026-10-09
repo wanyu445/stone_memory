@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { getMemoryContext, listMemoryIds, loadConfig } = require("../config");
-const { findThreadSessionFile, listCodexSuccessors } = require("../lib/thread-session-file");
+const { findThreadSessionFile, listCodexSuccessors, resolveThreadSession, runtimeSessionMeta } = require("../lib/thread-session-file");
 const { MemoryStore } = require("../storage/memory-store");
 const { openDatabase } = require("../storage/database");
 const { addBinding: registerBinding } = require("./memory-bindings");
@@ -64,7 +64,7 @@ function planBindingAdd(memoryId, input) {
   return { dryRun: true, action: existing ? "existing" : "create", binding: existing || binding, revision: config.revision, stoppedBindingIds: capacity.stoppedBindingIds };
 }
 
-function applyBindingAdd(memoryId, input) {
+function applyBindingAdd(memoryId, input, { preserveWatcher = false } = {}) {
   const { context, file } = bindingFile(memoryId);
   const plan = planBindingAdd(memoryId, input);
   const config = readBindingConfig(memoryId);
@@ -112,7 +112,7 @@ function applyBindingAdd(memoryId, input) {
         };
         saveConfig(registry);
       }
-      if (firstBinding) {
+      if (firstBinding && !preserveWatcher) {
         const watcher = JSON.parse(originalWatcher);
         writeJson(watcherFile, {
           ...watcher,
@@ -152,36 +152,62 @@ function migrateLegacyBinding(memoryId, { apply = false } = {}) {
   if (config.bindings.length) return { memoryId, changed: false, reason: "bindings-exist", config };
   const input = legacyBindingInput(memoryId);
   if (!input) return { memoryId, changed: false, reason: "legacy-binding-not-found", config };
-  return apply ? applyBindingAdd(memoryId, input) : planBindingAdd(memoryId, input);
+  return apply ? applyBindingAdd(memoryId, input, { preserveWatcher: true }) : planBindingAdd(memoryId, input);
 }
 
 function planBindingSuccessorDiscovery(memoryId) {
   const config = readBindingConfig(memoryId);
   const existing = new Set(config.bindings.map(item => `${item.provider}\0${item.externalThreadId}`));
-  const candidates = [];
+  const candidates = [], leaves = [], supersededExternalThreadIds = new Set();
   const seen = new Set();
   const roots = new Map();
-  for (const binding of config.bindings.filter(item => item.provider === "codex" && item.mode !== "import_only")) {
-    if (!roots.has(binding.sessionRoot)) roots.set(binding.sessionRoot, []);
-    roots.get(binding.sessionRoot).push(binding.externalThreadId);
+  for (const binding of config.bindings.filter(item => item.mode !== "import_only")) {
+    const key = `${binding.provider}\0${binding.sessionRoot}`;
+    if (!roots.has(key)) roots.set(key, { provider: binding.provider, sessionRoot: binding.sessionRoot, externalThreadIds: [] });
+    roots.get(key).externalThreadIds.push(binding.externalThreadId);
   }
-  for (const [sessionRoot, externalThreadIds] of roots) {
-    for (const successor of listCodexSuccessors(sessionRoot, externalThreadIds)) {
-      const key = `codex\0${successor.id}`;
-      if (existing.has(key) || seen.has(key)) continue;
+  for (const { provider, sessionRoot, externalThreadIds } of roots.values()) {
+    const successors = provider === "codex"
+      ? listCodexSuccessors(sessionRoot, externalThreadIds)
+      : externalThreadIds.flatMap(externalThreadId => {
+        const resolved = resolveThreadSession({ root: sessionRoot, threadId: externalThreadId, runtime: "claude" });
+        return (resolved?.branches || []).map(branch => ({
+          id: branch.threadId, parentId: branch.parentThreadId, file: branch.file,
+          mtimeMs: runtimeSessionMeta(branch.file, "claude").mtimeMs,
+        }));
+      });
+    const parentIds = new Set(successors.map(item => item.parentId).filter(Boolean));
+    const leafNodes = successors.filter(item => !parentIds.has(item.id));
+    if (leafNodes.length) {
+      for (const id of externalThreadIds) supersededExternalThreadIds.add(id);
+      for (const node of successors) if (parentIds.has(node.id)) supersededExternalThreadIds.add(node.id);
+    }
+    for (const successor of leafNodes) {
+      const key = `${provider}\0${successor.id}`;
+      if (seen.has(key)) continue;
       seen.add(key);
-      candidates.push({
-        provider: "codex",
+      const leaf = {
+        provider,
         externalThreadId: successor.id,
         sessionRoot,
         mode: "child",
         enabled: true,
         parentExternalThreadId: successor.parentId,
         resolvedThreadFile: successor.file,
-      });
+        mtimeMs: successor.mtimeMs,
+      };
+      leaves.push(leaf);
+      if (!existing.has(key)) candidates.push(leaf);
     }
   }
-  return { dryRun: true, action: "discover-successors", memoryId, revision: config.revision, changed: candidates.length > 0, candidates };
+  const primaryLeaf = [...leaves].sort((a, b) => b.mtimeMs - a.mtimeMs || b.resolvedThreadFile.localeCompare(a.resolvedThreadFile))[0] || null;
+  return {
+    dryRun: true, action: "discover-successors", memoryId, revision: config.revision,
+    changed: candidates.length > 0 || supersededExternalThreadIds.size > 0,
+    topology: leaves.length <= 1 ? "linear" : "branched",
+    candidates, leaves, primaryLeaf,
+    supersededExternalThreadIds: [...supersededExternalThreadIds],
+  };
 }
 
 function applyBindingSuccessorDiscovery(memoryId) {
@@ -198,13 +224,33 @@ function applyBindingSuccessorDiscovery(memoryId) {
     if (result.changed) added.push(result.binding);
     stoppedBindingIds.push(...(result.stoppedBindingIds || []));
   }
+  let primaryChanged = false;
+  if (plan.primaryLeaf) {
+    const current = readBindingConfig(memoryId);
+    const primary = current.bindings.find(item => item.provider === plan.primaryLeaf.provider && item.externalThreadId === plan.primaryLeaf.externalThreadId);
+    if (primary && current.primaryBindingId !== primary.id) {
+      applyBindingPrimary(memoryId, primary.id);
+      primaryChanged = true;
+    }
+  }
+  const disabledBindingIds = [];
+  for (const binding of readBindingConfig(memoryId).bindings) {
+    if (binding.enabled === false || !plan.supersededExternalThreadIds.includes(binding.externalThreadId)) continue;
+    applyBindingState(memoryId, binding.id, "disable");
+    disabledBindingIds.push(binding.id);
+  }
   return {
     dryRun: false,
     applied: true,
-    changed: added.length > 0,
+    changed: added.length > 0 || primaryChanged || disabledBindingIds.length > 0,
     action: plan.action,
     memoryId,
     added,
+    topology: plan.topology,
+    leaves: plan.leaves,
+    primaryLeaf: plan.primaryLeaf,
+    primaryChanged,
+    disabledBindingIds,
     stoppedBindingIds: [...new Set(stoppedBindingIds)],
     config: readBindingConfig(memoryId),
   };

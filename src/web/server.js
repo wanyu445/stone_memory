@@ -692,7 +692,7 @@ function listLibraries() {
       const latest = store.db.prepare("SELECT MAX(completed_at) completedAt FROM mining_day_state WHERE thread_id=? AND status='completed'").get(threadId);
       return {
         memoryId, layout: context.layout, upgradeRequired: context.layout === "legacy-runtime-v0", scenario: scenarioId(tc), configured: true, bound, bindingCount, threadId, externalThreadId: primaryBinding?.externalThreadId || tc.externalThreadId || (context.layout !== "memory-v1" ? threadId : null), libraryName: tc.label || memoryId, runtime: primaryBinding?.provider || tc.runtime || null, purpose: tc.purpose || "accompany", createdAt,
-        ai: tc.ai || "", user: tc.user || "", counts,
+        ai: tc.ai || "", user: tc.user || "", userGender: tc.userGender || "unspecified", counts,
         lastArchivedAt: latestArchived?.timestamp || null, lastMinedAt: latest?.completedAt || null,
         watcherEnabled: watcherEnabled(tc),
         automaticFullMining: actions.sync,
@@ -2072,9 +2072,10 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       user: String(body.user || before.user || "").trim(),
       scenario: String(body.scenario || before.scenario || before.purpose || "accompany").trim(),
       purpose: String(body.scenario || before.scenario || before.purpose || "accompany").trim(),
-      userGender: String(body.userGender || "unspecified"),
+      userGender: String(body.userGender || before.userGender || "unspecified"),
     };
     if (!payload.label || !payload.ai || !payload.user) throw new Error("请补全记忆体名字、AI 名字和用户名字");
+    if (!new Set(["unspecified", "female", "male"]).has(payload.userGender)) throw new Error("用户性别必须是 unspecified、female 或 male");
     const job = startLayoutUpgrade(memoryId, before, payload);
     return json(res, 202, { jobId: job.id });
   }

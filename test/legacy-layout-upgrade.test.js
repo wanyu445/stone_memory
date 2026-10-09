@@ -36,7 +36,7 @@ test("formal CLI previews and upgrades a legacy layout without replacing its dat
       parentThreadId: legacyId, memoriesFlowToParent: true, watcherEnabled: false },
   }));
   const batch = path.join(home, "upgrade.json");
-  fs.writeFileSync(batch, JSON.stringify({ label: "新名字", ai: "阿石", user: "小万", scenario: "coding", purpose: "coding" }));
+  fs.writeFileSync(batch, JSON.stringify({ label: "新名字", ai: "阿石", user: "小万", userGender: "female", scenario: "coding", purpose: "coding" }));
 
   const preview = run(home, ["memory", "migrate-layout", "--memory", legacyId, "--batch-file", batch]);
   assert.equal(preview.status, 0, preview.stderr);
@@ -66,6 +66,7 @@ test("formal CLI previews and upgrades a legacy layout without replacing its dat
   assert.equal(memory.label, "新名字");
   assert.equal(memory.ai, "阿石");
   assert.equal(memory.user, "小万");
+  assert.equal(memory.userGender, "female");
   assert.equal(JSON.parse(fs.readFileSync(path.join(canonical, "watcher.json"), "utf8")).enabled, false);
   assert.equal(JSON.parse(fs.readFileSync(path.join(stone, "stmem.json"), "utf8")).memories[legacyId].memoryId, legacyId);
 
@@ -149,6 +150,10 @@ test("Web layout upgrade exposes staged progress and does not report partial rec
   assert.match(app, /while\(job\.status==="running"\)/);
   assert.match(app, /function showLayoutUpgradeProgress/);
   assert.match(app, /function showLayoutUpgradeFailure/);
+  assert.match(app, /upgrade-user-gender[\s\S]*?name="userGender"[\s\S]*?value="female"/);
+  assert.match(server, /ai: tc\.ai \|\| "", user: tc\.user \|\| "", userGender: tc\.userGender \|\| "unspecified"/);
+  assert.match(server, /userGender: String\(body\.userGender \|\| before\.userGender \|\| "unspecified"\)/);
+  assert.match(server, /用户性别必须是 unspecified、female 或 male/);
 });
 
 test("authenticated Web layout upgrades are not restricted to loopback addresses", () => {

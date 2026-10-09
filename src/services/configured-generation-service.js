@@ -1,13 +1,14 @@
 "use strict";
 
-const { loadConfig } = require("../config");
+const { loadConfig, getMemoryRuntimeConfig } = require("../config");
 const { resolveMiningApiCredentials } = require("./mining-engine-config");
 const { buildMiningApiBody, normalizeMiningApiProfile } = require("./mining-api-profile");
 const { runSubagent } = require("./subagent-runner");
 
 function resolveConfiguredGenerationMode(threadId, { loadConfigImpl = loadConfig } = {}) {
   const normalizedThreadId = requiredThreadId(threadId);
-  const thread = loadConfigImpl()[normalizedThreadId] || {};
+  const config = loadConfigImpl();
+  const thread = generationConfig(config, normalizedThreadId);
   return thread.minerMode === "api" ? "api" : "subagent";
 }
 
@@ -28,7 +29,7 @@ async function runConfiguredGeneration({
   const normalizedPrompt = String(prompt || "").trim();
   if (!normalizedPrompt) throw new Error("configured generation requires prompt");
   const config = loadConfigImpl();
-  const thread = config[normalizedThreadId] || {};
+  const thread = generationConfig(config, normalizedThreadId);
   if (thread.minerMode !== "api") {
     return normalizeText(runSubagentImpl(normalizedPrompt, {
       threadId: normalizedThreadId,
@@ -76,6 +77,12 @@ async function runConfiguredGeneration({
   }
   const payload = await response.json();
   return normalizeText(payload?.choices?.[0]?.message?.content);
+}
+
+function generationConfig(config, memoryId) {
+  return config.memories?.[memoryId]
+    ? getMemoryRuntimeConfig(memoryId, config)
+    : config[memoryId] || {};
 }
 
 function normalizeText(value) {

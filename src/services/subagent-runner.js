@@ -24,7 +24,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
-const { loadConfig, getCfg, getThreadDir } = require("../config");
+const { loadConfig, getCfg, getThreadDir, getMemoryRuntimeConfig } = require("../config");
 const { commandInvocation, appendOption, resolveExecutableInvocation } = require("../lib/command-invocation");
 const { normalizeModelName } = require("../lib/model-name");
 
@@ -207,6 +207,13 @@ function buildStdinInvocation(runtimeName, opts = {}) {
   if (type === "codex" && opts.codexProvider) {
     appendCodexProviderConfig(invocation.args, opts.codexProvider);
   }
+  if (type === "codex" && opts.strictMcpConfig) {
+    // ChatGPT Apps are enabled independently of user config and can start a
+    // remote MCP transport even with --ignore-user-config. Search delegates
+    // only need the explicitly supplied local MCP server.
+    appendOption(invocation.args, "-c", "features.apps=false");
+    appendOption(invocation.args, "-c", "features.plugins=false");
+  }
   if (type === "claude" && opts.strictMcpConfig) {
     invocation.args.push("--strict-mcp-config");
   }
@@ -282,7 +289,9 @@ function normalizeCodexProviderBaseUrl(baseUrl) {
 }
 
 function codexProviderFromConfig(config, threadId) {
-  const thread = config?.[threadId] || {};
+  const thread = config?.memories?.[threadId]
+    ? getMemoryRuntimeConfig(threadId, config)
+    : config?.[threadId] || {};
   const provider = String(thread.apiProvider || "").trim();
   const credential = config?.apiKeys?.[provider] || {};
   const key = String(credential.key || "").trim();

@@ -37,8 +37,7 @@ function canonicalRuntimeConfig(context) {
   };
 }
 
-function getMemoryRuntimeConfig(memoryId) {
-  const cfg = loadConfig();
+function getMemoryRuntimeConfig(memoryId, cfg = loadConfig()) {
   const context = resolveMemoryIdentity(cfg, path.dirname(CONFIG_PATH), memoryId);
   return context.layout === "memory-v1" ? canonicalRuntimeConfig(context) : context.config;
 }

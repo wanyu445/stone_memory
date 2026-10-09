@@ -209,3 +209,11 @@ test("Claude deep search receives only its explicitly allowed MCP tools", () => 
     "--allowedTools=mcp__stone_memory_search__memory_keyword_search,mcp__stone_memory_search__memory_archive_context",
   ));
 });
+
+test("strict Codex delegates disable unrelated remote Apps and plugins", () => {
+  const invocation = buildStdinInvocation("codex", { strictMcpConfig: true });
+  assert.ok(invocation.args.includes("features.apps=false"));
+  assert.ok(invocation.args.includes("features.plugins=false"));
+  const ordinary = buildStdinInvocation("codex");
+  assert.equal(ordinary.args.includes("features.apps=false"), false);
+});

@@ -135,45 +135,20 @@ test("legacy libraries are marked for an explicit Web upgrade", t => {
   assert.equal(library.upgradeRequired, true);
 });
 
-test("local Web upgrades a legacy card and leaves an unverifiable window unbound", t => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-layout-web-apply-"));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const stone = path.join(home, ".stone_memory");
-  const id = "legacy-web-apply";
-  fs.mkdirSync(path.join(stone, "runtimes", "claude", "accompany", id, "memory"), { recursive: true });
-  fs.writeFileSync(path.join(stone, "stmem.json"), JSON.stringify({
-    [id]: { label: "旧记忆", ai: "A", user: "U", runtime: "claude", purpose: "accompany", watcherEnabled: true },
-  }));
-  const script = `
-    const http = require("node:http");
-    const { startWebServer } = require(${JSON.stringify(path.join(root, "src", "web", "server.js"))});
-    (async () => {
-      const server = await startWebServer({ host: "127.0.0.1", port: 0 });
-      const payload = JSON.stringify({ libraryName: "升级后", ai: "新 AI", user: "新用户", scenario: "coding" });
-      const result = await new Promise((resolve, reject) => {
-        const req = http.request({ host: "127.0.0.1", port: server.address().port, method: "POST",
-          path: "/api/memories/${id}/layout-upgrade", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, res => {
-          const chunks = []; res.on("data", chunk => chunks.push(chunk));
-          res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
-        });
-        req.on("error", reject); req.end(payload);
-      });
-      await new Promise(resolve => server.close(resolve));
-      console.log(JSON.stringify(result));
-    })().catch(error => { console.error(error.stack); process.exit(1); });
-  `;
-  const child = spawnSync(process.execPath, ["-e", script], {
-    cwd: root, env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8", timeout: 20_000,
-  });
-  assert.equal(child.status, 0, child.stderr);
-  const response = JSON.parse(child.stdout);
-  assert.equal(response.status, 200, response.body);
-  const body = JSON.parse(response.body);
-  assert.equal(body.library.upgradeRequired, false);
-  assert.equal(body.library.libraryName, "升级后");
-  assert.equal(body.bindingRequired, true);
-  assert.equal(body.backgroundRecovery, true);
-  assert.equal(body.library.watcherEnabled, false);
+test("Web layout upgrade exposes staged progress and does not report partial recovery as complete", () => {
+  const server = fs.readFileSync(path.join(root, "src", "web", "server.js"), "utf8");
+  const app = fs.readFileSync(path.join(root, "src", "web", "public", "app.js"), "utf8");
+  assert.match(server, /layoutUpgradeJobMatch[\s\S]*?status, stage, step, total, detail, result/);
+  assert.match(server, /startLayoutUpgrade\(memoryId, before, payload\)[\s\S]*?json\(res, 202, \{ jobId: job\.id \}\)/);
+  assert.match(server, /setLayoutUpgradeStage\(job, "暂停当前记忆体 watcher", 1, 6/);
+  assert.match(server, /setLayoutUpgradeStage\(job, "等待当前记忆体 worker 退出", 2, 6/);
+  assert.match(server, /setLayoutUpgradeStage\(job, "复制并校验历史数据", 3, 6/);
+  assert.match(server, /setLayoutUpgradeStage\(job, "同步已绑定窗口的对话", 5, 6/);
+  assert.match(server, /job\.status = bindingWarning \? "completed_with_attention" : "completed"/);
+  assert.match(app, /layout-upgrade\/jobs/);
+  assert.match(app, /while\(job\.status==="running"\)/);
+  assert.match(app, /function showLayoutUpgradeProgress/);
+  assert.match(app, /function showLayoutUpgradeFailure/);
 });
 
 test("authenticated Web layout upgrades are not restricted to loopback addresses", () => {

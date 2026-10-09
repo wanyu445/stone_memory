@@ -76,8 +76,10 @@ test("memory creation uses one lightweight dialog instead of entering the legacy
   assert.match(creation, /升级旧版记忆体/);
   assert.match(creation, /layout-upgrade/);
   assert.match(creation, /await showLayoutUpgradeCompletion\(result\)/);
-  assert.match(creation, /基础数据迁移完成，接入仍在恢复/);
-  assert.match(creation, /正在恢复之前接入的窗口及其 fork 后继/);
+  assert.match(creation, /只有全部必要步骤结束后才会显示完成/);
+  assert.match(creation, /升级未完成/);
+  assert.match(creation, /数据目录已升级，接入需要检查/);
+  assert.match(creation, /对话窗口接入或同步尚未全部完成/);
   assert.match(creation, /自动摘要仍按对话日期跨日触发，不会因迁移或 watcher 重启立即补跑/);
   assert.match(creation, /线性 fork 只保留最新叶子/);
   assert.match(creation, /共同历史按消息指纹去重/);

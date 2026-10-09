@@ -359,22 +359,52 @@ function createMemoryDraft(button, memory = null) {
     submit.disabled=true;submit.textContent=upgrading?"正在升级…":"正在创建…";
     try{
       const endpoint=upgrading?`/api/memories/${encodeURIComponent(memory.memoryId)}/layout-upgrade`:"/api/libraries";
-      const result=await api(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...values,...(!upgrading&&memory?{memoryId:memory.memoryId}:{})})});
+      let result;
+      if(upgrading){
+        showLayoutUpgradeProgress(overlay,{stage:"正在启动升级",step:0,total:6});
+        const started=await api(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(values)});
+        if(started.jobId){
+          let job;
+          do{
+            await new Promise(resolve=>setTimeout(resolve,700));
+            const response=await api(`/api/memories/${encodeURIComponent(memory.memoryId)}/layout-upgrade/jobs/${encodeURIComponent(started.jobId)}`);
+            job=response.job;showLayoutUpgradeProgress(overlay,job);
+          }while(job.status==="running");
+          if(job.status==="failed")throw new Error(job.error||"升级失败，请检查后重试");
+          result=job.result;
+        }else result=started;
+      }else result=await api(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...values,...(memory?{memoryId:memory.memoryId}:{})})});
       overlay.remove();await loadLibraries();
       if(upgrading)await showLayoutUpgradeCompletion(result);
       else showToast(`“${result.library.libraryName}”已经创建`);
       await openLibrary(result.library.memoryId);
-    }catch(error){showToast(error.message,"error");submit.disabled=false;submit.textContent=upgrading?"确认升级":"创建并进入";}
+    }catch(error){
+      if(upgrading&&overlay.isConnected&&overlay.querySelector(".layout-upgrade-progress"))showLayoutUpgradeFailure(overlay,error.message);
+      else{showToast(error.message,"error");submit.disabled=false;submit.textContent=upgrading?"确认升级":"创建并进入";}
+    }
   };
   overlay.querySelector("#quick-purpose").value=memory?.scenario||memory?.purpose||"life-supervision";
   requestAnimationFrame(()=>overlay.querySelector("#quick-memory-name")?.focus());
 }
 
+function showLayoutUpgradeProgress(overlay,job){
+  overlay.onclick=()=>{};
+  if(!overlay.querySelector(".layout-upgrade-progress"))overlay.innerHTML=`<section class="editor-panel layout-upgrade-progress" role="status" aria-live="polite"><p class="eyebrow">MEMORY UPGRADE IN PROGRESS</p><h2>正在升级记忆体</h2><p class="lead">升级期间请保持页面打开。只有全部必要步骤结束后才会显示完成。</p><div class="layout-upgrade-progress-track" aria-hidden="true"><i></i></div><div class="layout-upgrade-stage"><strong></strong><span></span></div><p class="layout-upgrade-detail"></p></section>`;
+  overlay.querySelector(".layout-upgrade-stage strong").textContent=job.stage||"准备升级";
+  overlay.querySelector(".layout-upgrade-stage span").textContent=`阶段 ${Math.min(Number(job.step)||0,Number(job.total)||6)} / ${Number(job.total)||6}`;
+  overlay.querySelector(".layout-upgrade-detail").textContent=job.detail||"正在处理，请稍候…";
+}
+
+function showLayoutUpgradeFailure(overlay,message){
+  overlay.innerHTML=`<section class="editor-panel layout-upgrade-progress" role="alert"><p class="eyebrow">MEMORY UPGRADE NEEDS ATTENTION</p><h2>升级未完成</h2><p class="lead">没有显示成功。原始旧目录仍会保留；请先检查下面的错误，再决定是否重试。</p><div class="integrity warning">${escapeHtml(message)}</div><div class="wizard-actions"><button class="primary" type="button">关闭</button></div></section>`;
+  overlay.querySelector("button").onclick=()=>{overlay.remove();loadLibraries().then(()=>state.libraries.length?lobby():welcome());};
+}
+
 function showLayoutUpgradeCompletion(result) {
   return new Promise(resolve=>{
     const overlay=document.createElement("div");overlay.className="editor-overlay layout-upgrade-completion-overlay";
-    const bindingReady=result.bindingRequired!==true,recovering=result.backgroundRecovery===true;
-    overlay.innerHTML=`<section class="editor-panel" role="dialog" aria-modal="true" aria-labelledby="layout-upgrade-completion-title"><div class="rebuild-completion-mark" aria-hidden="true">${recovering?"…":"✓"}</div><p class="eyebrow">${recovering?"MEMORY UPGRADE CONTINUES":"MEMORY UPGRADE COMPLETE"}</p><h2 id="layout-upgrade-completion-title">${recovering?"基础数据迁移完成，接入仍在恢复":"记忆体升级完成"}</h2><p class="lead">“${escapeHtml(result.library.libraryName)}”的记忆、原始对话和 rules 已迁移到新版布局。</p><div class="integrity ${recovering?"warning":"success"}">${recovering?"正在恢复之前接入的窗口及其 fork 后继。":`迁移和接入均已完成；已同步 ${Number(result.syncedBindings||0)} 个有效叶子窗口。`}</div><p class="notice">线性 fork 只保留最新叶子；存在兄弟分支时保留各叶子 Binding，共同历史按消息指纹去重。</p><p class="notice">原有自动化开关已保留；自动摘要仍按对话日期跨日触发，不会因迁移或 watcher 重启立即补跑。</p><p class="notice warning">旧目录仍然保留。旧版 tmp/prompt_*.txt 属于可清理的临时文件，可删除以释放磁盘空间。</p><div class="wizard-actions"><button class="primary layout-upgrade-completion-close" type="button">${recovering?"查看接入状态":"进入记忆体"}</button></div></section>`;
+    const recovering=result.backgroundRecovery===true||result.bindingRequired===true||!!result.bindingWarning;
+    overlay.innerHTML=`<section class="editor-panel" role="dialog" aria-modal="true" aria-labelledby="layout-upgrade-completion-title"><div class="rebuild-completion-mark" aria-hidden="true">${recovering?"…":"✓"}</div><p class="eyebrow">${recovering?"UPGRADE NEEDS ATTENTION":"MEMORY UPGRADE COMPLETE"}</p><h2 id="layout-upgrade-completion-title">${recovering?"数据目录已升级，接入需要检查":"记忆体升级完成"}</h2><p class="lead">“${escapeHtml(result.library.libraryName)}”的目录迁移已完成。${recovering?"但对话窗口接入或同步尚未全部完成，不能视为整个升级流程已全部就绪。":"记忆、原始对话、rules、窗口接入和同步均已完成。"}</p><div class="integrity ${recovering?"warning":"success"}">${recovering?escapeHtml(result.bindingWarning||"请进入接入设置检查旧窗口绑定和同步状态。"):`已同步 ${Number(result.syncedBindings||0)} 个有效叶子窗口，升级流程全部完成。`}</div><p class="notice">线性 fork 只保留最新叶子；存在兄弟分支时保留各叶子 Binding，共同历史按消息指纹去重。</p><p class="notice">原有自动化开关已保留；自动摘要仍按对话日期跨日触发，不会因迁移或 watcher 重启立即补跑。</p><p class="notice warning">旧目录仍然保留。旧版 tmp/prompt_*.txt 属于可清理的临时文件，可删除以释放磁盘空间。</p><div class="wizard-actions"><button class="primary layout-upgrade-completion-close" type="button">${recovering?"检查接入状态":"进入记忆体"}</button></div></section>`;
     const close=()=>{overlay.remove();resolve();};
     overlay.querySelector(".layout-upgrade-completion-close").onclick=close;
     document.body.append(overlay);overlay.querySelector(".layout-upgrade-completion-close").focus();

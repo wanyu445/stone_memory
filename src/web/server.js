@@ -50,6 +50,8 @@ const compressionJobs = new Set();
 const reviewJobs = new Map();
 const dreamJobs = new Map();
 const scratchJobs = new Map();
+const layoutUpgradeJobs = new Map();
+const activeLayoutUpgradeJobs = new Map();
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
 const STMEM_BIN = path.join(PROJECT_ROOT, "bin", "stmem");
 
@@ -284,6 +286,105 @@ function writePrivateBatch(payload) {
   const file = path.join(dir, "batch.json");
   fs.writeFileSync(file, JSON.stringify(payload), { mode: 0o600 });
   return { file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+async function runStmemBatchAsync(args, payload) {
+  const batch = writePrivateBatch(payload || {});
+  try { return parseStmemJson(await runStmemAsync([...args, "--batch-file", batch.file], { maxOutput: 2 * 1024 * 1024 })); }
+  finally { batch.cleanup(); }
+}
+
+function setLayoutUpgradeStage(job, stage, step, total, detail = "") {
+  Object.assign(job, { stage, step, total, detail, updatedAt: new Date().toISOString() });
+}
+
+async function executeLayoutUpgrade(job, before, payload) {
+  const memoryId = job.memoryId;
+  let bindingCreated = false, bindingWarning = null, syncedBindings = 0;
+  let watcherStateRestored = false;
+  const restoreWatcherState = async () => {
+    await runStmemAsync(["watcher", "set", "--memory", memoryId,
+      "--archive", before.automaticFullMining ? "on" : "off",
+      "--miner", before.automaticMemoryMaintenance ? "on" : "off",
+      "--compression", before.automaticCompression ? "on" : "off",
+      "--dream", before.automaticDream ? "on" : "off"]);
+    const library = listLibraries().find(item => item.memoryId === memoryId);
+    await runStmemAsync(["watcher", before.watcherEnabled && library?.bound ? "on" : "off", "--memory", memoryId]);
+    watcherStateRestored = true;
+  };
+  try {
+    setLayoutUpgradeStage(job, "暂停当前记忆体 watcher", 1, 6, "只暂停这个记忆体；其他记忆体的自动录入不受影响。");
+    await runStmemAsync(["watcher", "off", "--memory", memoryId]);
+
+    setLayoutUpgradeStage(job, "等待当前记忆体 worker 退出", 2, 6, "等待文件锁释放后才开始复制，避免 watcher 同时写入旧目录。");
+    const waitStartedAt = Date.now();
+    let migrationPlan = null;
+    while (Date.now() - waitStartedAt < 60_000) {
+      migrationPlan = await runStmemBatchAsync(["memory", "migrate-layout", "--memory", memoryId], payload);
+      if (!migrationPlan.blocked) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    if (migrationPlan?.blocked) throw new Error("该记忆体 watcher 在 60 秒内未退出，升级已取消；系统会尝试恢复原来的自动化开关。");
+
+    setLayoutUpgradeStage(job, "复制并校验历史数据", 3, 6, "文件较多或体积较大时，这一步可能需要一些时间；进度条会保持在当前阶段，不会预估虚假的百分比。");
+    await runStmemBatchAsync(["memory", "migrate-layout", "--memory", memoryId, "--apply"], payload);
+
+    setLayoutUpgradeStage(job, "恢复对话窗口绑定", 4, 6);
+    try {
+      const bindingPlan = await runStmemAsync(["binding", "migrate-legacy", "--memory", memoryId]);
+      const plan = parseStmemJson(bindingPlan);
+      if (plan.changed) {
+        await runStmemAsync(["binding", "migrate-legacy", "--memory", memoryId, "--apply"]);
+        await runStmemAsync(["binding", "discover-successors", "--memory", memoryId, "--apply"]);
+        bindingCreated = true;
+      }
+    } catch (error) {
+      bindingWarning = "旧窗口暂未能自动恢复；请在升级后打开“接入”检查并绑定窗口。";
+      job.detail = bindingWarning;
+    }
+
+    let bindingConfig = { bindings: [] };
+    try { bindingConfig = parseStmemJson(await runStmemAsync(["binding", "list", "--memory", memoryId])); }
+    catch (error) { bindingWarning ||= "无法读取接入状态；请升级后在“接入”中检查。"; }
+    const bindings = bindingConfig.bindings.filter(item => item.enabled !== false && item.mode !== "import_only");
+    setLayoutUpgradeStage(job, "同步已绑定窗口的对话", 5, 6, bindings.length ? `共 ${bindings.length} 个有效窗口` : "当前没有可自动验证的窗口");
+    for (let index = 0; index < bindings.length; index += 1) {
+      setLayoutUpgradeStage(job, "同步已绑定窗口的对话", 5, 6, `正在同步第 ${index + 1}/${bindings.length} 个窗口`);
+      try { await runStmemAsync(["sync", "--memory", memoryId, "--binding", bindings[index].id]); syncedBindings += 1; }
+      catch (error) { bindingWarning ||= "部分窗口对话未能同步；请在“接入”检查窗口状态后重试同步。"; }
+    }
+
+    setLayoutUpgradeStage(job, "恢复原有自动化设置", 6, 6);
+    await restoreWatcherState();
+    const finalLibrary = listLibraries().find(item => item.memoryId === memoryId);
+    job.status = bindingWarning ? "completed_with_attention" : "completed";
+    job.result = {
+      changed: true, library: finalLibrary, bindingCreated, bindingRequired: !finalLibrary?.bound,
+      bindingWarning, syncedBindings, backgroundRecovery: !finalLibrary?.bound,
+    };
+    job.stage = bindingWarning ? "数据迁移完成，接入需要检查" : "升级完成";
+    job.step = job.total;
+    job.updatedAt = job.completedAt = new Date().toISOString();
+  } catch (error) {
+    job.status = "failed";
+    job.error = String(error.message || error).slice(0, 1000);
+    if (!watcherStateRestored) {
+      try { await restoreWatcherState(); }
+      catch (restoreError) { job.error += `；恢复 watcher 状态失败：${String(restoreError.message || restoreError).slice(0, 500)}`; }
+    }
+    job.updatedAt = job.completedAt = new Date().toISOString();
+  } finally {
+    activeLayoutUpgradeJobs.delete(memoryId);
+  }
+}
+
+function startLayoutUpgrade(memoryId, before, payload) {
+  const id = crypto.randomUUID();
+  const job = { id, memoryId, status: "running", stage: "准备升级", step: 0, total: 6, detail: "", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: null, result: null, error: null };
+  layoutUpgradeJobs.set(id, job);
+  activeLayoutUpgradeJobs.set(memoryId, id);
+  void executeLayoutUpgrade(job, before, payload);
+  return job;
 }
 
 async function executeReviewPreview(job) {
@@ -1949,11 +2050,21 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
   }
 
   const layoutUpgradeMatch = url.pathname.match(/^\/api\/memories\/([^/]+)\/layout-upgrade$/);
+  const layoutUpgradeJobMatch = url.pathname.match(/^\/api\/memories\/([^/]+)\/layout-upgrade\/jobs\/([^/]+)$/);
+  if (req.method === "GET" && layoutUpgradeJobMatch) {
+    const memoryId = decodeURIComponent(layoutUpgradeJobMatch[1]);
+    const job = layoutUpgradeJobs.get(decodeURIComponent(layoutUpgradeJobMatch[2]));
+    if (!job || job.memoryId !== memoryId) return error(res, 404, "升级任务不存在或已过期");
+    const { id, status, stage, step, total, detail, result, error: jobError, createdAt, updatedAt, completedAt } = job;
+    return json(res, 200, { job: { id, status, stage, step, total, detail, result, error: jobError, createdAt, updatedAt, completedAt } });
+  }
   if (req.method === "POST" && layoutUpgradeMatch) {
     const memoryId = decodeURIComponent(layoutUpgradeMatch[1]);
     const before = listLibraries().find(item => item.memoryId === memoryId);
     if (!before) throw new Error(`记忆体不存在：${memoryId}`);
     if (!before.upgradeRequired) return json(res, 200, { changed: false, library: before });
+    const activeJobId = activeLayoutUpgradeJobs.get(memoryId);
+    if (activeJobId) return json(res, 202, { jobId: activeJobId });
     const body = await readJson(req);
     const payload = {
       label: String(body.libraryName || before.libraryName || memoryId).trim(),
@@ -1964,36 +2075,8 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       userGender: String(body.userGender || "unspecified"),
     };
     if (!payload.label || !payload.ai || !payload.user) throw new Error("请补全记忆体名字、AI 名字和用户名字");
-    runStmemBatch(["memory", "migrate-layout", "--memory", memoryId], payload);
-    runStmemBatch(["memory", "migrate-layout", "--memory", memoryId, "--apply"], payload);
-    let bindingCreated = false, bindingWarning = null, syncedBindings = 0;
-    try {
-      const bindingPlan = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", memoryId]));
-      if (bindingPlan.changed) {
-        runStmem(["binding", "migrate-legacy", "--memory", memoryId, "--apply"]);
-        runStmem(["binding", "discover-successors", "--memory", memoryId, "--apply"]);
-        bindingCreated = true;
-      }
-      const bindingConfig = JSON.parse(runStmem(["binding", "list", "--memory", memoryId]));
-      for (const binding of bindingConfig.bindings.filter(item => item.enabled !== false && item.mode !== "import_only")) {
-        runStmem(["sync", "--memory", memoryId, "--binding", binding.id]);
-        syncedBindings += 1;
-      }
-    } catch (error) {
-      bindingWarning = "旧窗口无法自动验证，请升级后在接入设置中重新绑定";
-    }
-    runStmem(["watcher", "set", "--memory", memoryId,
-      "--archive", before.automaticFullMining ? "on" : "off",
-      "--miner", before.automaticMemoryMaintenance ? "on" : "off",
-      "--compression", before.automaticCompression ? "on" : "off",
-      "--dream", before.automaticDream ? "on" : "off"]);
-    const library = listLibraries().find(item => item.memoryId === memoryId);
-    runStmem(["watcher", before.watcherEnabled && library?.bound ? "on" : "off", "--memory", memoryId]);
-    const finalLibrary = listLibraries().find(item => item.memoryId === memoryId);
-    return json(res, 200, {
-      changed: true, library: finalLibrary, bindingCreated, bindingRequired: !finalLibrary?.bound, bindingWarning, syncedBindings,
-      backgroundRecovery: !finalLibrary?.bound,
-    });
+    const job = startLayoutUpgrade(memoryId, before, payload);
+    return json(res, 202, { jobId: job.id });
   }
 
   if (req.method === "POST" && url.pathname === "/api/libraries") {
@@ -2100,6 +2183,10 @@ function cleanupPreviews() {
   for (const [id, job] of scratchJobs) {
     const timestamp = Date.parse(job.completedAt || job.createdAt || "");
     if (job.status !== "running" && Number.isFinite(timestamp) && timestamp < cutoff) scratchJobs.delete(id);
+  }
+  for (const [id, job] of layoutUpgradeJobs) {
+    const timestamp = Date.parse(job.completedAt || job.createdAt || "");
+    if (job.status !== "running" && Number.isFinite(timestamp) && timestamp < cutoff) layoutUpgradeJobs.delete(id);
   }
 }
 

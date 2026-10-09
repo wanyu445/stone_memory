@@ -9,6 +9,7 @@ const { addBinding: registerBinding } = require("./memory-bindings");
 const { writeJson } = require("./memory-setup");
 const { saveConfig } = require("./thread-setup");
 const { rebalanceWatcherBindings } = require("./watcher-bindings");
+const { associateRebuildStateWithBinding } = require("./rebuild-log");
 
 const PROVIDERS = new Set(["claude", "codex"]);
 const MODES = new Set(["primary", "parallel", "child", "import_only"]);
@@ -152,7 +153,12 @@ function migrateLegacyBinding(memoryId, { apply = false } = {}) {
   if (config.bindings.length) return { memoryId, changed: false, reason: "bindings-exist", config };
   const input = legacyBindingInput(memoryId);
   if (!input) return { memoryId, changed: false, reason: "legacy-binding-not-found", config };
-  return apply ? applyBindingAdd(memoryId, input, { preserveWatcher: true }) : planBindingAdd(memoryId, input);
+  if (!apply) return planBindingAdd(memoryId, input);
+  const result = applyBindingAdd(memoryId, input, { preserveWatcher: true });
+  if (result.changed && result.binding?.id === result.config?.primaryBindingId) {
+    associateRebuildStateWithBinding(memoryId, result.binding.id);
+  }
+  return result;
 }
 
 function planBindingSuccessorDiscovery(memoryId) {
@@ -230,6 +236,7 @@ function applyBindingSuccessorDiscovery(memoryId) {
     const primary = current.bindings.find(item => item.provider === plan.primaryLeaf.provider && item.externalThreadId === plan.primaryLeaf.externalThreadId);
     if (primary && current.primaryBindingId !== primary.id) {
       applyBindingPrimary(memoryId, primary.id);
+      associateRebuildStateWithBinding(memoryId, primary.id);
       primaryChanged = true;
     }
   }

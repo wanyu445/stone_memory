@@ -1313,8 +1313,8 @@ async function renderRebuild(library) {
   let contextOverview=library;
   const paintContext=(binding=null,{primary=false}={})=>{
     const legacyUsage=contextOverview.contextUsage||null,legacyRebuild=contextOverview.rebuild||null;
-    const shownUsage=binding?(contextOverview.contextUsageByBinding?.[binding.id]||(!legacyUsage?.bindingId&&primary?legacyUsage:null)):legacyUsage;
-    const shownRebuild=binding?(contextOverview.rebuildByBinding?.[binding.id]||(!legacyRebuild?.bindingId&&primary?legacyRebuild:null)):legacyRebuild;
+    const shownUsage=binding?(contextOverview.contextUsageByBinding?.[binding.id]||(primary?legacyUsage:null)):legacyUsage;
+    const shownRebuild=binding?(contextOverview.rebuildByBinding?.[binding.id]||(primary?legacyRebuild:null)):legacyRebuild;
     const percent=shownUsage&&Number.isFinite(shownUsage.percent)?Math.max(0,Math.min(100,shownUsage.percent)):0;
     document.querySelector("#context-runtime").textContent=binding?.provider||contextOverview.runtime||"未接入平台";
     document.querySelector("#context-thread-id").textContent=binding?.externalThreadId||contextOverview.externalThreadId||"尚未绑定窗口";

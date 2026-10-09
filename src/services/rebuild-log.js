@@ -53,4 +53,30 @@ function updateContextUsage(threadId, usage) {
   writeState(threadId,state);
   return state.contextUsage;
 }
-module.exports={appendRebuildLog,latestSuccessfulRebuild,readRebuildState,updateContextUsage,stateFile};
+
+function associateRebuildStateWithBinding(threadId, bindingId) {
+  if (!bindingId) return readRebuildState(threadId);
+  const state = readRebuildState(threadId);
+  let changed = false;
+  if (state.contextUsage) {
+    const usage = { ...state.contextUsage, bindingId };
+    if (JSON.stringify(state.contextUsageByBinding?.[bindingId]) !== JSON.stringify(usage)
+      || state.contextUsage.bindingId !== bindingId) changed = true;
+    state.contextUsage = usage;
+    state.contextUsageByBinding = { ...(state.contextUsageByBinding || {}), [bindingId]: usage };
+  }
+  if (state.lastCompleted?.status === "completed") {
+    const rebuild = { ...state.lastCompleted, bindingId };
+    if (JSON.stringify(state.lastCompletedByBinding?.[bindingId]) !== JSON.stringify(rebuild)
+      || state.lastCompleted.bindingId !== bindingId) changed = true;
+    state.lastCompleted = rebuild;
+    state.lastCompletedByBinding = { ...(state.lastCompletedByBinding || {}), [bindingId]: rebuild };
+  }
+  if (changed) {
+    state.updatedAt = new Date().toISOString();
+    writeState(threadId, state);
+  }
+  return state;
+}
+
+module.exports={appendRebuildLog,latestSuccessfulRebuild,readRebuildState,updateContextUsage,associateRebuildStateWithBinding,stateFile};

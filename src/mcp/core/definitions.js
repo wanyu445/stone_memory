@@ -5,7 +5,9 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread: { type: "string", description: "线程 ID，默认自动检测当前 session" },
+        memoryId: { type: "string", description: "目标记忆体 ID。只指定记忆体时使用其当前主 Binding。" },
+        thread: { type: "string", description: "发起请求的当前 Codex/Claude 外部线程 ID；用于精确解析对应 Binding。省略时自动检测当前窗口。" },
+        bindingId: { type: "string", description: "目标 Binding ID。用于明确重建某个已绑定窗口；必须属于解析出的记忆体。" },
       },
       additionalProperties: false,
     },
@@ -16,7 +18,9 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread: { type: "string", description: "线程 ID，默认自动检测当前 session" },
+        memoryId: { type: "string", description: "目标记忆体 ID。只指定记忆体时使用其当前主 Binding。" },
+        thread: { type: "string", description: "发起请求的当前 Codex/Claude 外部线程 ID；用于精确解析对应 Binding。省略时自动检测当前窗口。" },
+        bindingId: { type: "string", description: "目标 Binding ID。用于明确重建某个已绑定窗口；必须属于解析出的记忆体。" },
         summary: {
           type: "object",
           description: "摘要注入方式。default 注入全部非 hidden 历史摘要；limited 按数量和 importance 筛选，锚点仍受保护。",

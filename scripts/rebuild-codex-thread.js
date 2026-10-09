@@ -99,8 +99,12 @@ function main() {
     }
     return null;
   }
-  let inputFile = path.join(codexDir, `${externalThreadId}.jsonl`);
+  let inputFile = process.env.STMEM_REBUILD_THREAD_FILE || path.join(codexDir, `${externalThreadId}.jsonl`);
   if (!fs.existsSync(inputFile)) {
+    if (process.env.STMEM_REBUILD_THREAD_FILE) {
+      console.error(`无法重建：Binding 解析出的线程文件不存在：${inputFile}`);
+      process.exit(1);
+    }
     inputFile = searchSessionFile(codexDir);
     if (!inputFile) { console.error(`无法重建：在 ${codexDir} 中没有找到窗口线程 ${externalThreadId}（记忆体 ${threadId}）。请修改 Binding 或检查文件是否存在`); process.exit(1); }
   }

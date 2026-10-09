@@ -1,4 +1,5 @@
-const { fs, path, os, execFileSync, buildMcpRebuildRequest, buildMcpRebuildPreviewArgs, buildMcpRebuildExecuteArgs, PROJECT_ROOT, rebuildPreviews, loadConfig, resolveThread } = require("./shared");
+const { fs, path, os, execFileSync, buildMcpRebuildRequest, buildMcpRebuildPreviewArgs, buildMcpRebuildExecuteArgs, PROJECT_ROOT, rebuildPreviews, loadConfig } = require("./shared");
+const { resolveMcpRebuildTarget } = require("../../services/mcp-rebuild-target");
 
 function previewKey(resolved) {
   return `${resolved.threadId}\0${resolved.bindingId || ""}`;
@@ -7,7 +8,7 @@ function previewKey(resolved) {
 function resolveRebuildCommand(args, builder) {
   const cfg = loadConfig();
   if (!cfg) throw new Error("未配置 stmem.json");
-  const resolved = resolveThread(args, cfg);
+  const resolved = resolveMcpRebuildTarget(args, cfg);
   if (!resolved) throw new Error("无法确定线程 ID");
   const cli = path.join(PROJECT_ROOT, "bin", "stmem");
   if (!fs.existsSync(cli)) throw new Error("找不到 stmem CLI");
@@ -58,7 +59,7 @@ function toolRebuildPreview(args) {
 function toolRebuild(args) {
   const cfg = loadConfig();
   if (!cfg) throw new Error("未配置 stmem.json");
-  const resolved = resolveThread(args, cfg);
+  const resolved = resolveMcpRebuildTarget(args, cfg);
   if (!resolved?.threadId) throw new Error("无法确定线程 ID");
   const key = previewKey(resolved);
   const request = rebuildPreviews.get(key);

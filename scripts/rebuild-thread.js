@@ -657,10 +657,14 @@ function main() {
     return null;
   }
 
-  let inputFile;
-  if (threadId) {
+  let inputFile = process.env.STMEM_REBUILD_THREAD_FILE || null;
+  if (inputFile && !fs.existsSync(inputFile)) {
+    console.error(`无法重建：Binding 解析出的线程文件不存在：${inputFile}`);
+    process.exit(1);
+  }
+  if (!inputFile && threadId) {
     inputFile = searchSessionFile(SESSION_DIR) || path.join(SESSION_DIR, `${currentExternalThreadId}.jsonl`);
-  } else {
+  } else if (!inputFile) {
     inputFile = searchSessionFile(SESSION_DIR);
     if (!inputFile) {
       console.error("No thread files found");

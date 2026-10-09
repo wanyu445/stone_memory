@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="./package.json"><img src="./assets/readme/badges/version.svg" alt="Version: 1.2.0" height="20"></a>
+  <a href="./package.json"><img src="./assets/readme/badges/version.svg" alt="Version: 1.2.1" height="20"></a>
   <a href="#安装"><img src="./assets/readme/badges/node.svg" alt="Node.js: 22+" height="20"></a>
   <a href="#当前架构"><img src="./assets/readme/badges/storage.svg" alt="Storage: SQLite" height="20"></a>
   <a href="./LICENSE"><img src="./assets/readme/badges/license.svg" alt="License: AGPL-3.0-only" height="20"></a>

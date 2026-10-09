@@ -23,25 +23,43 @@ test("formal CLI previews and upgrades a legacy layout without replacing its dat
   const sessionRoot = path.join(home, "sessions");
   const legacyRoot = path.join(stone, "runtimes", "codex", "coding", legacyId);
   fs.mkdirSync(path.join(legacyRoot, "memory", "archive"), { recursive: true });
+  fs.mkdirSync(path.join(legacyRoot, "tmp"), { recursive: true });
   fs.mkdirSync(sessionRoot, { recursive: true });
   fs.writeFileSync(path.join(legacyRoot, "memory", "archive", "old.jsonl"), "legacy-data\n");
+  fs.writeFileSync(path.join(legacyRoot, "tmp", "prompt_legacy.txt"), "generated scratch prompt\n");
+  fs.writeFileSync(path.join(legacyRoot, "tmp", "memory-miner-operations.md"), "durable helper\n");
   fs.writeFileSync(path.join(sessionRoot, `${legacyId}.jsonl`), `${JSON.stringify({ type: "session_meta", payload: { id: legacyId } })}\n`);
   fs.writeFileSync(path.join(stone, "stmem.json"), JSON.stringify({
     [legacyId]: { label: "旧名字", ai: "旧 AI", user: "旧用户", runtime: "codex", purpose: "coding", sessionDir: sessionRoot,
       watcherEnabled: false, automaticFullMining: false, automaticMemoryMaintenance: false },
+    "old-window-child": { label: "旧 fork 子记忆体", ai: "旧 AI", user: "旧用户", runtime: "codex", purpose: "coding", sessionDir: sessionRoot,
+      parentThreadId: legacyId, memoriesFlowToParent: true, watcherEnabled: false },
   }));
   const batch = path.join(home, "upgrade.json");
   fs.writeFileSync(batch, JSON.stringify({ label: "新名字", ai: "阿石", user: "小万", scenario: "coding", purpose: "coding" }));
 
   const preview = run(home, ["memory", "migrate-layout", "--memory", legacyId, "--batch-file", batch]);
   assert.equal(preview.status, 0, preview.stderr);
-  assert.equal(JSON.parse(preview.stdout).dryRun, true);
+  const previewBody = JSON.parse(preview.stdout);
+  assert.equal(previewBody.dryRun, true);
+  assert.equal(previewBody.skippedTransientFiles, 1);
+  assert.equal(previewBody.skippedTransientBytes, Buffer.byteLength("generated scratch prompt\n"));
+  assert.match(previewBody.warning, /临时 prompt 文件/);
+  assert.deepEqual(previewBody.legacyForkDescendants.map(row => row.id), ["old-window-child"]);
+  assert.match(previewBody.warning, /旧 fork 子记忆体/);
   assert.equal(fs.existsSync(path.join(stone, "memories", legacyId)), false);
+
+  const childAttempt = run(home, ["memory", "migrate-layout", "--memory", "old-window-child"]);
+  assert.notEqual(childAttempt.status, 0);
+  assert.match(childAttempt.stderr, /请从根记忆体 old-window 发起升级/);
 
   const applied = run(home, ["memory", "migrate-layout", "--memory", legacyId, "--batch-file", batch, "--apply"]);
   assert.equal(applied.status, 0, applied.stderr);
   const canonical = path.join(stone, "memories", legacyId);
   assert.equal(fs.readFileSync(path.join(canonical, "memory", "archive", "old.jsonl"), "utf8"), "legacy-data\n");
+  assert.equal(fs.existsSync(path.join(canonical, "tmp", "prompt_legacy.txt")), false);
+  assert.equal(fs.readFileSync(path.join(canonical, "tmp", "memory-miner-operations.md"), "utf8"), "durable helper\n");
+  assert.equal(fs.readFileSync(path.join(legacyRoot, "tmp", "prompt_legacy.txt"), "utf8"), "generated scratch prompt\n");
   assert.equal(fs.readFileSync(path.join(legacyRoot, "memory", "archive", "old.jsonl"), "utf8"), "legacy-data\n");
   const memory = JSON.parse(fs.readFileSync(path.join(canonical, "memory.json"), "utf8"));
   assert.equal(memory.memoryId, legacyId);
@@ -56,6 +74,28 @@ test("formal CLI previews and upgrades a legacy layout without replacing its dat
   const bindings = JSON.parse(fs.readFileSync(path.join(canonical, "bindings.json"), "utf8"));
   assert.equal(bindings.bindings[0].externalThreadId, legacyId);
   assert.equal(bindings.bindings[0].provider, "codex");
+  const watcherAfterBinding = JSON.parse(fs.readFileSync(path.join(canonical, "watcher.json"), "utf8"));
+  assert.equal(watcherAfterBinding.enabled, false);
+  assert.equal(watcherAfterBinding.modules.archive, false);
+  assert.equal(watcherAfterBinding.modules.miner, false);
+
+  const listed = spawnSync(process.execPath, ["-e", "console.log(JSON.stringify(require('./src/web/server').listLibraries()))"], {
+    cwd: root, env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8",
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  const library = JSON.parse(listed.stdout).find(item => item.memoryId === legacyId);
+  assert.equal(library.runtime, "codex");
+  assert.equal(library.externalThreadId, legacyId);
+  assert.equal(library.bound, true);
+});
+
+test("legacy stmem fork entry point is closed", t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-fork-closed-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const result = run(home, ["fork", "--parent", "parent", "--thread", "child"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /stmem fork 已关闭/);
+  assert.equal(fs.existsSync(path.join(home, ".stone_memory")), false);
 });
 
 test("stmem init refuses to create any new legacy layout", t => {
@@ -132,6 +172,7 @@ test("local Web upgrades a legacy card and leaves an unverifiable window unbound
   assert.equal(body.library.upgradeRequired, false);
   assert.equal(body.library.libraryName, "升级后");
   assert.equal(body.bindingRequired, true);
+  assert.equal(body.backgroundRecovery, true);
   assert.equal(body.library.watcherEnabled, false);
 });
 

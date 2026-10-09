@@ -32,6 +32,7 @@ const { loadModules, resolveInside } = require("../services/developer-module-con
 const { compactTermTimelineReport } = require("../services/term-timeline-report");
 const { listMemories, getMemory } = require("../services/memory-setup");
 const { readBindingConfig, getConfiguredBinding } = require("../services/memory-binding-config");
+const { bindingCursorFile } = require("../services/watcher-bindings");
 const { memoryExportPayload, sendMemoryExport } = require("./routes/memory");
 
 const { scenarioId, normalizeScenarioConfig } = require("../services/scenario-registry");
@@ -538,11 +539,29 @@ function listLibraries() {
   const configured = listMemoryIds().flatMap(memoryId => {
     let context;
     try { context = getMemoryContext(memoryId); } catch { return []; }
-    let tc, threadId, bound, bindingCount, createdAt;
+    if (context.layout !== "memory-v1") {
+      let ancestorId = config[context.legacyKey]?.parentThreadId || null;
+      const seen = new Set();
+      while (ancestorId && !seen.has(ancestorId)) {
+        seen.add(ancestorId);
+        try {
+          const ancestor = getMemoryContext(ancestorId);
+          if (ancestor.layout === "memory-v1") {
+            const absorbed = readBindingConfig(ancestor.memoryId).bindings.some(binding =>
+              binding.externalThreadId === context.legacyKey && fs.existsSync(bindingCursorFile(ancestor.memoryId, binding)));
+            if (absorbed) return [];
+            break;
+          }
+        } catch {}
+        ancestorId = config[ancestorId]?.parentThreadId || null;
+      }
+    }
+    let tc, threadId, bound, bindingCount, createdAt, primaryBinding = null;
     if (context.layout === "memory-v1") {
       let bindings;
       try { bindings = readBindingConfig(memoryId); } catch { return []; }
       const primary = bindings.bindings.find(item => item.id === bindings.primaryBindingId && item.enabled !== false);
+      primaryBinding = primary || null;
       const enabledBindings = bindings.bindings.filter(item => item.enabled !== false);
       const memory = context.memoryConfig || {};
       const settingsComplete = !!(String(memory.label || "").trim() && String(memory.ai || "").trim()
@@ -571,7 +590,7 @@ function listLibraries() {
       const latestArchived = store.db.prepare("SELECT MAX(timestamp) timestamp FROM messages WHERE thread_id=?").get(threadId);
       const latest = store.db.prepare("SELECT MAX(completed_at) completedAt FROM mining_day_state WHERE thread_id=? AND status='completed'").get(threadId);
       return {
-        memoryId, layout: context.layout, upgradeRequired: context.layout === "legacy-runtime-v0", scenario: scenarioId(tc), configured: true, bound, bindingCount, threadId, externalThreadId: tc.externalThreadId || (context.layout !== "memory-v1" ? threadId : null), libraryName: tc.label || memoryId, runtime: tc.runtime || null, purpose: tc.purpose || "accompany", createdAt,
+        memoryId, layout: context.layout, upgradeRequired: context.layout === "legacy-runtime-v0", scenario: scenarioId(tc), configured: true, bound, bindingCount, threadId, externalThreadId: primaryBinding?.externalThreadId || tc.externalThreadId || (context.layout !== "memory-v1" ? threadId : null), libraryName: tc.label || memoryId, runtime: primaryBinding?.provider || tc.runtime || null, purpose: tc.purpose || "accompany", createdAt,
         ai: tc.ai || "", user: tc.user || "", counts,
         lastArchivedAt: latestArchived?.timestamp || null, lastMinedAt: latest?.completedAt || null,
         watcherEnabled: watcherEnabled(tc),
@@ -1009,7 +1028,7 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
         catch { status = { memoryId: settings.memoryId, primaryBindingId: null, bindings: [] }; }
       }
       const bindings = Array.isArray(status.bindings) ? status.bindings : [];
-      if (settings.externalThreadId && !bindings.some(binding => binding.externalThreadId === settings.externalThreadId)) {
+      if (settings.layout !== "memory-v1" && settings.externalThreadId && !bindings.some(binding => binding.externalThreadId === settings.externalThreadId)) {
         const legacyId = `legacy-config:${settings.externalThreadId}`;
         bindings.unshift({
           id: legacyId,
@@ -1947,12 +1966,18 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
     if (!payload.label || !payload.ai || !payload.user) throw new Error("请补全记忆体名字、AI 名字和用户名字");
     runStmemBatch(["memory", "migrate-layout", "--memory", memoryId], payload);
     runStmemBatch(["memory", "migrate-layout", "--memory", memoryId, "--apply"], payload);
-    let bindingCreated = false, bindingWarning = null;
+    let bindingCreated = false, bindingWarning = null, syncedBindings = 0;
     try {
       const bindingPlan = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", memoryId]));
       if (bindingPlan.changed) {
         runStmem(["binding", "migrate-legacy", "--memory", memoryId, "--apply"]);
+        runStmem(["binding", "discover-successors", "--memory", memoryId, "--apply"]);
         bindingCreated = true;
+      }
+      const bindingConfig = JSON.parse(runStmem(["binding", "list", "--memory", memoryId]));
+      for (const binding of bindingConfig.bindings.filter(item => item.enabled !== false && item.mode !== "import_only")) {
+        runStmem(["sync", "--memory", memoryId, "--binding", binding.id]);
+        syncedBindings += 1;
       }
     } catch (error) {
       bindingWarning = "旧窗口无法自动验证，请升级后在接入设置中重新绑定";
@@ -1962,9 +1987,13 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       "--miner", before.automaticMemoryMaintenance ? "on" : "off",
       "--compression", before.automaticCompression ? "on" : "off",
       "--dream", before.automaticDream ? "on" : "off"]);
-    runStmem(["watcher", before.watcherEnabled && bindingCreated ? "on" : "off", "--memory", memoryId]);
     const library = listLibraries().find(item => item.memoryId === memoryId);
-    return json(res, 200, { changed: true, library, bindingCreated, bindingRequired: !library?.bound, bindingWarning });
+    runStmem(["watcher", before.watcherEnabled && library?.bound ? "on" : "off", "--memory", memoryId]);
+    const finalLibrary = listLibraries().find(item => item.memoryId === memoryId);
+    return json(res, 200, {
+      changed: true, library: finalLibrary, bindingCreated, bindingRequired: !finalLibrary?.bound, bindingWarning, syncedBindings,
+      backgroundRecovery: !finalLibrary?.bound,
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/libraries") {

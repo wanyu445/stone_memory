@@ -75,6 +75,14 @@ test("memory creation uses one lightweight dialog instead of entering the legacy
   assert.match(creation, /创建并进入/);
   assert.match(creation, /升级旧版记忆体/);
   assert.match(creation, /layout-upgrade/);
+  assert.match(creation, /await showLayoutUpgradeCompletion\(result\)/);
+  assert.match(creation, /基础数据迁移完成，接入仍在恢复/);
+  assert.match(creation, /正在恢复之前接入的窗口及其 fork 后继/);
+  assert.match(creation, /自动摘要仍按对话日期跨日触发，不会因迁移或 watcher 重启立即补跑/);
+  assert.match(creation, /线性 fork 只保留最新叶子/);
+  assert.match(creation, /共同历史按消息指纹去重/);
+  assert.doesNotMatch(creation, /旧窗口未能自动验证，请进入“接入”重新绑定对话窗口/);
+  assert.match(creation, /旧版 tmp\/prompt_\*\.txt 属于可清理的临时文件/);
   assert.match(app, /promptedLegacyUpgrades/);
   assert.match(app, /queueMicrotask\(\(\)=>createMemoryDraft\(null,legacy\)\)/);
   assert.doesNotMatch(creation, /resetCreateForm|wizard\(\)/);

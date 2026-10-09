@@ -9,6 +9,7 @@ const dataRoot = path.join(os.homedir(), ".stone_memory");
 const configFile = path.join(dataRoot, "stmem.json");
 const safeName = /^(?!\.{1,2}$)(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$))[A-Za-z0-9._-]+$/iu;
 const reservedKeys = new Set(["runtimes", "threadId", "apiKeys", "web", "memories"]);
+const transientRootEntries = new Set([".watcher.lock"]);
 
 function options(argv) {
   const result = { memory: null, batchFile: null, apply: false, servicesStopped: false, formalCli: false };
@@ -37,13 +38,21 @@ function hash(file) {
   return digest.digest("hex");
 }
 
-function listFiles(root, relative = "") {
+function listFiles(root, relative = "", skipped = { files: 0, bytes: 0 }) {
   const result = [];
   for (const item of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
     const child = path.join(relative, item.name);
-    if (!relative && item.name === ".watcher.lock") continue;
+    // Runtime locks and generated prompt scratch files are not durable memory.
+    // Copying a legacy tmp directory can add tens of thousands of files and
+    // gigabytes to an otherwise small layout migration.
+    if (!relative && transientRootEntries.has(item.name)) continue;
+    if (relative === "tmp" && item.isFile() && /^prompt_.*\.txt$/u.test(item.name)) {
+      skipped.files += 1;
+      skipped.bytes += fs.statSync(path.join(root, child)).size;
+      continue;
+    }
     if (item.isSymbolicLink()) throw new Error(`Symlink in legacy directory: ${child}`);
-    if (item.isDirectory()) result.push({ relative: child, directory: true }, ...listFiles(root, child));
+    if (item.isDirectory()) result.push({ relative: child, directory: true }, ...listFiles(root, child, skipped));
     else if (item.isFile()) result.push({ relative: child, directory: false, bytes: fs.statSync(path.join(root, child)).size });
     else throw new Error(`Unsupported file in legacy directory: ${child}`);
   }
@@ -142,6 +151,21 @@ function metadata(id, entry, now, patch = {}) {
   };
 }
 
+function legacyForkDescendants(config, parentId) {
+  const result = [];
+  const queue = [parentId];
+  const seen = new Set(queue);
+  while (queue.length) {
+    const parent = queue.shift();
+    for (const [id, entry] of Object.entries(config)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.parentThreadId !== parent || seen.has(id)) continue;
+      seen.add(id); queue.push(id);
+      result.push({ id, parentThreadId: parent, label: entry.label || id, runtime: entry.runtime || null });
+    }
+  }
+  return result;
+}
+
 function main(argv = process.argv.slice(2)) {
   const flags = options(argv);
   if (flags.help) {
@@ -154,6 +178,7 @@ function main(argv = process.argv.slice(2)) {
   const config = JSON.parse(configBytes.toString("utf8"));
   const legacy = config[flags.memory];
   if (!legacy || typeof legacy !== "object" || Array.isArray(legacy)) throw new Error("Not a legacy memory entry");
+  if (legacy.parentThreadId) throw new Error(`这是旧 fork 子记忆体；请从根记忆体 ${legacy.parentThreadId} 发起升级，子线程会作为 Binding 归并`);
   if (legacy.memoryId && legacy.memoryId !== flags.memory) throw new Error("Legacy alias differs from memoryId; migrate with an explicit plan");
   const runtime = legacy.runtime || "claude";
   const purpose = legacy.purpose || "accompany";
@@ -163,7 +188,8 @@ function main(argv = process.argv.slice(2)) {
   if (!fs.existsSync(source) || !fs.lstatSync(source).isDirectory()) throw new Error("Legacy directory not found or is a symlink");
   if (fs.existsSync(destination) || config.memories?.[flags.memory]) throw new Error("Canonical memory already exists; inspect before retrying");
   const watcherPid = activeWatcher(source);
-  const entries = listFiles(source);
+  const skippedTransient = { files: 0, bytes: 0 };
+  const entries = listFiles(source, "", skippedTransient);
   const reserved = new Set(["memory.json", "bindings.json", "watcher.json", ".layout-v1.json"]);
   if (entries.some(item => !item.directory && reserved.has(item.relative))) throw new Error("Legacy directory already contains canonical metadata");
   const files = entries.filter(item => !item.directory);
@@ -172,7 +198,17 @@ function main(argv = process.argv.slice(2)) {
   const unknown = Object.keys(patch).filter(key => !["label", "purpose", "scenario", "ai", "user", "userGender"].includes(key));
   if (unknown.length) throw new Error(`Unsupported migration fields: ${unknown.join(", ")}`);
   const preview = metadata(flags.memory, legacy, new Date().toISOString(), patch);
-  const summary = { memoryId: flags.memory, files: files.length, bytes, activeWatcherPid: watcherPid, legacySourcePreserved: true, sqliteChanged: false, settings: preview.memory };
+  const forkDescendants = legacyForkDescendants(config, flags.memory);
+  const summary = {
+    memoryId: flags.memory, files: files.length, bytes,
+    skippedTransientFiles: skippedTransient.files, skippedTransientBytes: skippedTransient.bytes,
+    legacyForkDescendants: forkDescendants,
+    warning: [
+      skippedTransient.files ? `检测到 ${skippedTransient.files} 个旧版临时 prompt 文件；升级不会复制，请按需清理旧目录以释放空间` : null,
+      forkDescendants.length ? `检测到 ${forkDescendants.length} 个旧 fork 子记忆体；升级后将按线程 lineage 归并为当前记忆体的 Binding，不再显示为独立记忆体` : null,
+    ].filter(Boolean).join("；") || null,
+    activeWatcherPid: watcherPid, legacySourcePreserved: true, sqliteChanged: false, settings: preview.memory,
+  };
   if (!flags.apply) { console.log(JSON.stringify({ dryRun: true, blocked: watcherPid !== null, ...summary }, null, 2)); return; }
   if (!flags.formalCli && !flags.servicesStopped) throw new Error("Stop Web and watcher, then pass --services-stopped");
   if (watcherPid !== null) throw new Error(`Watcher PID ${watcherPid} is still active`);

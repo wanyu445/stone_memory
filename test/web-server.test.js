@@ -501,10 +501,19 @@ test("binding status adopts a legacy configured window through the formal CLI", 
   const server = fs.readFileSync(path.join(__dirname, "..", "src", "web", "server.js"), "utf8");
   assert.match(server, /layout !== "memory-v1" \? legacyThreadId : null/);
   assert.match(server, /"binding", "migrate-legacy", "--memory", threadId, "--apply"/);
+  assert.match(server, /settings\.layout !== "memory-v1" && settings\.externalThreadId/);
   assert.match(server, /legacy-config:/);
   assert.match(server, /settings\.externalThreadId/);
   assert.match(server, /source:\s*"legacy-config"/);
   assert.match(server, /readOnly:\s*true/);
+});
+
+test("legacy fork cards disappear only after their thread is absorbed as a Binding", () => {
+  const server = fs.readFileSync(path.join(__dirname, "..", "src", "web", "server.js"), "utf8");
+  assert.match(server, /config\[context\.legacyKey\]\?\.parentThreadId/);
+  assert.match(server, /binding\.externalThreadId === context\.legacyKey && fs\.existsSync\(bindingCursorFile\(ancestor\.memoryId, binding\)\)/);
+  assert.match(server, /if \(absorbed\) return \[\]/);
+  assert.match(server, /runStmem\(\["sync", "--memory", memoryId, "--binding", binding\.id\]\)/);
 });
 
 test("canonical developer modules are discovered without copying frontend code into public", () => {

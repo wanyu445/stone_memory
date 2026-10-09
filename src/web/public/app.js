@@ -344,6 +344,7 @@ function createMemoryDraft(button, memory = null) {
   const overlay=document.createElement("div");overlay.className="editor-overlay create-memory-overlay";
   overlay.innerHTML=`<form class="editor-panel create-memory-dialog"><button class="ghost editor-close" type="button" aria-label="关闭">关闭</button><p class="eyebrow">${upgrading?"MEMORY UPGRADE":"NEW MEMORY"}</p><h2>${upgrading?"升级旧版记忆体":memory?"完成记忆体设置":"创建记忆体"}</h2><p class="lead">${upgrading?"确认新版记忆体信息。历史数据会保留，旧目录不会删除。":"先建立记忆本身。对话绑定、历史导入与自动化可以进入记忆体后再设置。"}</p><div class="field-grid"><div class="field full"><label for="quick-memory-name">记忆体名字</label><input id="quick-memory-name" name="libraryName" value="${escapeHtml(memory?.libraryName||"")}" required autofocus></div><div class="field"><label for="quick-ai-name">AI 名字</label><input id="quick-ai-name" name="ai" value="${escapeHtml(memory?.ai||"")}" required></div><div class="field"><label for="quick-user-name">用户名字</label><input id="quick-user-name" name="user" value="${escapeHtml(memory?.user||"")}" required></div><div class="field full"><label for="quick-purpose">挖掘场景</label><select id="quick-purpose" name="scenario"><option value="life-supervision">生活监督</option><option value="accompany">情感陪伴</option><option value="coding">编程日志</option></select><small>决定今后生成摘要和特征时关注什么。</small></div></div><div class="wizard-actions">${memory&&!upgrading?'<button class="danger-button" id="delete-draft-memory" type="button">删除这个空记忆体</button>':'<span></span>'}<button class="primary" type="submit">${upgrading?"确认升级":"创建并进入"}</button></div></form>`;
   document.body.append(overlay);
+  if(upgrading){const notice=document.createElement("p");notice.className="notice warning";notice.textContent="旧版 tmp/prompt_*.txt 是可清理的临时文件，升级不会复制；旧目录仍会保留，请按需清理以释放空间。";overlay.querySelector(".lead")?.after(notice);}
   const close=()=>{overlay.remove();if(button){button.disabled=false;}};
   overlay.querySelector(".editor-close").onclick=close;
   overlay.onclick=event=>{if(event.target===overlay)close();};
@@ -359,11 +360,25 @@ function createMemoryDraft(button, memory = null) {
     try{
       const endpoint=upgrading?`/api/memories/${encodeURIComponent(memory.memoryId)}/layout-upgrade`:"/api/libraries";
       const result=await api(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...values,...(!upgrading&&memory?{memoryId:memory.memoryId}:{})})});
-      overlay.remove();await loadLibraries();showToast(upgrading?(result.bindingRequired?`“${result.library.libraryName}”已经升级，请重新绑定对话窗口`:`“${result.library.libraryName}”已经升级`):`“${result.library.libraryName}”已经创建`);await openLibrary(result.library.memoryId);
+      overlay.remove();await loadLibraries();
+      if(upgrading)await showLayoutUpgradeCompletion(result);
+      else showToast(`“${result.library.libraryName}”已经创建`);
+      await openLibrary(result.library.memoryId);
     }catch(error){showToast(error.message,"error");submit.disabled=false;submit.textContent=upgrading?"确认升级":"创建并进入";}
   };
   overlay.querySelector("#quick-purpose").value=memory?.scenario||memory?.purpose||"life-supervision";
   requestAnimationFrame(()=>overlay.querySelector("#quick-memory-name")?.focus());
+}
+
+function showLayoutUpgradeCompletion(result) {
+  return new Promise(resolve=>{
+    const overlay=document.createElement("div");overlay.className="editor-overlay layout-upgrade-completion-overlay";
+    const bindingReady=result.bindingRequired!==true,recovering=result.backgroundRecovery===true;
+    overlay.innerHTML=`<section class="editor-panel" role="dialog" aria-modal="true" aria-labelledby="layout-upgrade-completion-title"><div class="rebuild-completion-mark" aria-hidden="true">${recovering?"…":"✓"}</div><p class="eyebrow">${recovering?"MEMORY UPGRADE CONTINUES":"MEMORY UPGRADE COMPLETE"}</p><h2 id="layout-upgrade-completion-title">${recovering?"基础数据迁移完成，接入仍在恢复":"记忆体升级完成"}</h2><p class="lead">“${escapeHtml(result.library.libraryName)}”的记忆、原始对话和 rules 已迁移到新版布局。</p><div class="integrity ${recovering?"warning":"success"}">${recovering?"正在恢复之前接入的窗口及其 fork 后继。":`迁移和接入均已完成；已同步 ${Number(result.syncedBindings||0)} 个有效叶子窗口。`}</div><p class="notice">线性 fork 只保留最新叶子；存在兄弟分支时保留各叶子 Binding，共同历史按消息指纹去重。</p><p class="notice">原有自动化开关已保留；自动摘要仍按对话日期跨日触发，不会因迁移或 watcher 重启立即补跑。</p><p class="notice warning">旧目录仍然保留。旧版 tmp/prompt_*.txt 属于可清理的临时文件，可删除以释放磁盘空间。</p><div class="wizard-actions"><button class="primary layout-upgrade-completion-close" type="button">${recovering?"查看接入状态":"进入记忆体"}</button></div></section>`;
+    const close=()=>{overlay.remove();resolve();};
+    overlay.querySelector(".layout-upgrade-completion-close").onclick=close;
+    document.body.append(overlay);overlay.querySelector(".layout-upgrade-completion-close").focus();
+  });
 }
 
 function topbar(extra = "") { return `<header class="topbar shell">${brand()}${extra}</header>`; }

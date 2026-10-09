@@ -443,7 +443,10 @@ async function main() {
       try {
         // 启动时同步一次，之后这里只承担低频漏事件兜底。
         await flushSync(tid);
-        const minedAny = await checkAndMine(tid);
+        // Mining is triggered by flushSync only when the archive advances to a
+        // new conversation date. Starting/restarting a worker must not turn
+        // historical gaps into an immediate catch-up job.
+        const minedAny = false;
         const actions = resolveAutomaticActions(getMemoryRuntimeConfig(tid));
         if (actions.compact && (!compactChecked.has(tid) || minedAny)) {
           compactChecked.add(tid);

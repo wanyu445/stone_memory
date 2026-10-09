@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   resolveAutomaticActions,
   shouldAutoMineDate,
@@ -28,6 +30,7 @@ test("conversation sync and memory mining are independent switches", () => {
     automaticMemoryMaintenance: true,
   }), { sync: true, mine: true, compact: false });
 });
+
 
 test("automatic compression requires its own explicit switch", () => {
   assert.equal(resolveAutomaticActions({
@@ -59,4 +62,12 @@ test("automatic mining only considers completed dates", () => {
     today: "2026-07-30",
     automaticMemoryMaintenance: false,
   }), false);
+});
+
+test("watcher restart does not immediately catch up historical mining gaps", () => {
+  const watcher = fs.readFileSync(path.join(__dirname, "..", "scripts", "watcher.js"), "utf8");
+  assert.equal((watcher.match(/await checkAndMine\(tid\)/gu) || []).length, 1);
+  assert.match(watcher, /if \(dateChanged && actions\.mine\)[\s\S]*?await checkAndMine\(tid\)/);
+  const pollingLoop = watcher.slice(watcher.indexOf("while (true)"));
+  assert.match(pollingLoop, /const minedAny = false/);
 });

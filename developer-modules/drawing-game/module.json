@@ -1,0 +1,43 @@
+{
+  "id": "drawing-game",
+  "title": "你画我猜",
+  "version": "0.3.0",
+  "sdkVersion": 2,
+  "scope": "memory",
+  "permissions": ["mcp:tools", "mcp:write"],
+  "entry": {
+    "frontend": "frontend/index.html",
+    "mcp": "backend/mcp.js",
+    "commands": {
+      "state": "backend/commands/game.js",
+      "agent-state": "backend/commands/game.js",
+      "agent-join": "backend/commands/game.js",
+      "agent-wait": "backend/commands/game.js",
+      "room-create": "backend/commands/game.js",
+      "game-start": "backend/commands/game.js",
+      "chat": "backend/commands/game.js",
+      "guess": "backend/commands/game.js",
+      "round-reveal": "backend/commands/game.js",
+      "drawing-submit": "backend/commands/game.js",
+      "round-next": "backend/commands/game.js",
+      "game-end": "backend/commands/game.js",
+      "word-add": "backend/commands/game.js",
+      "word-delete": "backend/commands/game.js",
+      "image-read": "backend/commands/game.js",
+      "settings-save": "backend/commands/game.js",
+      "agent-action": "backend/commands/game.js"
+    }
+  },
+  "storage": {
+    "database": "module.sqlite",
+    "files": ["gallery"]
+  },
+  "contributor": "左丞相可",
+  "summary": "和有连续记忆的 AI 在同一个房间里轮流画图、猜词和聊天。",
+  "status": "私人实验",
+  "eyebrow": "DRAW TOGETHER · REMEMBER TOGETHER",
+  "actionLabel": "进入房间 →",
+  "metaLabel": "Game · v0.3",
+  "features": ["手机画板", "AI玩家", "私人词库"],
+  "order": 16
+}

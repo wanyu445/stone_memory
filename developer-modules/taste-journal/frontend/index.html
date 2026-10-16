@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Stone Memory · 味觉档案</title>
+  <script src="/developer-kit/runtime.js"></script>
+  <link rel="stylesheet" href="styles.css">
+  <script src="domain.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <stone-module-page eyebrow="TASTE ARCHIVE · DESSERT SHOP" title="味觉档案" description="奶茶、甜品、外卖的口味小档案馆。聊天里随口一提，AI 替你记一笔；这里负责盖章、对比和总结口味。">
+    <div slot="meta" class="module-meta">
+      <span>贡献人：@lykketutu</span><i aria-hidden="true"></i><span data-stone-library>正在读取当前记忆体…</span>
+    </div>
+
+    <section id="missing-thread" class="notice danger" hidden>
+      <strong>没有找到当前记忆体</strong>
+      <p>请返回 Stone Memory，从某个记忆体的开发者模式重新进入味觉档案。</p>
+    </section>
+
+    <section id="load-error" class="notice danger" hidden>
+      <strong>档案暂时打不开</strong>
+      <p id="load-error-text"></p>
+    </section>
+
+    <div id="app" hidden>
+      <nav id="tab-bar" class="tab-bar" aria-label="视图切换">
+        <button type="button" data-action="tab" data-tab="calendar" class="active"><span class="tab-emoji" aria-hidden="true">🗓️</span>月历</button>
+        <button type="button" data-action="tab" data-tab="archive"><span class="tab-emoji" aria-hidden="true">🗂️</span>档案</button>
+        <button type="button" data-action="tab" data-tab="settings"><span class="tab-emoji" aria-hidden="true">🍮</span>小店</button>
+      </nav>
+
+      <section id="view-calendar" class="view"></section>
+      <section id="view-archive" class="view" hidden></section>
+      <section id="view-settings" class="view" hidden></section>
+    </div>
+
+    <button id="fab-add" class="fab" type="button" hidden aria-label="记一笔">
+      <span class="cup" aria-hidden="true"><span class="straw"></span></span>
+      <span class="fab-text">记一笔</span>
+    </button>
+  </stone-module-page>
+
+  <dialog id="sheet-dialog" class="sheet-dialog"></dialog>
+
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <h3 id="confirm-title"></h3>
+    <p id="confirm-copy"></p>
+    <div class="confirm-actions">
+      <button type="button" id="confirm-cancel" class="ghost-button">先算了</button>
+      <button type="button" id="confirm-action" class="primary-button">确认</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

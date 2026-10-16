@@ -1,0 +1,4 @@
+{
+  "dataDirectory": ".stone_memory",
+  "description": "SM host layout used only to construct synthetic isolated HOME fixtures; business code uses context.resolveDataPath."
+}

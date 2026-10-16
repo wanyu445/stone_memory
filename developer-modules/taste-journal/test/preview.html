@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>PREVIEW · 味觉档案</title>
+  <style>
+    /* 仅供预览台：复刻 Stone 默认主题变量，模块自身不依赖这份文件 */
+    :root {
+      --stone-theme-font-display: Georgia, "Noto Serif SC", serif;
+      --stone-theme-font-body: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+      --stone-theme-canvas: #f5f8f1;
+      --stone-theme-canvas-warm: #fffef9;
+      --stone-theme-ink: #18372b;
+      --stone-theme-ink-soft: #69756d;
+      --stone-theme-ink-faint: #796d5d;
+      --stone-theme-accent: #397052;
+      --stone-theme-accent-strong: #295540;
+      --stone-theme-accent-soft: #eaf2e5;
+      --stone-theme-surface: rgba(255, 254, 249, 0.94);
+      --stone-theme-surface-soft: #f2f3ef;
+      --stone-theme-line: #dce6d7;
+      --stone-theme-line-soft: rgba(220, 230, 215, 0.9);
+      --stone-theme-status: #7ea36f;
+      --stone-theme-danger: #a3463e;
+      --stone-theme-warning: #8a6542;
+      --stone-theme-info: #5f7196;
+      --stone-theme-conflict: #a65d56;
+      --stone-theme-fusion: #765a96;
+      --stone-theme-radius-xs: 9px;
+      --stone-theme-radius-sm: 12px;
+      --stone-theme-radius-md: 18px;
+      --stone-theme-radius-lg: 28px;
+      --stone-theme-radius-pill: 999px;
+      --stone-theme-shadow-card: 0 18px 50px rgba(41, 85, 64, 0.1);
+      --stone-theme-shadow-panel: 0 18px 50px rgba(41, 85, 64, 0.1);
+      --stone-theme-shadow-floating: 0 24px 70px rgba(41, 85, 64, 0.16);
+      --stone-theme-shadow-button: 0 10px 24px rgba(57, 112, 82, 0.24);
+      --stone-theme-space-1: 6px;
+      --stone-theme-space-2: 10px;
+      --stone-theme-space-3: 14px;
+      --stone-theme-space-4: 18px;
+      --stone-theme-space-5: 24px;
+      --stone-theme-space-6: 32px;
+      --stone-theme-motion-fast: 140ms;
+      --stone-theme-motion-normal: 220ms;
+      --stone-theme-ease-soft: cubic-bezier(.3,.7,.4,1);
+    }
+  </style>
+  <link rel="stylesheet" href="../frontend/styles.css">
+  <script src="../frontend/domain.js"></script>
+</head>
+<body>
+  <stone-module-page eyebrow="TASTE ARCHIVE · DESSERT SHOP" title="味觉档案" description="奶茶、甜品、外卖的口味小档案馆。聊天里随口一提，AI 替你记一笔；这里负责盖章、对比和总结口味。（预览台，数据为演示数据）">
+    <div slot="meta" class="module-meta">
+      <span>贡献人：@lykketutu</span><i aria-hidden="true"></i><span data-stone-library>正在读取当前记忆体…</span>
+    </div>
+
+    <section id="missing-thread" class="notice danger" hidden>
+      <strong>没有找到当前记忆体</strong>
+      <p>请返回 Stone Memory，从某个记忆体的开发者模式重新进入味觉档案。</p>
+    </section>
+
+    <section id="load-error" class="notice danger" hidden>
+      <strong>档案暂时打不开</strong>
+      <p id="load-error-text"></p>
+    </section>
+
+    <div id="app" hidden>
+      <nav id="tab-bar" class="tab-bar" aria-label="视图切换">
+        <button type="button" data-action="tab" data-tab="calendar" class="active"><span class="tab-emoji" aria-hidden="true">🗓️</span>月历</button>
+        <button type="button" data-action="tab" data-tab="archive"><span class="tab-emoji" aria-hidden="true">🗂️</span>档案</button>
+        <button type="button" data-action="tab" data-tab="settings"><span class="tab-emoji" aria-hidden="true">🍮</span>小店</button>
+      </nav>
+
+      <section id="view-calendar" class="view"></section>
+      <section id="view-archive" class="view" hidden></section>
+      <section id="view-settings" class="view" hidden></section>
+    </div>
+
+    <button id="fab-add" class="fab" type="button" hidden aria-label="记一笔">
+      <span class="cup" aria-hidden="true"><span class="straw"></span></span>
+      <span class="fab-text">记一笔</span>
+    </button>
+  </stone-module-page>
+
+  <dialog id="sheet-dialog" class="sheet-dialog"></dialog>
+
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <h3 id="confirm-title"></h3>
+    <p id="confirm-copy"></p>
+    <div class="confirm-actions">
+      <button type="button" id="confirm-cancel" class="ghost-button">先算了</button>
+      <button type="button" id="confirm-action" class="primary-button">确认</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script>
+    /* 预览台：内存版宿主 + 内存版模块命令，领域逻辑走同一份 frontend/domain.js */
+    (() => {
+      const core = window.TasteJournalCore;
+      const today = "2026-09-06";
+      const journal = core.cloneDefaults();
+      const settings = core.normalizeSettings(null);
+      const digests = [];
+      const drafts = [];
+
+      function add(brand, name, category, tags, entries) {
+        for (const item of entries) {
+          core.applyAdd(journal, settings, {
+            product: { brand, name, category, tags },
+            entry: item,
+          }, { today, source: item.source || "ai" });
+        }
+      }
+
+      add("霸王茶姬", "伯牙绝弦", "drink", ["茉莉", "清茶"], [
+        { date: "2026-09-01", ratingId: "love", options: { "糖度": "微糖", "冰量": "去冰" }, note: "茶感清冽，回甘很长", price: 18 },
+        { date: "2026-09-02", ratingId: "love", options: { "糖度": "微糖", "冰量": "去冰" }, note: "还是那个味道", price: 18 },
+        { date: "2026-09-03", ratingId: "love", options: { "糖度": "微糖" }, note: "", price: 18 },
+        { date: "2026-09-04", ratingId: "love", options: { "糖度": "少糖", "冰量": "少冰" }, note: "少糖也好喝", price: 18 },
+        { date: "2026-09-05", ratingId: "love", options: { "糖度": "微糖" }, price: 18 },
+        { date: "2026-09-05", ratingId: "love", options: { "糖度": "微糖" }, price: 18 },
+        { date: "2026-09-06", ratingId: "avoid", options: { "糖度": "标准糖" }, note: "甜到发齁，亲手点的翻车", price: 18 },
+        { date: "2026-08-28", ratingId: "love", options: { "糖度": "微糖" }, note: "入坑第一杯", price: 18 },
+        { date: "2026-08-30", ratingId: "love", options: { "糖度": "微糖" } },
+      ]);
+      add("霸王茶姬", "桂馥兰香", "drink", ["桂花", "乌龙"], [
+        { date: "2026-09-02", ratingId: "avoid", options: { "糖度": "正常糖" }, note: "桂花味淡，还不如直接喝乌龙", price: 17 },
+        { date: "2026-09-05", ratingId: "avoid", options: { "糖度": "微糖" }, note: "再给一次机会还是淡", price: 17 },
+      ]);
+      add("Manner", "桂花乌龙拿铁", "drink", ["桂花", "乌龙"], [
+        { date: "2026-09-03", ratingId: "love", options: { "糖度": "微糖" }, note: "夯中夯！桂花香是真的", price: 20 },
+        { date: "2026-09-04", ratingId: "love", options: { "糖度": "微糖" }, price: 20 },
+        { date: "2026-09-06", ratingId: "love", options: { "糖度": "微糖" }, note: "连续第三天，闭眼点", price: 20 },
+      ]);
+      add("喜茶", "烤黑糖波波牛乳", "drink", ["黑糖", "波波"], [
+        { date: "2026-08-25", ratingId: "tried", options: { "糖度": "标准糖", "小料": "脆啵啵" }, note: "太甜了但如果少糖可能行", price: 19 },
+        { date: "2026-08-26", ratingId: "tried", options: { "糖度": "少糖" }, price: 19 },
+      ]);
+      add("广莲香", "提拉米苏", "dessert", ["咖啡", "奶酪"], [
+        { date: "2026-09-05", ratingId: "love", options: { "规格": "整块" }, note: "湿润度完美", price: 32 },
+      ]);
+      add("麦当劳", "板烧鸡腿堡", "takeout", [], [
+        { date: "2026-09-01", ratingId: "tried", note: "深夜凑单，一般", price: 24 },
+      ]);
+
+      digests.push({
+        id: "dig_preview",
+        scope: "month",
+        month: "2026-09",
+        title: "九月上半月口味小结",
+        author: "小环",
+        sections: [
+          { heading: "本月趋势", body: "桂花系横评高下立判：Manner 桂花乌龙拿铁三连好评，是本月桂花规则的赢家；霸王茶姬桂馥兰香两次都嫌桂花味淡，建议秋天别回购，想喝桂花直接点 Manner。" },
+          { heading: "甜度体检", body: "伯牙绝弦标准糖当场翻车，微糖七连好评——你的舒适区就是微糖，别手滑点成标准糖了。" },
+          { heading: "下期建议", body: "波波牛乳上次嫌甜，可以试试少糖+去冰再给一次机会；或者把机会留给桂花冻鲜奶。" },
+        ],
+        proposals: [{ kind: "ratingLabel", label: "干杯不腻", sentiment: "positive" }],
+        updatedAt: "2026-09-06T10:20:00.000Z",
+      });
+      drafts.push({ id: "draft_preview", raw: "刚刚路过 bakery 买了那个脏脏包 好像一般般有点干", receivedAt: "2026-09-06T09:12:00.000Z", source: "ai" });
+
+      const ctx = { moduleId: "taste-journal", memoryId: "t-preview", moduleDataDir: "/preview" };
+      const store = { journal, settings, digests, drafts };
+      function respond(action, payload) {
+        payload = payload || {};
+        if (action === "list") {
+          if (payload.query) {
+            const entries = core.filterEntries(store.journal, payload.query);
+            const ids = new Set(entries.map(entry => entry.productId));
+            return { ok: true, today, query: payload.query, count: entries.length, products: store.journal.products.filter(p => ids.has(p.id)).map(p => core.rollupProduct(p, store.journal.entries, store.settings)), entries };
+          }
+          return { ok: true, today, settings: store.settings, categories: core.CATEGORIES, optionKeys: core.OPTION_KEYS, products: store.journal.products.map(p => core.rollupProduct(p, store.journal.entries, store.settings)), entries: store.journal.entries, digests: store.digests, drafts: store.drafts };
+        }
+        if (action === "stats") return { ok: true, stats: core.buildStats(store.journal, store.settings, { today }) };
+        if (action === "add") {
+          const result = core.applyAdd(store.journal, store.settings, payload, { today, source: payload.source || "manual" });
+          if (result.draft) { store.drafts.push(result.draft); return { ok: true, draft: true, pendingDrafts: store.drafts.length }; }
+          return { ok: true, product: core.rollupProduct(result.product, store.journal.entries, store.settings), entry: result.entry, similar: result.similar || [] };
+        }
+        if (action === "update") {
+          if (payload.op === "deleteDraft") { store.drafts = store.drafts.filter(d => d.id !== payload.draftId); return { ok: true }; }
+          if (payload.op === "resolveDraft") {
+            const result = core.applyAdd(store.journal, store.settings, { product: payload.product, entry: payload.entry }, { today, source: "manual" });
+            store.drafts = store.drafts.filter(d => d.id !== payload.draftId);
+            return { ok: true, productId: result.product.id, pendingDrafts: store.drafts.length };
+          }
+          if (payload.op === "clearAll") { store.journal = core.cloneDefaults(); store.digests = []; store.drafts = []; return { ok: true, cleared: true }; }
+          const touched = core.applyUpdate(store.journal, store.settings, payload, { today });
+          const response = { ok: true };
+          if (touched && touched.productId) {
+            const product = store.journal.products.find(item => item.id === touched.productId);
+            response.product = product ? core.rollupProduct(product, store.journal.entries, store.settings) : null;
+          }
+          if (payload.op === "settings") response.settings = store.settings;
+          return response;
+        }
+        if (action === "digest") {
+          if (payload.op === "delete") { store.digests = store.digests.filter(d => d.id !== payload.digestId); return { ok: true, digests: store.digests }; }
+          const existing = store.digests.find(d => d.scope === payload.scope && d.month === (payload.month || ""));
+          const record = { id: existing ? existing.id : "dig_new", scope: payload.scope, month: payload.month || "", title: payload.title || "", author: payload.author || "", sections: payload.sections || [], proposals: payload.proposals || [], updatedAt: new Date().toISOString() };
+          store.digests = store.digests.filter(d => !(d.scope === record.scope && d.month === record.month));
+          store.digests.push(record);
+          return { ok: true, digest: record };
+        }
+        throw new Error("未知命令：" + action);
+      }
+
+      class PreviewModulePage extends HTMLElement {
+        connectedCallback() {
+          if (this.shadowRoot) return;
+          const root = this.attachShadow({ mode: "open" });
+          const eyebrow = this.getAttribute("eyebrow") || "";
+          const title = this.getAttribute("title") || "";
+          const description = this.getAttribute("description") || "";
+          root.innerHTML = `<style>
+            :host { display:block; min-height:100dvh; color:var(--stone-theme-ink); }
+            * { box-sizing:border-box; }
+            main { width:min(1120px,calc(100% - 32px)); margin:0 auto; padding:26px 0 80px; }
+            header { padding:18px 6px 28px; }
+            .eyebrow { margin:28px 0 7px; color:var(--stone-theme-accent); font:800 12px var(--stone-theme-font-body); letter-spacing:.18em; }
+            h1 { margin:0; font:600 clamp(38px,6vw,58px) var(--stone-theme-font-display); }
+            .description { max-width:750px; margin:18px 0 0; color:var(--stone-theme-ink-soft); font:400 14px/1.75 var(--stone-theme-font-body); }
+            .meta { margin-top:12px; }
+            @media(max-width:680px) { main { width:min(100% - 20px,1120px); padding-top:14px; } header { padding:12px 2px 22px; } .eyebrow { margin-top:22px; font-size:10px; } h1 { font-size:34px; } .description { margin-top:13px; font-size:13px; line-height:1.65; } }
+          </style><main><header><p class="eyebrow"></p><h1></h1><p class="description"></p><div class="meta"><slot name="meta"></slot></div></header><slot></slot></main>`;
+          root.querySelector(".eyebrow").textContent = eyebrow;
+          root.querySelector("h1").textContent = title;
+          const descriptionNode = root.querySelector(".description");
+          descriptionNode.textContent = description;
+          root.querySelector("a") && null;
+        }
+      }
+      if (!customElements.get("stone-module-page")) customElements.define("stone-module-page", PreviewModulePage);
+
+      window.StoneDeveloperModule = Object.freeze({
+        memoryId: "t-preview",
+        api: async (path, options) => {
+          const match = path.match(/^\/api\/developer-modules\/taste-journal\/commands\/([a-z]+)\?/);
+          if (match) {
+            const payload = options && options.body ? JSON.parse(options.body) : {};
+            if (payload.source !== "ai" && options && options.method === "POST" && match[1] === "add") payload.source = "manual";
+            return respond(match[1], payload);
+          }
+          if (path.startsWith("/api/libraries/")) {
+            if (options && options.method === "DELETE") return { ok: true };
+            return { rows: [{ name: "taste-journal.md", injected: true }] };
+          }
+          throw new Error("预览台未模拟该接口：" + path);
+        },
+        currentLibrary: async () => ({ libraryName: "小环的预览记忆体" }),
+      });
+      document.addEventListener("DOMContentLoaded", () => {
+        document.querySelectorAll("[data-stone-library]").forEach(node => { node.textContent = "小环的预览记忆体"; });
+      });
+    })();
+  </script>
+  <script src="../frontend/app.js"></script>
+</body>
+</html>

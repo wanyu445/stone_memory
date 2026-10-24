@@ -9,6 +9,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-legacy-binding-"));
 process.env.HOME = home;
 
 const { createMemory } = require("../src/services/memory-setup");
+const { appendRebuildLog, readRebuildState, updateContextUsage } = require("../src/services/rebuild-log");
 const {
   migrateLegacyBinding, readBindingConfig, applyBindingAdd, applyBindingPrimary,
   applyBindingState, resolvePrimaryBinding, planBindingSuccessorDiscovery, applyBindingSuccessorDiscovery,
@@ -133,4 +134,50 @@ test("legacy configured window becomes the first primary binding exactly once", 
   assert.equal(readBindingConfig(memory.memoryId).primaryBindingId, second.binding.id);
   assert.equal(resolvePrimaryBinding(memory.memoryId).id, second.binding.id);
   assert.throws(() => applyBindingState(memory.memoryId, second.binding.id, "remove"), /不能删除主 Binding/);
+});
+
+test("existing primary binding migrates unscoped context and rebuild state", () => {
+  const memory = createMemory({ label: "补旧上下文 Binding" });
+  const sessionRoot = path.join(home, "backfill-sessions");
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  fs.writeFileSync(path.join(sessionRoot, "legacy-context.jsonl"), "{}\n");
+  const binding = applyBindingAdd(memory.memoryId, {
+    provider: "claude", externalThreadId: "legacy-context", sessionRoot, mode: "primary",
+  }).binding;
+
+  updateContextUsage(memory.memoryId, { usedTokens: 273972, observedAt: "2026-07-15T03:04:30.520Z" });
+  appendRebuildLog(memory.memoryId, { status: "completed", runtime: "claude", recentMessages: 12 });
+  assert.equal(readRebuildState(memory.memoryId).contextUsage.bindingId, undefined);
+  assert.equal(readRebuildState(memory.memoryId).lastCompleted.bindingId, undefined);
+
+  const preview = migrateLegacyBinding(memory.memoryId);
+  assert.equal(preview.action, "associate-rebuild-state");
+  assert.equal(preview.bindingId, binding.id);
+  assert.equal(preview.unscoped.contextUsage, true);
+  assert.equal(preview.unscoped.lastCompleted, true);
+  assert.equal(readRebuildState(memory.memoryId).contextUsage.bindingId, undefined);
+
+  const applied = migrateLegacyBinding(memory.memoryId, { apply: true });
+  assert.equal(applied.applied, true);
+  const state = readRebuildState(memory.memoryId);
+  assert.equal(state.contextUsage.bindingId, binding.id);
+  assert.equal(state.contextUsageByBinding[binding.id].usedTokens, 273972);
+  assert.equal(state.lastCompleted.bindingId, binding.id);
+  assert.equal(state.lastCompletedByBinding[binding.id].recentMessages, 12);
+  assert.equal(migrateLegacyBinding(memory.memoryId).changed, false);
+});
+
+test("adding a first primary binding associates existing unscoped state", () => {
+  const memory = createMemory({ label: "先有状态后绑定" });
+  const sessionRoot = path.join(home, "new-binding-sessions");
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  fs.writeFileSync(path.join(sessionRoot, "new-primary.jsonl"), "{}\n");
+  updateContextUsage(memory.memoryId, { usedTokens: 212345 });
+
+  const binding = applyBindingAdd(memory.memoryId, {
+    provider: "claude", externalThreadId: "new-primary", sessionRoot, mode: "primary",
+  }).binding;
+
+  assert.equal(readRebuildState(memory.memoryId).contextUsage.bindingId, binding.id);
+  assert.equal(readRebuildState(memory.memoryId).contextUsageByBinding[binding.id].usedTokens, 212345);
 });

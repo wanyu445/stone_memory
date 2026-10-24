@@ -9,7 +9,7 @@ const { addBinding: registerBinding } = require("./memory-bindings");
 const { writeJson } = require("./memory-setup");
 const { saveConfig } = require("./thread-setup");
 const { rebalanceWatcherBindings } = require("./watcher-bindings");
-const { associateRebuildStateWithBinding } = require("./rebuild-log");
+const { associateRebuildStateWithBinding, unscopedRebuildState } = require("./rebuild-log");
 
 const PROVIDERS = new Set(["claude", "codex"]);
 const MODES = new Set(["primary", "parallel", "child", "import_only"]);
@@ -133,7 +133,9 @@ function applyBindingAdd(memoryId, input, { preserveWatcher = false } = {}) {
   } finally {
     store.close();
   }
-  return { applied: true, changed: true, binding: next.bindings.find(item => item.id === binding.id), config: next, stoppedBindingIds: capacity.stoppedBindingIds, automationEnabled: firstBinding };
+  const createdBinding = next.bindings.find(item => item.id === binding.id);
+  if (next.primaryBindingId === binding.id) associateRebuildStateWithBinding(memoryId, binding.id);
+  return { applied: true, changed: true, binding: createdBinding, config: next, stoppedBindingIds: capacity.stoppedBindingIds, automationEnabled: firstBinding };
 }
 
 function legacyBindingInput(memoryId) {
@@ -150,14 +152,20 @@ function legacyBindingInput(memoryId) {
 
 function migrateLegacyBinding(memoryId, { apply = false } = {}) {
   const config = readBindingConfig(memoryId);
-  if (config.bindings.length) return { memoryId, changed: false, reason: "bindings-exist", config };
+  if (config.bindings.length) {
+    const primary = config.bindings.find(item => item.id === config.primaryBindingId);
+    const unscoped = primary ? unscopedRebuildState(memoryId) : { contextUsage: false, lastCompleted: false };
+    if (!primary || (!unscoped.contextUsage && !unscoped.lastCompleted)) {
+      return { memoryId, changed: false, reason: "bindings-exist", config };
+    }
+    if (!apply) return { dryRun: true, memoryId, changed: true, action: "associate-rebuild-state", bindingId: primary.id, unscoped };
+    const state = associateRebuildStateWithBinding(memoryId, primary.id);
+    return { applied: true, memoryId, changed: true, action: "associate-rebuild-state", bindingId: primary.id, unscoped, state };
+  }
   const input = legacyBindingInput(memoryId);
   if (!input) return { memoryId, changed: false, reason: "legacy-binding-not-found", config };
   if (!apply) return planBindingAdd(memoryId, input);
   const result = applyBindingAdd(memoryId, input, { preserveWatcher: true });
-  if (result.changed && result.binding?.id === result.config?.primaryBindingId) {
-    associateRebuildStateWithBinding(memoryId, result.binding.id);
-  }
   return result;
 }
 

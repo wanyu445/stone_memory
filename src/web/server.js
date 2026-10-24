@@ -1164,7 +1164,8 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       let status;
       try {
         status = JSON.parse(runStmem(["binding", "list", "--memory", threadId]));
-        if (!status.bindings?.length) {
+        const migrationPlan = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", threadId]));
+        if (migrationPlan.changed) {
           const migrated = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", threadId, "--apply"]));
           if (migrated.changed !== false) status = JSON.parse(runStmem(["binding", "list", "--memory", threadId]));
         }

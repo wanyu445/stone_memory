@@ -677,6 +677,8 @@ npm run audit:developer-modules
 
 [开发者文档](./sm-developer-docs/README.md) · [模块接入规范](./developer-modules/DEVELOPMENT.md) · [问题反馈](https://github.com/wanyu445/stone_memory/issues)
 
+[贡献者名单](./CONTRIBUTORS.md)
+
 ## 许可证
 
 [GNU Affero General Public License v3.0](LICENSE)

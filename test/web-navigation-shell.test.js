@@ -61,6 +61,8 @@ test("responsive navigation shell delegates to the stable frontend", () => {
   assert.match(contextManagement, /textContent="注入策略"/);
   assert.match(contextManagement, /save-injection-settings/);
   assert.match(contextManagement, /rebuild-preview-modal-content/);
+  const previewFlow = app.match(/async function previewIntegratedRebuild\(library,options=\{\}\)[\s\S]*?function renderReadableRebuildPreview/)?.[0] || "";
+  assert.match(previewFlow, /finally\{button\.disabled=false;\}/);
   assert.match(app, /确认应用重建上下文/);
   assert.match(app, /automationSwitch\("automaticFullMining"/);
   assert.match(app, /automationSwitch\("automaticMemoryMaintenance"/);

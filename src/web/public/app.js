@@ -1544,7 +1544,7 @@ async function previewIntegratedRebuild(library,options={}) {
       feelingDetail.textContent=`历史候选 ${candidates} 条，本次选择 ${selected} 条；其中 ${show(preview.memoryFeelings)} 条以摘要形式注入、${retained} 条原文锚点以原文形式注入（共占 ${retainedLines} 行）。近期窗口内另有 ${inWindow} 条摘要，由近期原文承载，不重复注入。`;
     }
   }catch(error){target.innerHTML=`<div class="integrity warning">${escapeHtml(error.message)}</div>`;}
-  button.disabled=false;
+  finally{button.disabled=false;}
 }
 
 function renderReadableRebuildPreview(preview,retentionLabel){

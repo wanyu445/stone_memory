@@ -14,7 +14,7 @@ console.log(`Stone Memory Agent 安全协议
    stmem binding add --memory <id> --batch-file <json>
    stmem binding add --memory <id> --batch-file <json> --apply
 5. libraryName 是显示名称；threadId 是 Claude/Codex 真实线程 ID；sessionDir 是递归搜索根目录。
-6. 导入只使用 stmem import，先预览再 --apply。
+6. 导入只使用 stmem import，先预览再 --apply；导入批次可用 --list 查看、--reimport 增量重跑、--revert 预览并撤回。
 7. 重建只使用 stmem rebuild，先预览再 --apply；它已内置备份与完整性保护。
 8. 遇到异常先运行 stmem doctor --memory <记忆体ID> --json，并执行其 nextCommand。
 9. 不确定时运行 stmem capabilities --json；不得凭猜测宣布项目缺少某项能力。

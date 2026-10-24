@@ -28,6 +28,9 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   stmem term-timeline --memory <id> --terms <词列表>  archive 曲线与 feeling 小点
   stmem import --source <json|jsonl|sqlite>       预览导入映射（加 --apply 写入）
   stmem import --dir <path> [--memory <id>]       递归预览目录中的对话数据
+  stmem import --list --memory <id>               查看对话导入批次
+  stmem import --reimport <批次ID> --memory <id>  增量重跑已保存的来源文件
+  stmem import --revert <批次ID> --memory <id>    预览撤回（加 --apply 执行）
   stmem tool-policy status|detect|filtered|preview|apply|unfilter-preview|unfilter|reset-cleaning|rollback-formatting --memory <id>  检测并配置全量对话清洗
   stmem binding list|add|discover-successors|import|batches|revert    多端绑定、fork 后继发现与可逆对话导入
   stmem module <模块ID> <action> [--batch-file <json>] 运行 manifest 登记的开发者模块命令

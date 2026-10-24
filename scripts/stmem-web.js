@@ -17,6 +17,7 @@ const PID_FILE = path.join(STONE, "web.pid");
 const LOG_FILE = path.join(STONE, "web.log");
 const WATCH_SCRIPT = path.join(__dirname, "stmem-web-watch.js");
 const MARKER = ["stmem-web-watch.js", "stmem-web.js", "stmem web"];
+const TOKEN_ROTATION_NOTICE = "新 Token 可用于多个设备登录；此前的旧 Token 及其设备会话将失效。";
 const invokedThroughCli = path.basename(process.argv[1] || "") === "stmem";
 const args = process.argv.slice(invokedThroughCli ? 3 : 2);
 const actions = new Set(["start", "stop", "restart", "status", "config", "dev", "serve", "auth", "lan"]);
@@ -77,9 +78,9 @@ function runAuthCommand() {
   }
   if (subcommand === "rotate") {
     const result = rotateWebApiToken();
-    if (args.includes("--json")) console.log(JSON.stringify(result));
+    if (args.includes("--json")) console.log(JSON.stringify({ ...result, notice:TOKEN_ROTATION_NOTICE }));
     else {
-      console.log("Web API Token 已轮换。请立即保存；之后无法再次查看：");
+      console.log(`Web API Token 已生成。${TOKEN_ROTATION_NOTICE}请立即保存，之后无法再次查看：`);
       console.log(result.token);
     }
     return;
@@ -154,13 +155,13 @@ function runLanCommand() {
     config.web = { ...(config.web || {}), host:"0.0.0.0", port, publicUrl:"", auth:config.web.auth };
     saveConfig(config);
     const processResult = restartAfterAccessChange();
-    const result = { enabled:true, running:true, pid:processResult.pid, host:"0.0.0.0", port, urls:localNetworkUrls(port), token:auth.token };
+    const result = { enabled:true, running:true, pid:processResult.pid, host:"0.0.0.0", port, urls:localNetworkUrls(port), token:auth.token, notice:TOKEN_ROTATION_NOTICE };
     if (json) console.log(JSON.stringify(result));
     else {
       console.log("Stone Memory 局域网访问已开启。");
       for (const url of result.urls) console.log(`访问地址：${url}`);
       if (!result.urls.length) console.log(`访问地址：请使用这台设备的局域网 IPv4 地址和端口 ${port}`);
-      console.log("登录 Token 只显示这一次，请立即保存：");
+      console.log(`登录 Token 只显示这一次，请立即保存。${TOKEN_ROTATION_NOTICE}`);
       console.log(result.token);
       console.warn("安全提示：当前为局域网 HTTP，请只在可信网络中使用。");
     }

@@ -120,14 +120,16 @@ function latestConversationDate(rows, runtime) {
   return conversationDates(rows, runtime).at(-1) || null;
 }
 
-function buildRebuildPreview(threadId, { windowDays = 1, toolPairs = 15, binding = null } = {}) {
+function buildRebuildPreview(threadId, { windowDays = 1, toolPairs = 15, binding = null, cutoffOverride = null } = {}) {
   const runtime = binding?.provider || getCfg("runtime", threadId, "claude");
   const file = binding ? findThreadSessionFile(binding.sessionRoot, binding.externalThreadId) : sessionFile(threadId, runtime);
   if (!file) throw new Error(missingSessionMessage(threadId));
   const { rows, malformed } = readJsonl(file);
-  const { cutoff, referenceDate, activeDates } = conversationWindow(rows, runtime, windowDays);
+  const window = conversationWindow(rows, runtime, windowDays);
+  const cutoff = /^\d{4}-\d{2}-\d{2}$/u.test(String(cutoffOverride || "")) ? cutoffOverride : window.cutoff;
+  const { referenceDate, activeDates } = window;
   const result = runtime === "codex" ? inspectCodex(rows, cutoff, toolPairs) : inspectClaude(rows, cutoff, toolPairs);
-  return { threadId, runtime, file, windowDays, toolPairs, referenceDate, cutoff, activeDates, malformed, ...result };
+  return { threadId, runtime, file, currentThreadBytes: fs.statSync(file).size, windowDays, toolPairs, referenceDate, cutoff, activeDates, malformed, ...result };
 }
 
 function checkClaude(rows, threadId) {

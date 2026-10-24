@@ -1382,7 +1382,11 @@ async function renderRebuild(library) {
   let contextAdviceReady=false;
   const paintContext=(binding=null,{primary=false}={})=>{
     const legacyUsage=contextOverview.contextUsage||null,legacyRebuild=contextOverview.rebuild||null;
-    const shownUsage=binding?(contextOverview.contextUsageByBinding?.[binding.id]||(primary&&legacyUsage?.bindingId===binding.id?legacyUsage:null)):legacyUsage;
+    // Older rebuild-state records have a global usage value but no bindingId.
+    // The overview still displays that value for the primary window, so keep
+    // the context tab consistent until a binding-scoped sample is recorded.
+    const primaryLegacyUsage=primary&&(!legacyUsage?.bindingId||legacyUsage.bindingId===binding?.id)?legacyUsage:null;
+    const shownUsage=binding?(contextOverview.contextUsageByBinding?.[binding.id]||primaryLegacyUsage):legacyUsage;
     const shownRebuild=binding?(contextOverview.rebuildByBinding?.[binding.id]||(primary&&legacyRebuild?.bindingId===binding.id?legacyRebuild:null)):legacyRebuild;
     const percent=shownUsage&&Number.isFinite(shownUsage.percent)?Math.max(0,Math.min(100,shownUsage.percent)):0;
     document.querySelector("#context-runtime").textContent=binding?.provider||contextOverview.runtime||"未接入平台";

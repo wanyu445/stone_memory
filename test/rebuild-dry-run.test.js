@@ -17,7 +17,7 @@ test("parses the full Claude rebuild dry-run report", () => {
   Output lines:      2948
   Reduction:         89.4%
   Memory blocks:     17
-  Window messages:   2928
+  Recent window messages: 2854
   Retained messages: 74
   System dropped:    71
   Memory feelings:   602
@@ -32,7 +32,7 @@ test("parses the full Claude rebuild dry-run report", () => {
     summaryCandidates:638,selectedSummaries:200,summaryLimit:200,minImportance:3,protectedSummaries:12,protectedOverflow:0,
     preWindowFeelings:638,inWindowFeelings:0,retainAnchors:36,retainFragments:36,retainDates:17,
     injectedRules:2,toolPairs:30,toolIds:10,originalMessages:27772,outputLines:2948,
-    reductionPercent:89.4,memoryBlocks:17,windowMessages:2928,retainedMessages:74,functionCalls:null,
+    reductionPercent:89.4,memoryBlocks:17,windowMessages:2854,retainedMessages:74,functionCalls:null,
     systemDropped:71,memoryFeelings:602,fullArchiveBytes:1932810,estimatedOutputBytes:205144,
   });
 });
@@ -55,7 +55,7 @@ test("derives Codex injectable totals and retained original lines", () => {
   Reduction: 80.0%
   Full archive size: 1000 bytes
   Estimated output: 200 bytes
-  Memory blocks: 1 | Messages: 14 | Function calls: 2
+  Memory blocks: 1 | Recent window messages: 10 | Function calls: 2
   Retained messages: 4
   System dropped: 3
   Tool pairs preserved: 1`);
@@ -63,4 +63,11 @@ test("derives Codex injectable totals and retained original lines", () => {
   assert.equal(parsed.injectableFeelings,15);
   assert.equal(parsed.retainAnchors,2);
   assert.equal(parsed.retainedMessages,4);
+  assert.equal(parsed.windowMessages,10);
+});
+
+test("corrects legacy rebuild counts that included retained anchor messages", () => {
+  const parsed=parseRebuildDryRun(`[rebuild] ====== DRY RUN ======\n  Window messages: 922\n  Retained messages: 782`);
+  assert.equal(parsed.windowMessages,140);
+  assert.equal(parsed.retainedMessages,782);
 });

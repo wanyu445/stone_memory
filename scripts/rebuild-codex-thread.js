@@ -431,7 +431,8 @@ function main() {
     const contextBytes=fs.statSync(inputFile).size;
     require("../src/services/rebuild-log").appendRebuildLog(threadId,{status:"completed",runtime:"codex",bindingId:process.env.STMEM_REBUILD_BINDING_ID||null,trigger,threadFile:inputFile,windowDays,recentMessages:Math.max(0,stats.windowMsg-retainedMessages),retainAnchors:retainFeelings.length,retainedMessages,injectedFeelings:memoryFeelings.length,injectedRules:ruleCount,injectedRuleNames,preservedToolPairs:pairCount,originalBytes:fullArchiveSize,contextBytes,outputLines:totalOutput});
     console.log(`\n[codex-rebuild] ${fullArchiveSize} bytes full → ${contextBytes} bytes (${fullArchiveSize > 0 ? ((1 - contextBytes / fullArchiveSize) * 100).toFixed(1) : "—"}% saved)`);
-    console.log(`  Memory blocks: ${stats.memoryBlock} | Messages: ${stats.windowMsg} | Function calls: ${stats.functionCall} | System dropped: ${stats.systemDropped}`);
+    console.log(`  Memory blocks: ${stats.memoryBlock} | Recent window messages: ${Math.max(0, stats.windowMsg - retainedMessages)} | Function calls: ${stats.functionCall} | System dropped: ${stats.systemDropped}`);
+    console.log(`  Retained messages: ${retainedMessages}`);
   } else {
     console.log(`\n[codex-rebuild] ====== DRY RUN ======`);
     console.log(`  Window: ${windowDays} days (since ${cutoffDate})`);
@@ -439,7 +440,7 @@ function main() {
     console.log(`  Reduction: ${byteReduction === null ? "—" : `${byteReduction.toFixed(1)}%`}`);
     console.log(`  Full archive size: ${fullArchiveSize} bytes`);
     console.log(`  Estimated output: ${estimatedOutputSize} bytes`);
-    console.log(`  Memory blocks: ${stats.memoryBlock} | Messages: ${stats.windowMsg} | Function calls: ${stats.functionCall}`);
+    console.log(`  Memory blocks: ${stats.memoryBlock} | Recent window messages: ${Math.max(0, stats.windowMsg - retainedMessages)} | Function calls: ${stats.functionCall}`);
     console.log(`  Retained messages: ${retainedMessages}`);
     console.log(`  System dropped: ${stats.systemDropped}`);
     console.log(`  Tool pairs preserved: ${pairCount}`);

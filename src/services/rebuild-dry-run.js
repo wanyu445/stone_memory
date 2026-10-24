@@ -14,7 +14,10 @@ function parseRebuildDryRun(output) {
   const toolMatch=text.match(/tool chains?:\s*(\d+)\s*pairs(?:,\s*(\d+)\s*tool IDs)?/i);
   const splitMatch=text.match(/(\d+)\s*pre-window,\s*(\d+)\s*in-window/i);
   const retainMatch=text.match(/(\d+)\s*(?:retainOriginal|fragments).*?(?:→\s*(\d+)\s*fragments,\s*)?(\d+)\s*(?:archive\s*)?dates/i);
-  const codexStats=text.match(/Memory blocks:\s*(\d+)\s*\|\s*Messages:\s*(\d+)\s*\|\s*Function calls:\s*(\d+)/i);
+  const codexStats=text.match(/Memory blocks:\s*(\d+)\s*\|\s*(?:Recent window messages|Messages):\s*(\d+)\s*\|\s*Function calls:\s*(\d+)/i);
+  const retainedMessages=number(text,/Retained messages:\s*(\d+)/i)??0;
+  const explicitRecentMessages=number(text,/Recent window messages:\s*(\d+)/i);
+  const legacyWindowMessages=codexStats?Number(codexStats[2]):number(text,/Window messages:\s*(\d+)/i);
   const injectableFeelings=number(text,/Loading injectable feelings[\s\S]*?\n[^\n]*?(\d+)\s+feelings/i)
     ??(splitMatch?Number(splitMatch[1])+Number(splitMatch[2]):null);
   const summarySelection=text.match(/Summary selection:\s*(\d+)\s+candidates\s*→\s*(\d+)\s+selected\s*\(latest=([^,]+),\s*minImportance=(\d+),\s*protected=(\d+),\s*overflow=(\d+)\)/i);
@@ -46,8 +49,11 @@ function parseRebuildDryRun(output) {
     outputLines,
     reductionPercent:number(text,/Reduction:\s*([\d.]+)%/i),
     memoryBlocks:codexStats?Number(codexStats[1]):number(text,/Memory blocks:\s*(\d+)/i),
-    windowMessages:codexStats?Number(codexStats[2]):number(text,/Window messages:\s*(\d+)/i),
-    retainedMessages:number(text,/Retained messages:\s*(\d+)/i),
+    // Older dry-runs included retained anchor fragments in the window count.
+    // Prefer the explicit new field; correct legacy output by subtracting the
+    // separately reported retained count.
+    windowMessages:explicitRecentMessages??(legacyWindowMessages===null?null:Math.max(0,legacyWindowMessages-retainedMessages)),
+    retainedMessages,
     functionCalls:codexStats?Number(codexStats[3]):null,
     systemDropped:number(text,/System dropped:\s*(\d+)/i),
     memoryFeelings:number(text,/Memory feelings:\s*(\d+)/i),

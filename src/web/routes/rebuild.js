@@ -8,11 +8,58 @@ const { paginate } = require("../view-models");
 const { parseRebuildDryRun } = require("../../services/rebuild-dry-run");
 const { runStmem } = require("../cli-client");
 const { normalizeRebuildRequest, rebuildRequestCliArgs } = require("../../services/rebuild-request");
+const { getThreadDir } = require("../../config");
+const { loadInjectableFeelings, loadRetainConfig, selectRebuildFeelings } = require("../../services/thread-rebuilder");
+const { listRules } = require("../../services/rule-store");
 const { NOT_HANDLED } = require("../route-result");
 
 function configuredBinding(threadId, bindingId) {
   const id = String(bindingId || "").trim();
   return id ? require("../../services/memory-binding-config").getConfiguredBinding(threadId, id) : null;
+}
+
+function readableRebuildPreview(threadId, request, stats) {
+  const binding = configuredBinding(threadId, request.bindingId);
+  const isWatermark = stats.retentionMode === "watermark" && !stats.watermarkFallback;
+  const cutoffOverride = isWatermark ? String(stats.watermarkCutoff || "").slice(0, 10) : stats.cutoff;
+  const source = buildRebuildPreview(threadId, {
+    windowDays: request.context.windowDays,
+    toolPairs: request.context.toolPairs,
+    binding,
+    cutoffOverride,
+  });
+  const memoryDir = path.join(getThreadDir(threadId), "memory");
+  const allFeelings = loadInjectableFeelings(memoryDir, threadId, { quiet: true });
+  const retainConfig = loadRetainConfig(path.join(memoryDir, "retain-config.json"));
+  const retain = retainConfig.retain || {};
+  const protectedIds = new Set([...Object.keys(retain), ...Object.keys(retainConfig.eventAnchors || {})]);
+  const preWindow = isWatermark && stats.watermarkFeelingId
+    ? allFeelings.filter(feeling => feeling.id !== stats.watermarkFeelingId)
+    : allFeelings.filter(feeling => feeling.date < (stats.cutoff || source.cutoff));
+  const selection = selectRebuildFeelings(preWindow, {
+    summaryLimit: request.summary.mode === "limited" ? request.summary.limit : 0,
+    minImportance: request.summary.mode === "limited" ? request.summary.minImportance : 0,
+    protectedIds,
+  });
+  const summaryRows = selection.selected.filter(feeling => !retain[feeling.id]);
+  const excludedMessages = new Set(request.trim.excludedMessages);
+  const excludedTools = new Set(request.trim.excludedTools);
+  const exactWatermark = isWatermark ? new Date(stats.watermarkCutoff || "").getTime() : NaN;
+  const messages = source.items.filter(item =>
+    !excludedMessages.has(item.id) && (!Number.isFinite(exactWatermark) || new Date(item.timestamp).getTime() >= exactWatermark));
+  const tools = source.tools.filter(item => !excludedTools.has(item.id));
+  const rules = listRules(threadId).filter(rule => rule.injected && rule.content.trim());
+  return {
+    currentThreadBytes: source.currentThreadBytes,
+    rangeStart: isWatermark ? stats.watermarkCutoff : stats.cutoff,
+    rangeEnd: source.referenceDate,
+    rules: rules.slice(0, 5).map(rule => ({ name: rule.name, excerpt: rule.content.trim().slice(0, 360) })),
+    ruleCount: rules.length,
+    summaries: summaryRows.slice(-5).reverse().map(feeling => ({ date: feeling.date, excerpt: feeling.content.slice(0, 420) })),
+    summaryCount: summaryRows.length,
+    messages: messages.slice(0, 3).map(item => ({ timestamp: item.timestamp, role: item.role, excerpt: item.context.slice(0, 260) })),
+    tools: tools.slice(0, 2).map(item => ({ timestamp: item.timestamp, name: item.name, excerpt: item.context.slice(0, 220) })),
+  };
 }
 
 async function handleRebuild(req, res, url) {
@@ -44,7 +91,10 @@ async function handleRebuild(req, res, url) {
       const dir=fs.mkdtempSync(path.join(os.tmpdir(),"stmem-rebuild-preview-")),planFile=path.join(dir,"plan.json");
       fs.writeFileSync(planFile,JSON.stringify(request.trim),{encoding:"utf8",mode:0o600});
       const rebuildArgs=["rebuild","--thread",threadId,...rebuildRequestCliArgs(request),"--plan",planFile];
-      try{return json(res,200,parseRebuildDryRun(runStmem(rebuildArgs)));}
+      try{
+        const preview=parseRebuildDryRun(runStmem(rebuildArgs));
+        return json(res,200,{...preview,readable:readableRebuildPreview(threadId,request,preview)});
+      }
       finally{fs.rmSync(dir,{recursive:true,force:true});}
     }
     if (req.method === "GET" && action === "check") {

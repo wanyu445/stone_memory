@@ -14,7 +14,7 @@ const { findThreadSessionFile } = require("../lib/thread-session-file");
 const { listRules } = require("../services/rule-store");
 const { latestSuccessfulRebuild, readRebuildState } = require("../services/rebuild-log");
 const { sessionFile } = require("../services/rebuild-workbench");
-const { parseFeelingTime, feelingToUtc, automaticRetainWindow } = require("../services/thread-rebuilder");
+const { parseFeelingTime, feelingToUtc, automaticRetainWindow, loadInjectableFeelings, loadRetainConfig, selectRebuildFeelings } = require("../services/thread-rebuilder");
 const { parseRebuildDryRun } = require("../services/rebuild-dry-run");
 const { MiningReviewStore } = require("../services/mining-review");
 const { editFusionCandidate } = require("../services/review-fusion");
@@ -692,7 +692,7 @@ function listLibraries() {
       const latest = store.db.prepare("SELECT MAX(completed_at) completedAt FROM mining_day_state WHERE thread_id=? AND status='completed'").get(threadId);
       return {
         memoryId, layout: context.layout, upgradeRequired: context.layout === "legacy-runtime-v0", scenario: scenarioId(tc), configured: true, bound, bindingCount, threadId, externalThreadId: primaryBinding?.externalThreadId || tc.externalThreadId || (context.layout !== "memory-v1" ? threadId : null), libraryName: tc.label || memoryId, runtime: primaryBinding?.provider || tc.runtime || null, purpose: tc.purpose || "accompany", createdAt,
-        ai: tc.ai || "", user: tc.user || "", counts,
+        ai: tc.ai || "", user: tc.user || "", userGender: tc.userGender || "unspecified", counts,
         lastArchivedAt: latestArchived?.timestamp || null, lastMinedAt: latest?.completedAt || null,
         watcherEnabled: watcherEnabled(tc),
         automaticFullMining: actions.sync,
@@ -1068,6 +1068,50 @@ function serveNotebookAsset(req, res, asset) {
   return true;
 }
 
+function readableRebuildPreview(threadId, request, stats) {
+  const binding = request.bindingId ? getConfiguredBinding(threadId, request.bindingId) : null;
+  const isWatermark = stats.retentionMode === "watermark" && !stats.watermarkFallback;
+  const cutoffOverride = isWatermark ? String(stats.watermarkCutoff || "").slice(0, 10) : stats.cutoff;
+  const source = buildRebuildPreview(threadId, {
+    windowDays: request.context.windowDays,
+    toolPairs: request.context.toolPairs,
+    binding,
+    cutoffOverride,
+  });
+  const memoryDir = path.join(getThreadDir(threadId), "memory");
+  const allFeelings = loadInjectableFeelings(memoryDir, threadId, { quiet: true });
+  const retainConfig = loadRetainConfig(path.join(memoryDir, "retain-config.json"));
+  const retain = retainConfig.retain || {};
+  const protectedIds = new Set([...Object.keys(retain), ...Object.keys(retainConfig.eventAnchors || {})]);
+  const preWindow = isWatermark && stats.watermarkFeelingId
+    ? allFeelings.filter(feeling => feeling.id !== stats.watermarkFeelingId)
+    : allFeelings.filter(feeling => feeling.date < (stats.cutoff || source.cutoff));
+  const selection = selectRebuildFeelings(preWindow, {
+    summaryLimit: request.summary.mode === "limited" ? request.summary.limit : 0,
+    minImportance: request.summary.mode === "limited" ? request.summary.minImportance : 0,
+    protectedIds,
+  });
+  const summaryRows = selection.selected.filter(feeling => !retain[feeling.id]);
+  const excludedMessages = new Set(request.trim.excludedMessages);
+  const excludedTools = new Set(request.trim.excludedTools);
+  const exactWatermark = isWatermark ? new Date(stats.watermarkCutoff || "").getTime() : NaN;
+  const messages = source.items.filter(item =>
+    !excludedMessages.has(item.id) && (!Number.isFinite(exactWatermark) || new Date(item.timestamp).getTime() >= exactWatermark));
+  const tools = source.tools.filter(item => !excludedTools.has(item.id));
+  const rules = listRules(threadId).filter(rule => rule.injected && rule.content.trim());
+  return {
+    currentThreadBytes: source.currentThreadBytes,
+    rangeStart: isWatermark ? stats.watermarkCutoff : stats.cutoff,
+    rangeEnd: source.referenceDate,
+    rules: rules.slice(0, 5).map(rule => ({ name: rule.name, excerpt: rule.content.trim().slice(0, 360) })),
+    ruleCount: rules.length,
+    summaries: summaryRows.slice(-5).reverse().map(feeling => ({ date: feeling.date, excerpt: feeling.content.slice(0, 420) })),
+    summaryCount: summaryRows.length,
+    messages: messages.slice(0, 3).map(item => ({ timestamp: item.timestamp, role: item.role, excerpt: item.context.slice(0, 260) })),
+    tools: tools.slice(0, 2).map(item => ({ timestamp: item.timestamp, name: item.name, excerpt: item.context.slice(0, 220) })),
+  };
+}
+
 async function handleApi(req, res, url, { isRemote = false } = {}) {
   if (req.method === "GET" && url.pathname === "/api/web-security") return json(res, 200, webSecurityStatus());
   if (req.method === "GET" && url.pathname === "/api/web-access") return json(res, 200, webAccessOverview());
@@ -1120,7 +1164,8 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       let status;
       try {
         status = JSON.parse(runStmem(["binding", "list", "--memory", threadId]));
-        if (!status.bindings?.length) {
+        const migrationPlan = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", threadId]));
+        if (migrationPlan.changed) {
           const migrated = JSON.parse(runStmem(["binding", "migrate-legacy", "--memory", threadId, "--apply"]));
           if (migrated.changed !== false) status = JSON.parse(runStmem(["binding", "list", "--memory", threadId]));
         }
@@ -1960,7 +2005,10 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       const dir=fs.mkdtempSync(path.join(os.tmpdir(),"stmem-rebuild-preview-")),planFile=path.join(dir,"plan.json");
       fs.writeFileSync(planFile,JSON.stringify(request.trim),{encoding:"utf8",mode:0o600});
       const rebuildArgs=["rebuild","--thread",threadId,...rebuildRequestCliArgs(request),"--plan",planFile];
-      try{return json(res,200,parseRebuildDryRun(runStmem(rebuildArgs)));}
+      try{
+        const preview=parseRebuildDryRun(runStmem(rebuildArgs));
+        return json(res,200,{...preview,readable:readableRebuildPreview(threadId,request,preview)});
+      }
       finally{fs.rmSync(dir,{recursive:true,force:true});}
     }
     if (req.method === "GET" && action === "check") {
@@ -2034,16 +2082,45 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
   }
 
   const libraryImportMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/imports$/);
+  const libraryImportAgainMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/imports\/([^/]+)\/reimport$/);
+  const libraryImportRevertMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/imports\/([^/]+)\/revert$/);
+  if(req.method==="POST"&&libraryImportAgainMatch){
+    const threadId=decodeURIComponent(libraryImportAgainMatch[1]),batchId=decodeURIComponent(libraryImportAgainMatch[2]);
+    publicThreadSettings(threadId);
+    const result=JSON.parse(runStmem(["import","--memory",threadId,"--reimport",batchId,"--apply","--json"]));
+    return json(res,200,result);
+  }
+  if(req.method==="POST"&&libraryImportRevertMatch){
+    const threadId=decodeURIComponent(libraryImportRevertMatch[1]),batchId=decodeURIComponent(libraryImportRevertMatch[2]);
+    publicThreadSettings(threadId);
+    const input=await readJson(req),args=["import","--memory",threadId,"--revert",batchId,"--json"];
+    if(input.apply===true)args.push("--apply");
+    return json(res,200,JSON.parse(runStmem(args)));
+  }
+  if(req.method==="GET"&&libraryImportMatch){
+    const threadId=decodeURIComponent(libraryImportMatch[1]);
+    publicThreadSettings(threadId);
+    const batches=(JSON.parse(runStmem(["import","--memory",threadId,"--list","--json"])).batches||[]).map(({sourcePath,...batch})=>batch);
+    const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId,readonly:true});
+    try{
+      if(!store.db)return json(res,200,{messages:0,dates:0,firstDate:null,lastDate:null,sources:[],batches});
+      const totals=store.db.prepare("SELECT COUNT(*) messages,COUNT(DISTINCT source_date) dates,MIN(source_date) firstDate,MAX(source_date) lastDate FROM messages WHERE thread_id=?").get(threadId);
+      const sources=store.db.prepare(`SELECT COALESCE(source,'unknown') source,COUNT(*) messages,
+        MIN(source_date) firstDate,MAX(source_date) lastDate,MAX(created_at) lastImportedAt
+        FROM messages WHERE thread_id=? GROUP BY COALESCE(source,'unknown') ORDER BY messages DESC,source`).all(threadId);
+      return json(res,200,{...totals,sources,batches});
+    }finally{store.close();}
+  }
   if(req.method==="POST"&&libraryImportMatch){
     const threadId=decodeURIComponent(libraryImportMatch[1]);publicThreadSettings(threadId);
     const input=await readJson(req),tokens=[...new Set(Array.isArray(input.importTokens)?input.importTokens.map(String):[])];
     if(!tokens.length)throw new Error("请先上传并确认至少一个对话文件");
     const items=tokens.map(token=>({token,item:previews.get(token)}));
     if(items.some(row=>!row.item))throw new Error("有一个导入预览已经过期，请重新上传");
-    const imported={imported:0,fullBacked:0,files:0};
+    const imported={imported:0,fullBacked:0,files:0,batches:[]};
     for(const {token,item} of items){
-      runStmem(["import","--thread",threadId,"--source",item.filePath,"--apply"]);
-      imported.imported+=item.source.preview.valid;imported.fullBacked+=item.source.preview.valid+(item.source.preview.filtered||0);imported.files++;
+      const applied=JSON.parse(runStmem(["import","--memory",threadId,"--source",item.filePath,"--apply","--json"]));
+      imported.imported+=applied.imported||0;imported.fullBacked+=applied.fullBacked||0;imported.files++;imported.batches.push(...(applied.results||[]));
       fs.rmSync(path.dirname(item.filePath),{recursive:true,force:true});previews.delete(token);
     }
     return json(res,200,imported);
@@ -2072,9 +2149,10 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       user: String(body.user || before.user || "").trim(),
       scenario: String(body.scenario || before.scenario || before.purpose || "accompany").trim(),
       purpose: String(body.scenario || before.scenario || before.purpose || "accompany").trim(),
-      userGender: String(body.userGender || "unspecified"),
+      userGender: String(body.userGender || before.userGender || "unspecified"),
     };
     if (!payload.label || !payload.ai || !payload.user) throw new Error("请补全记忆体名字、AI 名字和用户名字");
+    if (!new Set(["unspecified", "female", "male"]).has(payload.userGender)) throw new Error("用户性别必须是 unspecified、female 或 male");
     const job = startLayoutUpgrade(memoryId, before, payload);
     return json(res, 202, { jobId: job.id });
   }

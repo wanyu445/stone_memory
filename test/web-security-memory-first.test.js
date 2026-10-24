@@ -113,6 +113,8 @@ test("Web auth stores only a verifier and token rotation invalidates old session
   const cookie = auth.unlock("stmem_old_token", request());
   const session = cookie.split(";")[0];
   assert.equal(auth.authenticate(request({ cookie: session })).kind, "session");
+  const secondDeviceCookie = auth.unlock("stmem_old_token", request()).split(";")[0];
+  assert.equal(auth.authenticate(request({ cookie: secondDeviceCookie })).kind, "session");
   verifier = hashToken("stmem_new_token");
   assert.throws(() => auth.authenticate(request({ authorization: "Bearer stmem_old_token" })), /访问令牌/);
   assert.throws(() => auth.authenticate(request({ cookie: session })), /访问令牌/);
@@ -177,7 +179,9 @@ test("browser device sessions survive Web restarts without storing cookie secret
   const firstStore = createWebSessionStore({ file, trustedRoot:home, now:() => now });
   const firstAuth = createWebAuth({ host:"0.0.0.0", configProvider, now:() => now, sessionStore:firstStore });
   const cookie = firstAuth.unlock("stmem_device_token", request({ "user-agent":"Mobile Browser" })).split(";")[0];
+  const secondCookie = firstAuth.unlock("stmem_device_token", request({ "user-agent":"Desktop Browser" })).split(";")[0];
   const credential = cookie.split("=")[1];
+  assert.equal(firstStore.list().length, 2);
   assert.equal(fs.readFileSync(file, "utf8").includes(credential), false);
   if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 
@@ -186,6 +190,7 @@ test("browser device sessions survive Web restarts without storing cookie secret
     sessionStore:createWebSessionStore({ file, trustedRoot:home, now:() => now }),
   });
   assert.equal(restartedAuth.authenticate(request({ cookie })).kind, "session");
+  assert.equal(restartedAuth.authenticate(request({ cookie:secondCookie })).kind, "session");
   now += DEVICE_TTL_MS + 1;
   assert.throws(() => restartedAuth.authenticate(request({ cookie })), /访问令牌/);
 });
@@ -197,6 +202,8 @@ test("Web frontend contains an authenticated unlock gate and never asks for an e
   assert.match(app, /\/api\/auth\/unlock/);
   assert.match(app, /\/api\/web-access/);
   assert.match(app, /成功后会记住这台设备 30 天/);
+  assert.match(cli, /Web API Token 已生成。\$\{TOKEN_ROTATION_NOTICE\}/);
+  assert.match(cli, /const TOKEN_ROTATION_NOTICE = "新 Token 可用于多个设备登录；此前的旧 Token 及其设备会话将失效。"/);
   assert.match(app, /if \(!status\.authenticationRequired\) return startStoneMemory\(\)/);
   assert.match(app, /try \{ return await startStoneMemory\(\); \}/);
   assert.match(app, /error\.status === 401 \|\| error\.status === 503/);

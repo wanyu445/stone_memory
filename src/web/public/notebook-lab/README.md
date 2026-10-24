@@ -45,7 +45,7 @@
 
 ## 拆除
 
-删除主前端对 `/notebook-lab/bootstrap.js` 的加载，并删除本目录。Stone Memory 主前端、记忆挖掘与线程重建不受影响；用户 Markdown 和数据库索引不自动删除。
+删除主前端对 `/notebook-lab/bootstrap.js` 的加载，并删除本目录。Stone Memory 主前端、记忆挖掘与重建上下文不受影响；用户 Markdown 和数据库索引不自动删除。
 
 ## 验证
 

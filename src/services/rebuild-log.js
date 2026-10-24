@@ -58,14 +58,16 @@ function associateRebuildStateWithBinding(threadId, bindingId) {
   if (!bindingId) return readRebuildState(threadId);
   const state = readRebuildState(threadId);
   let changed = false;
-  if (state.contextUsage) {
+  // Bind only snapshots created before usage/rebuild records carried a
+  // bindingId. Never relabel a record that already belongs to another window.
+  if (state.contextUsage && !state.contextUsage.bindingId) {
     const usage = { ...state.contextUsage, bindingId };
     if (JSON.stringify(state.contextUsageByBinding?.[bindingId]) !== JSON.stringify(usage)
       || state.contextUsage.bindingId !== bindingId) changed = true;
     state.contextUsage = usage;
     state.contextUsageByBinding = { ...(state.contextUsageByBinding || {}), [bindingId]: usage };
   }
-  if (state.lastCompleted?.status === "completed") {
+  if (state.lastCompleted?.status === "completed" && !state.lastCompleted.bindingId) {
     const rebuild = { ...state.lastCompleted, bindingId };
     if (JSON.stringify(state.lastCompletedByBinding?.[bindingId]) !== JSON.stringify(rebuild)
       || state.lastCompleted.bindingId !== bindingId) changed = true;
@@ -79,4 +81,12 @@ function associateRebuildStateWithBinding(threadId, bindingId) {
   return state;
 }
 
-module.exports={appendRebuildLog,latestSuccessfulRebuild,readRebuildState,updateContextUsage,associateRebuildStateWithBinding,stateFile};
+function unscopedRebuildState(threadId) {
+  const state = readRebuildState(threadId);
+  return {
+    contextUsage: !!state.contextUsage && !state.contextUsage.bindingId,
+    lastCompleted: state.lastCompleted?.status === "completed" && !state.lastCompleted.bindingId,
+  };
+}
+
+module.exports={appendRebuildLog,latestSuccessfulRebuild,readRebuildState,updateContextUsage,associateRebuildStateWithBinding,unscopedRebuildState,stateFile};

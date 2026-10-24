@@ -64,7 +64,7 @@
     "今天的能量补充完毕！"
   ]);
   const MANUAL_TASKS = Object.freeze({
-    trim: { title: "原文裁剪", reason: "需要你亲自判断哪些对话或工具链应当保留，避免小助理误删重要上下文。", path: "维护 → 线程重建 → 原文 → 裁剪对话 / 工具链" },
+    trim: { title: "原文裁剪", reason: "需要你亲自判断哪些对话或工具链应当保留，避免小助理误删重要上下文。", path: "维护 → 重建上下文 → 原文 → 裁剪对话 / 工具链" },
     import: { title: "对话导入", reason: "导入前需要你核对来源和目标记忆体，小助理不会替你选择私人文件。", path: "维护 → 对话导入" },
     remine: { title: "精准补挖", reason: "已挖掘日期重新处理前应先审查现有结果和候选内容。", path: "维护 → 记忆挖掘 → 选择日期 → 精准补挖" },
     summary: { title: "摘要管理", reason: "摘要内容需要由你判断是否准确、重要或需要后续处理。", path: "记忆档案 → 摘要" }
@@ -938,7 +938,7 @@
         setPhase("failed");
         const detail = failed.length ? failed.map(row => row.date).join("、") : job.status;
         addMessage(`挖掘没有全部成功：${detail}。我不会自动进入重建；请检查失败原因后重试。`, "error", failed.length ? [{ label: "重试失败日期", run: () => prepareMiningConfirmation(failed.map(row => row.date), false) }] : []);
-        recordAssistantLog(automatic ? "一键维护" : "指定日期挖掘", "挖掘未全部成功", failed.length ? `${failed.length} 个日期需要在正式工作台检查。` : "任务已停止，未进入线程重建。", "failed");
+        recordAssistantLog(automatic ? "一键维护" : "指定日期挖掘", "挖掘未全部成功", failed.length ? `${failed.length} 个日期需要在正式工作台检查。` : "任务已停止，未进入重建上下文。", "failed");
       }
     } catch (error) {
       if (generation !== state.pollGeneration) return;
@@ -979,12 +979,12 @@
     });
   }
 
-  function showRebuildGuidance(prefix = "当前记忆体需要线程重建。") {
+  function showRebuildGuidance(prefix = "当前记忆体需要重建上下文。") {
     setPhase(operationalPhase());
-    addMessage(`${prefix}\n\n为了避免把密钥、本机路径等设置读取到浏览器，小助理暂不直接生成或应用重建。请返回当前记忆体工作台，进入“维护 → 线程重建”，在那里查看正式预览并确认执行。`, "assistant", [
+    addMessage(`${prefix}\n\n为了避免把密钥、本机路径等设置读取到浏览器，小助理暂不直接生成或应用重建。请返回当前记忆体工作台，进入“维护 → 重建上下文”，在那里查看正式预览并确认执行。`, "assistant", [
       { label: "返回当前记忆体工作台", run: () => stoneModule.returnToDeveloperMode() }
     ]);
-    recordAssistantLog("线程重建", "需要人工确认", "请在正式工作台读取安全配置、查看预览并确认执行。", "waiting");
+    recordAssistantLog("重建上下文", "需要人工确认", "请在正式工作台读取安全配置、查看预览并确认执行。", "waiting");
   }
 
   async function showRecent(days) {
@@ -1114,7 +1114,7 @@
       document.querySelectorAll("[data-stone-library]").forEach(node => { node.textContent = overview.libraryName || "当前记忆体"; });
       setStatus("已验证当前记忆体，正在读取待办和运行状态。\n");
       enableControls();
-      addMessage(`你好，我是“${nickname}”。我可以介绍项目、回答使用问题，也可以在你确认后帮“${overview.libraryName || "当前记忆体"}”执行记忆挖掘，并引导你安全完成线程重建。`, "assistant");
+      addMessage(`你好，我是“${nickname}”。我可以介绍项目、回答使用问题，也可以在你确认后帮“${overview.libraryName || "当前记忆体"}”执行记忆挖掘，并引导你安全完成重建上下文。`, "assistant");
       showBubble("你好，点击我查看待办或问问题。\n");
       loadSpriteAssets();
       renderGuideStep();

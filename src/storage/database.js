@@ -4,8 +4,8 @@ const Database = require("better-sqlite3");
 const { resolveDatabasePath } = require("./database-location");
 const { messageIdentity } = require("../lib/message-identity");
 
-// Version 16 applies the sentence-book columns to existing version 15 databases.
-const SCHEMA_VERSION = 16;
+// Version 18 completes the retained-source metadata for conversation import batches.
+const SCHEMA_VERSION = 18;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -76,6 +76,25 @@ CREATE TABLE IF NOT EXISTS binding_import_batches (
   filtered_count INTEGER NOT NULL DEFAULT 0,
   source_dates_json TEXT NOT NULL DEFAULT '[]',
   metadata_json TEXT NOT NULL DEFAULT '{}',
+  applied_at TEXT NOT NULL,
+  reverted_at TEXT
+);
+CREATE TABLE IF NOT EXISTS conversation_import_batches (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES threads(id),
+  status TEXT NOT NULL CHECK(status IN ('applied','reverted')),
+  source_name TEXT NOT NULL,
+  source_path TEXT,
+  source_fingerprint TEXT NOT NULL,
+  format TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  discovered_count INTEGER NOT NULL DEFAULT 0,
+  inserted_count INTEGER NOT NULL DEFAULT 0,
+  duplicate_count INTEGER NOT NULL DEFAULT 0,
+  invalid_count INTEGER NOT NULL DEFAULT 0,
+  filtered_count INTEGER NOT NULL DEFAULT 0,
+  source_dates_json TEXT NOT NULL DEFAULT '[]',
+  filtered_reasons_json TEXT NOT NULL DEFAULT '{}',
   applied_at TEXT NOT NULL,
   reverted_at TEXT
 );
@@ -221,6 +240,8 @@ CREATE INDEX IF NOT EXISTS idx_bindings_memory
   ON memory_bindings(memory_id, enabled, created_at);
 CREATE INDEX IF NOT EXISTS idx_binding_batches_memory
   ON binding_import_batches(memory_id, binding_id, applied_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_import_batches_thread
+  ON conversation_import_batches(thread_id, applied_at);
 `;
 
 function openDatabase(memoryDir) {
@@ -330,6 +351,9 @@ function migrateColumns(db) {
   if (!threadColumns.has("memories_flow_to_parent")) db.exec("ALTER TABLE threads ADD COLUMN memories_flow_to_parent INTEGER NOT NULL DEFAULT 1 CHECK(memories_flow_to_parent IN (0,1))");
   const miningColumns = new Set(db.pragma("table_info(mining_day_state)").map(column => column.name));
   if (!miningColumns.has("chunk_report")) db.exec("ALTER TABLE mining_day_state ADD COLUMN chunk_report TEXT");
+  const importBatchColumns = new Set(db.pragma("table_info(conversation_import_batches)").map(column => column.name));
+  if (!importBatchColumns.has("source_path")) db.exec("ALTER TABLE conversation_import_batches ADD COLUMN source_path TEXT");
+  if (!importBatchColumns.has("metadata_json")) db.exec("ALTER TABLE conversation_import_batches ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'");
   const notebookTopicColumns = new Set(db.pragma("table_info(notebook_topics)").map(column => column.name));
   if (!notebookTopicColumns.has("is_default")) db.exec("ALTER TABLE notebook_topics ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0,1))");
   if (!notebookTopicColumns.has("kind")) db.exec("ALTER TABLE notebook_topics ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard'");

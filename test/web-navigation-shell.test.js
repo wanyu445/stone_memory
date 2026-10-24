@@ -10,6 +10,7 @@ test("responsive navigation shell delegates to the stable frontend", () => {
   const adapter = fs.readFileSync(path.join(publicDir, "developer-kit", "navigation-shell.js"), "utf8");
   const styles = fs.readFileSync(path.join(publicDir, "developer-kit", "navigation-shell.css"), "utf8");
   const app = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
+  const appStyles = fs.readFileSync(path.join(publicDir, "styles.css"), "utf8");
 
   for (const action of ["home", "memory", "workshop", "me"]) {
     assert.match(html, new RegExp(`data-shell-action="${action}"`));
@@ -42,18 +43,27 @@ test("responsive navigation shell delegates to the stable frontend", () => {
   assert.match(app, /bindingId:rebuildState\.bindingMemoryId===library\.threadId\?rebuildState\.bindingId:null/);
   const contextManagement = app.match(/async function renderRebuild\(library\)[\s\S]*?async function renderTrimWorkbench/)?.[0] || "";
   for (const content of ["当前上下文", "当前注入", "生成重建预览", "检查线程", "高级注入设置", "永久裁剪"]) assert.match(contextManagement, new RegExp(content));
+  assert.match(contextManagement, /id="context-advice-card"[^>]*hidden/);
+  assert.match(contextManagement, /当前上下文暂无重建记录，需要通过重建上下文将人设、规则、摘要等注入当前上下文/);
+  assert.match(contextManagement, /usedTokens>200000/);
+  assert.match(contextManagement, /adviceCard\.hidden=advice\.length===0/);
+  assert.match(appStyles, /\.context-advice-card:before[\s\S]*radial-gradient\(circle at 18% 16%/);
   assert.doesNotMatch(contextManagement, /<h1>线程重建<\/h1>|一键修复|rebuild-status|open-rules|open-feelings/);
   assert.match(contextManagement, /bindingRows\.length>1/);
   assert.match(contextManagement, /id="context-binding-picker"/);
   assert.match(contextManagement, /操作目标/);
   assert.match(contextManagement, /contextUsageByBinding/);
   assert.match(contextManagement, /rebuildByBinding/);
+  assert.match(contextManagement, /legacyRebuild\?\.bindingId===binding\.id/);
+  assert.match(contextManagement, /legacyUsage\?\.bindingId===binding\.id/);
   assert.match(contextManagement, /paintContext\(selected,\{primary:selected\.id===bindingStatus\.primaryBindingId\}\)/);
   assert.match(contextManagement, /open-injection-settings/);
   assert.match(contextManagement, /textContent="注入策略"/);
   assert.match(contextManagement, /save-injection-settings/);
   assert.match(contextManagement, /rebuild-preview-modal-content/);
-  assert.match(app, /确认应用线程重建/);
+  const previewFlow = app.match(/async function previewIntegratedRebuild\(library,options=\{\}\)[\s\S]*?function renderReadableRebuildPreview/)?.[0] || "";
+  assert.match(previewFlow, /finally\{button\.disabled=false;\}/);
+  assert.match(app, /确认应用重建上下文/);
   assert.match(app, /automationSwitch\("automaticFullMining"/);
   assert.match(app, /automationSwitch\("automaticMemoryMaintenance"/);
   assert.match(app, /automationSwitch\("automaticCompression"/);
@@ -117,6 +127,8 @@ test("responsive navigation shell delegates to the stable frontend", () => {
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
   assert.doesNotMatch(styles, /display:\s*contents/);
   assert.match(styles, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(app, /class=\\\"rebuild-readable-tool-name\\\"/);
+  assert.match(appStyles, /@media\(max-width:680px\)[^\n]*\.rebuild-readable-tool-name\{[^}]*overflow-wrap:anywhere/);
   assert.match(styles, /\.stone-global-links\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*4/);
   assert.match(styles, /\.stone-global-bottom\s*\{[\s\S]*?grid-column:\s*4/);
   assert.match(styles, /\.stone-global-links\s*\{[\s\S]*?padding-top:\s*0;[\s\S]*?border-top:\s*0/);

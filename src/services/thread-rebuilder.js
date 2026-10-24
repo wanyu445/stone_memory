@@ -82,7 +82,7 @@ function loadRetainConfig(retainConfigPath) {
   catch { return { retain: {} }; }
 }
 
-function loadInjectableFeelings(memoryDir, threadId) {
+function loadInjectableFeelings(memoryDir, threadId, { quiet = false } = {}) {
   const feelings = readFeelings(memoryDir, { threadId, forInjection: true }).map(r => {
     const parsed = parseFeelingTime(r.content) || {};
     const event = r.eventTime ? new Date(r.eventTime) : null;
@@ -92,7 +92,7 @@ function loadInjectableFeelings(memoryDir, threadId) {
     const time = { date: r.sourceDate || parsed.date, hour, minute };
     return { id: r.id, content: r.content, importance: Number(r.importance) || 0, date: time.date, hour, minute, utcTime: feelingToUtc(time), retainOriginal: false };
   });
-  console.log(`[rebuilder] sqlite: ${feelings.length} memories (daily/coarse; hidden excluded)`);
+  if (!quiet) console.log(`[rebuilder] sqlite: ${feelings.length} memories (daily/coarse; hidden excluded)`);
   return feelings;
 }
 

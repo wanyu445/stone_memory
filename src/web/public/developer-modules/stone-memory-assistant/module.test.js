@@ -191,7 +191,7 @@ test("maintenance flow covers explicit today mining and safe rebuild guidance", 
   assert.match(app, /对话：\$\{messageCount\} 条/);
   assert.match(app, /forceDates: \[\]/);
   assert.match(app, /if \(automatic\)[\s\S]*showRebuildGuidance/);
-  assert.match(app, /维护 → 线程重建/);
+  assert.match(app, /维护 → 重建上下文/);
   assert.match(app, /避免把密钥、本机路径等设置读取到浏览器/);
   assert.match(app, /loadSpriteAssets\(\);\s*renderGuideStep\(\);\s*await refreshContext\(\);\s*} catch/);
 });
@@ -255,7 +255,7 @@ test("manual tasks explain real paths and only return to the current workbench",
   const html = read("index.html");
   const app = read("app.js");
   for (const task of ["trim", "import", "remine", "summary"]) assert.match(html, new RegExp(`data-manual-task="${task}"`));
-  for (const pathText of ["维护 → 线程重建 → 原文 → 裁剪对话 / 工具链", "维护 → 对话导入", "维护 → 记忆挖掘 → 选择日期 → 精准补挖", "记忆档案 → 摘要"]) assert.match(app, new RegExp(pathText));
+  for (const pathText of ["维护 → 重建上下文 → 原文 → 裁剪对话 / 工具链", "维护 → 对话导入", "维护 → 记忆挖掘 → 选择日期 → 精准补挖", "记忆档案 → 摘要"]) assert.match(app, new RegExp(pathText));
   assert.match(app, /stoneModule\.returnToDeveloperMode\(\)/);
   assert.match(app, /还不能精确打开内部子页面/);
 });

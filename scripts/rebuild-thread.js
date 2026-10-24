@@ -589,7 +589,9 @@ function rebuildThread(inputPath, outputPath, dryRun, windowDays, toolPairsOverr
     console.log(`  Output lines:      ${totalOutput}`);
     console.log(`  Reduction:         ${byteReduction === null ? "—" : `${byteReduction.toFixed(1)}%`}`);
     console.log(`  Memory blocks:     ${stats.memoryBlock}`);
-    console.log(`  Window messages:   ${stats.windowMsg}`);
+    // Anchor fragments are emitted as original messages too, but are not part
+    // of the recent rolling window. Keep the two counts separate in preview.
+    console.log(`  Recent window messages: ${Math.max(0, stats.windowMsg - retainedMessages)}`);
     console.log(`  Retained messages: ${retainedMessages}`);
     console.log(`  System dropped:    ${stats.systemDropped}`);
     console.log(`  Memory feelings:   ${memoryFeelings.length}`);

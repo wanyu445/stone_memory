@@ -160,7 +160,7 @@
     const activeDates = isMiningActive(mining.job) ? new Set(mining.job.dates || []) : new Set();
     const pending = pendingMiningDates(mining.dates, today).filter(date => !activeDates.has(date));
     if (pending.length) todos.push({ id: "mining-pending", priority: 30, kind: "action", title: `${pending.length} 个日期等待挖掘`, detail: `${pending[0]}${pending.length > 1 ? ` 至 ${pending.at(-1)}` : ""}`, dates: pending });
-    if (needsRebuild(overview)) todos.push({ id: "rebuild", priority: 40, kind: "action", title: "记忆更新后尚未重建线程", detail: "请到正式工作台查看预览并确认执行" });
+    if (needsRebuild(overview)) todos.push({ id: "rebuild", priority: 40, kind: "action", title: "记忆更新后尚未重建上下文", detail: "请到正式工作台查看预览并确认执行" });
     if (overview.attention) todos.push({ id: "attention", priority: 50, kind: "warning", title: "记忆体需要注意", detail: String(overview.attention) });
     if (!todos.length) todos.push({ id: "ready", priority: 100, kind: "ready", title: "当前没有必须处理的待办", detail: "可以查询摘要或向我了解项目" });
     return todos.sort((a, b) => a.priority - b.priority);
@@ -232,7 +232,7 @@
       logs.push({
         id: `system-rebuild-${rebuildAt}`,
         source: "记忆系统",
-        action: "线程重建",
+        action: "重建上下文",
         result: "最近一次重建已完成",
         detail: "这是正式工作流报告的最近一次完成时间。",
         timestamp: rebuildAt,

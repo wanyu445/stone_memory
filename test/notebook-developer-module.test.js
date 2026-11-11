@@ -20,7 +20,7 @@ test("notebook developer module is detachable and bound to the selected memory t
   assert.doesNotMatch(main, /loadOptionalScript\("\/notebook-lab\/bootstrap\.js/);
   assert.match(bootstrap, /host\.dataset\.memoryId/);
   assert.match(bootstrap, /workspace["']\)\?\.dataset\.threadId/);
-  assert.match(app, /encodeURIComponent\(threadId\)/);
+  assert.match(app, /encodeURIComponent\(memoryId\)/);
   assert.match(app, /此篇由小机封存中/);
   assert.match(html, /id="edit-note"/);
   assert.match(html, /id="paper-style"/);

@@ -44,7 +44,7 @@ function targetedMiningCommandArgs(threadId, mode, batchFile, apiProfile = "opti
 
 async function executeMiningJob(job) {
   job.status="running";job.startedAt=new Date().toISOString();
-  if(job.dates.length>1){
+  if(job.dates.length>1&&!job.overwriteProtected){
     const batch=writePrivateBatch({dates:job.dates,forceDates:job.forceDates,mode:job.mode,apiProfile:job.apiProfile});
     try{
       const args=["mine","--thread",job.threadId,job.mode==="api"?"--api":"--subagent","--batch-file",batch.file];
@@ -65,7 +65,7 @@ async function executeMiningJob(job) {
   for(const date of job.dates){
     if(job.cancelRequested)break;
     job.currentDate=date;job.updatedAt=new Date().toISOString();
-    try{await runStmemAsync(miningCommandArgs(job.threadId,date,job.mode,job.forceDates.includes(date),job.apiProfile));job.results.push({date,status:"completed"});}
+    try{await runStmemAsync(miningCommandArgs(job.threadId,date,job.mode,job.forceDates.includes(date),job.apiProfile).concat(job.overwriteProtected?["--force","--overwrite-protected",...(job.removeAnchors?["--remove-anchors"]:[])]:[]));job.results.push({date,status:"completed"});}
     catch(error){
       if(job.cancelRequested){job.results.push({date,status:"cancelled"});break;}
       job.results.push({date,status:"failed",error:String(error.message||error).slice(0,500)});

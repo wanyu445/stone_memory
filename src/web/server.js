@@ -465,7 +465,7 @@ function compactTimelineReport(data) {
 
 async function executeMiningJob(job) {
   job.status="running";job.startedAt=new Date().toISOString();
-  if(job.dates.length>1){
+  if(job.dates.length>1&&!job.overwriteProtected){
     const batch=writePrivateBatch({dates:job.dates,forceDates:job.forceDates,mode:job.mode,apiProfile:job.apiProfile});
     try{
       const args=["mine","--thread",job.threadId,job.mode==="api"?"--api":"--subagent","--batch-file",batch.file];
@@ -486,7 +486,7 @@ async function executeMiningJob(job) {
   for(const date of job.dates){
     if(job.cancelRequested)break;
     job.currentDate=date;job.updatedAt=new Date().toISOString();
-    try{await runStmemAsync(miningCommandArgs(job.threadId,date,job.mode,job.forceDates.includes(date),job.apiProfile));job.results.push({date,status:"completed"});}
+    try{await runStmemAsync(miningCommandArgs(job.threadId,date,job.mode,job.forceDates.includes(date),job.apiProfile).concat(job.overwriteProtected?["--force","--overwrite-protected",...(job.removeAnchors?["--remove-anchors"]:[])]:[]));job.results.push({date,status:"completed"});}
     catch(error){
       if(job.cancelRequested){job.results.push({date,status:"cancelled"});break;}
       job.results.push({date,status:"failed",error:String(error.message||error).slice(0,500)});
@@ -1773,9 +1773,9 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
       try{
         const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND source_date=? ORDER BY timestamp,message_seq").all(threadId,date);
-        const needle=search.toLocaleLowerCase();
-        return json(res,200,{date,search,matchCount:needle?rows.filter(row=>row.text.toLocaleLowerCase().includes(needle)).length:0,
-          rows:rows.map(row=>({...row,matched:!!needle&&row.text.toLocaleLowerCase().includes(needle)}))});
+        const { targetedMessageMatches } = require("../services/targeted-mining-range");
+        const result=targetedMessageMatches(rows,{search,startTime:url.searchParams.get("startTime")||"",endTime:url.searchParams.get("endTime")||""});
+        return json(res,200,{date,search,...result});
       }finally{store.close();}
     }
     if(req.method==="POST"&&miningMatch[2]==="targeted"){
@@ -1801,7 +1801,7 @@ async function handleApi(req, res, url, { isRemote = false } = {}) {
       if(!dates.length)throw new Error("请至少选择一个有对话的日期");
       const requestedForceDates=new Set(Array.isArray(body.forceDates)?body.forceDates.map(String):[]);
       const forceDates=dates.filter(date=>requestedForceDates.has(date));
-      const now=new Date().toISOString(),job={id:crypto.randomUUID(),threadId,mode,apiProfile,dates,forceDates,status:"queued",currentDate:null,completed:0,results:[],cancelRequested:false,createdAt:now,updatedAt:now};
+      const now=new Date().toISOString(),job={id:crypto.randomUUID(),threadId,mode,apiProfile,dates,forceDates,overwriteProtected:body.overwriteProtected===true,removeAnchors:body.removeAnchors===true,status:"queued",currentDate:null,completed:0,results:[],cancelRequested:false,createdAt:now,updatedAt:now};
       miningJobs.set(threadId,job);
       executeMiningJob(job).catch(cause=>{job.status="failed";job.currentDate=null;job.error=String(cause.message||cause).slice(0,500);job.updatedAt=new Date().toISOString();});
       return json(res,202,{job});

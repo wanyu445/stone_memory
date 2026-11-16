@@ -57,9 +57,9 @@ async function handleMining(req, res, url) {
       const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
       try{
         const rows=store.db.prepare("SELECT timestamp,source_date sourceDate,role,text FROM messages WHERE thread_id=? AND source_date=? ORDER BY timestamp,message_seq").all(threadId,date);
-        const needle=search.toLocaleLowerCase();
-        return json(res,200,{date,search,matchCount:needle?rows.filter(row=>row.text.toLocaleLowerCase().includes(needle)).length:0,
-          rows:rows.map(row=>({...row,matched:!!needle&&row.text.toLocaleLowerCase().includes(needle)}))});
+        const { targetedMessageMatches } = require("../../services/targeted-mining-range");
+        const result=targetedMessageMatches(rows,{search,startTime:url.searchParams.get("startTime")||"",endTime:url.searchParams.get("endTime")||""});
+        return json(res,200,{date,search,...result});
       }finally{store.close();}
     }
     if(req.method==="POST"&&miningMatch[2]==="targeted"){
@@ -85,7 +85,7 @@ async function handleMining(req, res, url) {
       if(!dates.length)throw new Error("请至少选择一个有对话的日期");
       const requestedForceDates=new Set(Array.isArray(body.forceDates)?body.forceDates.map(String):[]);
       const forceDates=dates.filter(date=>requestedForceDates.has(date));
-      const now=new Date().toISOString(),job={id:crypto.randomUUID(),threadId,mode,apiProfile,dates,forceDates,status:"queued",currentDate:null,completed:0,results:[],cancelRequested:false,createdAt:now,updatedAt:now};
+      const now=new Date().toISOString(),job={id:crypto.randomUUID(),threadId,mode,apiProfile,dates,forceDates,overwriteProtected:body.overwriteProtected===true,removeAnchors:body.removeAnchors===true,status:"queued",currentDate:null,completed:0,results:[],cancelRequested:false,createdAt:now,updatedAt:now};
       miningJobs.set(threadId,job);
       executeMiningJob(job).catch(cause=>{job.status="failed";job.currentDate=null;job.error=String(cause.message||cause).slice(0,500);job.updatedAt=new Date().toISOString();});
       return json(res,202,{job});

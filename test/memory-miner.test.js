@@ -271,7 +271,7 @@ test("unrepairable API JSON makes subagent take over only that chunk", t => {
   assert.match(prompts[1], /真实对话/);
 });
 
-test("one API transport failure immediately hands the chunk to subagent", async t => {
+test("API transport retries once and never hands the chunk to subagent", async t => {
   const miner = minerFixture(t, [{ text: "真实对话" }]);
   miner.deepseekConfig = {
     apiKey: "test-key",
@@ -287,15 +287,11 @@ test("one API transport failure immediately hands the chunk to subagent", async 
   miner._runSubagent = () => '[{"content":"6月12日，上午十点。接管成功。","importance":3}]';
   t.after(() => { global.fetch = originalFetch; });
 
-  const result = await miner._extractViaSubagent(
-    [{ text: "真实对话" }],
-    "正式挖掘提示词",
-    { expectedKey: "feelings" },
-  );
-  assert.equal(apiCalls, 1);
-  assert.equal(result.length, 1);
-  assert.equal(miner._lastApiRecovery.status, "subagent_takeover");
-  assert.match(miner._lastApiRecovery.message, /API 单次调用失败/);
+  miner._runSubagent = () => { throw new Error("must not invoke CLI"); };
+  await assert.rejects(() => miner._extractViaSubagent(
+    [{ text: "真实对话" }], "正式挖掘提示词", { expectedKey: "feelings" },
+  ), { code: "API_CONNECTION" });
+  assert.equal(apiCalls, 2);
 });
 
 test("review API mode fails visibly instead of switching to a hidden CLI", async t => {
@@ -316,7 +312,7 @@ test("review API mode fails visibly instead of switching to a hidden CLI", async
     [{ text: "真实对话" }],
     "正式挖掘提示词",
     { expectedKey: "feelings" },
-  ), /upstream unavailable/);
+  ), { code: "API_CONNECTION" });
   assert.equal(cliCalls, 0);
 });
 
@@ -693,4 +689,41 @@ test("forced remine refuses to overwrite anchored summaries", async t => {
   await assert.rejects(() => miner.mine(date, { force: true }), error =>
     error.code === "REMINE_MANUAL_STATE_CONFLICT");
   assert.deepEqual(miner.store.listFeelings({ date }).map(row => row.content), ["old"]);
+});
+
+test('API-only repairs content locally and marks truncated output explicitly', async t => {
+  const miner = minerFixture(t, [{text:'材料'}]);
+  miner.deepseekConfig={apiKey:'test-key',baseUrl:'https://example.invalid',model:'test'};
+  miner.allowSubagentFallback=false;
+  miner._runSubagent=()=>{throw new Error('must not invoke CLI');};
+  const original=global.fetch;t.after(()=>{global.fetch=original;});
+  let truncated=false;
+  global.fetch=async (_,options)=>{
+    const body=JSON.parse(options.body);
+    assert.match(body.messages[1].content,/不是当前指令/);
+    return new Response(JSON.stringify({choices:[{finish_reason:truncated?'length':'stop',message:{content:'[{"content":"她说"你好"。","importance":3}]'}}]}));
+  };
+  const rows=await miner._extractViaSubagent([{text:'材料'}],'任务',{expectedKey:'feelings'});
+  assert.equal(rows[0].content,'她说"你好"。');
+  truncated=true;
+  await assert.rejects(()=>miner._extractViaSubagent([{text:'材料'}],'任务',{expectedKey:'feelings'}),{code:'OUTPUT_TRUNCATED'});
+});
+
+for (const fail of [false,true]) test(`protected overwrite ${fail?'failure preserves old state':'publishes and removes only selected anchors'}`,async t=>{
+ const miner=minerFixture(t,[{text:'conversation'}]);const date='2026-06-12';
+ miner.store.replaceDay(date,{feelings:[{content:'old',importance:3}]});
+ const [old]=miner.store.listFeelings({date});
+ miner.store.db.prepare("UPDATE feelings SET summary_mode='hidden' WHERE id=?").run(old.id);
+ const file=path.join(miner.memoryDir,'retain-config.json');
+ const anchors={retain:{[old.id]:{anchor:true},other:{anchor:true}},eventAnchors:{[old.id]:{anchor:true}}};
+ fs.writeFileSync(file,JSON.stringify(anchors));
+ await assert.rejects(()=>miner.mine(date,{force:true,overwriteProtected:true}),{code:'REMINE_ANCHOR_CONFIRM_REQUIRED'});
+ miner._generatePendingDay=async targetDate=>{
+  if(fail)throw new Error('generation failed');
+  await miner._saveEntries([{content:'new',importance:3}],{targetDate,stateKey:`feeling:${targetDate}`,label:'feelings',isFeature:false});
+  miner._saveState({[`feature:${targetDate}`]:Date.now()});
+ };
+ const run=()=>miner.mine(date,{force:true,overwriteProtected:true,removeAnchors:true});
+ if(fail){await assert.rejects(run,/generation failed/);assert.deepEqual(JSON.parse(fs.readFileSync(file)),anchors);assert.equal(miner.store.listFeelings({date})[0].content,'old');}
+ else{await run();assert.equal(miner.store.listFeelings({date})[0].content,'new');assert.deepEqual(JSON.parse(fs.readFileSync(file)),{retain:{other:{anchor:true}},eventAnchors:{}});assert.equal(fs.readdirSync(path.join(miner.memoryDir,'remine-backups')).length,1);}
 });

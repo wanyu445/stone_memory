@@ -95,6 +95,8 @@ async function main() {
   let forceApi = args.includes("--api");
   let forceSub = args.includes("--subagent");
   let force = args.includes("--force");
+  if (args.includes("--overwrite-protected") && (!force || !args.includes("--date") || args.includes("--all") || args.includes("--batch-file"))) throw new Error("覆盖保护摘要须使用 --date <日期> --force --overwrite-protected；批量覆盖请逐日调用");
+  if (args.includes("--remove-anchors") && !args.includes("--overwrite-protected")) throw new Error("--remove-anchors 必须与 --overwrite-protected 一起使用");
   const modelIdx = args.indexOf("--model");
   const model = modelIdx >= 0 ? String(args[modelIdx + 1] || "").trim() : "";
   const apiProfileIdx = args.indexOf("--api-profile");
@@ -195,6 +197,7 @@ async function main() {
     memoryDir,
     threadId: tid,
     deepseekConfig,
+    allowSubagentFallback: false,
     personaConfig: {
       aiName: getCfg("ai", tid),
       userName: getCfg("user", tid),
@@ -222,7 +225,7 @@ async function main() {
     const timestamps = new Set(Array.isArray(payload.timestamps) ? payload.timestamps.map(String) : []);
     if (!timestamps.size) throw new Error("精准补挖没有选中对话");
     const messages = miner.store.listMessages({ date }).filter(row => timestamps.has(row.timestamp));
-    if (messages.length !== timestamps.size) throw new Error("部分所选对话已不存在，请刷新后重试");
+    if (new Set(messages.map(row => row.timestamp)).size !== timestamps.size) throw new Error("部分所选对话已不存在，请刷新后重试");
     const result = await miner.mineTargeted(date, messages, { instruction: String(payload.instruction || "") });
     console.log(JSON.stringify({ status: "completed", date, feelingCount: result.feelings.length }));
   } else if (allMode) {
@@ -289,7 +292,7 @@ async function main() {
     console.log(`[stmem] mining ${targetDate || "昨天"} (${modeLabel})...`);
     try {
       registerMiningProcess(tid, targetDate || miner._yesterday(), modeLabel);
-      const result = await miner.mine(targetDate, { force });
+      const result = await miner.mine(targetDate, { force, overwriteProtected: args.includes("--overwrite-protected"), removeAnchors: args.includes("--remove-anchors") });
       if (result.status === "locked") throw new Error(`${result.errorCode}: date is locked`);
       console.log(`[stmem] ${result.status}.`);
     } finally {

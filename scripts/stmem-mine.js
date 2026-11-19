@@ -101,7 +101,8 @@ async function main() {
   const model = modelIdx >= 0 ? String(args[modelIdx + 1] || "").trim() : "";
   const apiProfileIdx = args.indexOf("--api-profile");
   let apiProfile = apiProfileIdx >= 0 ? String(args[apiProfileIdx + 1] || "optimized").trim() : "optimized";
-  const targeted = args.includes("--targeted");
+  let targeted = args.includes("--targeted");
+  let targetedTask = null;
   const check = args.includes("--check");
   const stop = args.includes("--stop");
   const jsonOutput = args.includes("--json");
@@ -114,6 +115,31 @@ async function main() {
   const tid = memoryId || legacyId;
   if (!tid) throw new Error("未指定记忆体，请用 --memory <id> 或先创建记忆体");
   const memoryDir = path.join(getThreadDir(tid), "memory");
+
+  if (args.includes("--targeted-enqueue") || args.includes("--targeted-task-run")) {
+    const store = new MemoryStore({memoryDir,threadId:tid});
+    const jobs = require("../src/services/targeted-mining-jobs");
+    try {
+      if (args.includes("--targeted-enqueue")) {
+        if(batchIdx<0)throw new Error("需要 --batch-file");
+        const result=jobs.enqueue(store,JSON.parse(fs.readFileSync(path.resolve(args[batchIdx+1]),"utf8")));
+        if(result.created){
+          const child=require("child_process").spawn(process.execPath,[__filename,"--memory",tid,"--targeted-task-run",result.job.id],{detached:true,stdio:"ignore"});
+          child.on("error",()=>{const failedStore=new MemoryStore({memoryDir,threadId:tid});try{failedStore.updateJob(result.job.id,{status:"failed",errorCode:"TASK_START_FAILED",errorMessage:"后台任务无法启动"});}finally{failedStore.close();}});
+          child.unref();
+        }
+        console.log(JSON.stringify({job:jobs.publicJob(result.job)}));return;
+      }
+      const id=args[args.indexOf("--targeted-task-run")+1],row=store.getJob(id);
+      if(!row||row.thread_id!==tid||row.trigger_type!=="web")throw new Error("补挖任务不存在");
+      if(row.status!=="queued")return;
+      const claimed=store.db.prepare("UPDATE mining_jobs SET status='running',started_at=? WHERE id=? AND status='queued'").run(new Date().toISOString(),id);
+      if(!claimed.changes)return;
+      store.db.prepare("UPDATE mining_jobs SET instruction=? WHERE id=?").run(JSON.stringify({...JSON.parse(row.instruction),pid:process.pid}),id);
+      targetedTask={id,...JSON.parse(row.instruction).payload};targeted=true;
+      forceApi=targetedTask.mode==="api";forceSub=!forceApi;apiProfile=targetedTask.apiProfile;
+    }finally{store.close();}
+  }
 
   if (miningBatchAction(args)) {
     const result = await handleMiningBatch(args, { threadId: tid });
@@ -219,14 +245,14 @@ async function main() {
   }
 
   if (targeted) {
-    if (batchIdx < 0 || !args[batchIdx + 1]) throw new Error("精准补挖需要 --batch-file <json>");
-    const payload = JSON.parse(fs.readFileSync(path.resolve(args[batchIdx + 1]), "utf8"));
+    if (!targetedTask && (batchIdx < 0 || !args[batchIdx + 1])) throw new Error("精准补挖需要 --batch-file <json>");
+    const payload = targetedTask || JSON.parse(fs.readFileSync(path.resolve(args[batchIdx + 1]), "utf8"));
     const date = String(payload.date || targetDate || "");
     const timestamps = new Set(Array.isArray(payload.timestamps) ? payload.timestamps.map(String) : []);
     if (!timestamps.size) throw new Error("精准补挖没有选中对话");
     const messages = miner.store.listMessages({ date }).filter(row => timestamps.has(row.timestamp));
     if (new Set(messages.map(row => row.timestamp)).size !== timestamps.size) throw new Error("部分所选对话已不存在，请刷新后重试");
-    const result = await miner.mineTargeted(date, messages, { instruction: String(payload.instruction || "") });
+    const result = await miner.mineTargeted(date, messages, { instruction: String(payload.instruction || ""), jobId: targetedTask?.id });
     console.log(JSON.stringify({ status: "completed", date, feelingCount: result.feelings.length }));
   } else if (allMode) {
     const allDates = miner.store.listMessageDates();
@@ -301,6 +327,10 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error(e.message); process.exit(1); });
+main().catch(e => {
+ const args=process.argv.slice(2),i=args.indexOf("--targeted-task-run"),m=args.indexOf("--memory");
+ if(i>=0&&m>=0){let store;try{store=new MemoryStore({memoryDir:path.join(getThreadDir(args[m+1]),"memory"),threadId:args[m+1]});const row=store.getJob(args[i+1]);if(row&&row.status!=="completed")store.updateJob(row.id,{status:"failed",errorCode:e.code||"TARGETED_MINING_FAILED",errorMessage:String(e.message).slice(0,500),finishedAt:new Date().toISOString()});}finally{store?.close();}}
+ console.error(e.message); process.exit(1);
+});
 
 module.exports = { resolveApiConfig, stopMiningProcess };

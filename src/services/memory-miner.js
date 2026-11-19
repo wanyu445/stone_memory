@@ -451,9 +451,14 @@ class MemoryMiner {
     return { ...result, input };
   }
 
-  async mineTargeted(targetDate, messages, { instruction = "" } = {}) {
+  async mineTargeted(targetDate, messages, { instruction = "", jobId = null } = {}) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) throw new Error("精准补挖需要 YYYY-MM-DD 日期");
     if (!Array.isArray(messages) || !messages.length) throw new Error("精准补挖至少需要一条对话");
+    if (jobId) {
+      const job = this.store.getJob(jobId);
+      if (!job || job.thread_id !== this.threadId || job.mode !== "targeted") throw new Error("补挖任务不属于此记忆体");
+      if (job.status === "completed") return { date: targetDate, feelings: [] };
+    }
     const examples = this.store.listFeelings({ date: targetDate }).slice(0, 5);
     const [year, month, day] = targetDate.split("-").map(Number);
     const dateLabel = `${month}月${day}日`;
@@ -476,19 +481,21 @@ ${examples.length ? examples.map((row, index) => `${index + 1}. ${row.content}`)
       eventTime: feelingEventTime(row, targetDate),
       importance: normalizeFeelingImportance(row.importance),
     }));
-    if (!feelings.length) return { date: targetDate, feelings: [] };
-    const job = this.store.createJob({
+    const job = jobId ? {id:jobId} : this.store.createJob({
       sourceDate: targetDate, mode: "targeted", triggerType: "cli",
       publishStrategy: "append", instruction: instruction || null,
     });
     const now = new Date().toISOString();
     this.store.updateJob(job.id, { status: "running", startedAt: now });
     try {
+      this.store.db.transaction(() => {
+      if (jobId && this.store.getJob(jobId)?.status === "completed") return;
       this.store.appendTargeted(targetDate, { feelings, miningJobId: job.id });
       this.store.updateJob(job.id, {
         status: "completed", feelingCount: feelings.length, featureCount: 0,
         finishedAt: new Date().toISOString(), publishedAt: new Date().toISOString(),
       });
+      })();
       return { date: targetDate, feelings };
     } catch (error) {
       this.store.updateJob(job.id, {

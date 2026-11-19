@@ -13,7 +13,7 @@ const { getThreadDir } = require("../../config");
 const { NOT_HANDLED } = require("../route-result");
 
 async function handleMining(req, res, url) {
-  const miningMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/mining\/(status|start|stop|check|day|targeted-messages|targeted)$/);
+  const miningMatch=url.pathname.match(/^\/api\/libraries\/([^/]+)\/mining\/(status|start|stop|check|day|targeted-jobs|targeted-messages|targeted)$/);
   if(miningMatch){
     const threadId=decodeURIComponent(miningMatch[1]);publicThreadSettings(threadId);
     if(req.method==="GET"&&miningMatch[2]==="status")return json(res,200,{job:refreshMiningBatchJob(miningJobs.get(threadId)||null),dates:miningDates(threadId)});
@@ -62,6 +62,10 @@ async function handleMining(req, res, url) {
         return json(res,200,{date,search,...result});
       }finally{store.close();}
     }
+    if(req.method==="GET"&&miningMatch[2]==="targeted-jobs"){
+      const store=new MemoryStore({memoryDir:path.join(getThreadDir(threadId),"memory"),threadId});
+      try {const jobs=require("../../services/targeted-mining-jobs");return json(res,200,{jobs:jobs.list(store,String(url.searchParams.get("date")||""))});}finally{store.close();}
+    }
     if(req.method==="POST"&&miningMatch[2]==="targeted"){
       const body=await readJson(req),date=String(body.date||""),mode=body.mode==="api"?"api":body.mode==="subagent"?"subagent":null,apiProfile=normalizeMiningApiProfile(body.apiProfile);
       const timestamps=[...new Set(Array.isArray(body.timestamps)?body.timestamps.map(String):[])];
@@ -69,10 +73,10 @@ async function handleMining(req, res, url) {
       if(!mode)throw new Error("请选择 API 或 Subagent 挖掘通道");
       if(!timestamps.length)throw new Error("请至少选择一条对话");
       const batchFile=path.join(os.tmpdir(),`stmem-targeted-${crypto.randomUUID()}.json`);
-      fs.writeFileSync(batchFile,JSON.stringify({date,timestamps,instruction:String(body.instruction||"")}));
+      fs.writeFileSync(batchFile,JSON.stringify({date,timestamps,mode,apiProfile,instruction:String(body.instruction||"")}),{mode:0o600});
       try{
-        const output=await runStmemAsync(targetedMiningCommandArgs(threadId,mode,batchFile,apiProfile));
-        return json(res,200,{success:true,output});
+        const output=await runStmemAsync(["mine","--memory",threadId,"--targeted-enqueue","--batch-file",batchFile]);
+        return json(res,202,{success:true,...JSON.parse(output)});
       }finally{try{fs.unlinkSync(batchFile);}catch{}}
     }
     if(req.method==="POST"&&miningMatch[2]==="start"){

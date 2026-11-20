@@ -79,3 +79,25 @@ console.log(JSON.stringify({ mcpModules: entry.mcpModules, mcpModuleConfigVersio
   assert.deepEqual(out.mcpModules, ["notebook-lab", "dream-lab", "drawing-game"]);
   assert.equal(out.mcpModuleConfigVersion, 1);
 });
+
+test("module MCP resolves the configured legacy STMEM_THREAD_ID", t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "stmem-legacy-thread-env-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const sessionId = "33333333-3333-4333-8333-333333333333";
+  fs.mkdirSync(path.join(home, ".stone_memory"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".stone_memory", "stmem.json"), JSON.stringify({
+    [sessionId]: {
+      runtime: "codex",
+      purpose: "accompany",
+      label: "旧环境变量记忆体",
+      mcpModules: ["notebook-lab", "dream-lab", "drawing-game"],
+      mcpModuleConfigVersion: 1,
+    },
+  }));
+  const modulePath = path.join(root, "src", "services", "developer-module-mcp-config");
+  const result = run(home, `const service=require(${JSON.stringify(modulePath)});console.log(JSON.stringify(service.resolveCurrentBinding({STMEM_THREAD_ID:process.argv[1]})));`, [sessionId]);
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  const session = JSON.parse(result.stdout);
+  assert.equal(session.memoryId, sessionId);
+  assert.deepEqual(session.modules, ["notebook-lab", "dream-lab", "drawing-game"]);
+});

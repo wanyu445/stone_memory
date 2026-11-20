@@ -128,7 +128,15 @@ function createWebAuth({ host, configProvider, now = () => Date.now(), sessionSt
 
   function sessionCookie(credential, req) {
     const origin = String(req.headers.origin || "");
-    const secure = req.socket?.encrypted || /^https:/i.test(String(config().web?.publicUrl || "")) || /^https:/i.test(origin);
+    // A configured HTTPS entry must not mark cookies from a separate LAN HTTP
+    // entry Secure. On refresh GETs Origin is absent; use publicUrl only when
+    // its authority matches this request (including port).
+    let configuredHttpsEntry = false;
+    try {
+      const publicUrl = new URL(String(config().web?.publicUrl || ""));
+      configuredHttpsEntry = publicUrl.protocol === "https:" && publicUrl.host.toLowerCase() === String(req.headers.host || "").toLowerCase();
+    } catch {}
+    const secure = Boolean(req.socket?.encrypted || (origin ? /^https:/i.test(origin) : configuredHttpsEntry));
     return `${SESSION_COOKIE}=${credential}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? "; Secure" : ""}`;
   }
 

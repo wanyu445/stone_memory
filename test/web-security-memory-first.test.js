@@ -249,3 +249,26 @@ test("legacy non-loopback Web config migrates without exposing its bootstrap tok
   const claimedAgain = run(home, ["web", "auth", "claim", "--json"]);
   assert.notEqual(claimedAgain.status, 0);
 });
+
+test('HTTPS public URL does not break persistent cookies on separate LAN HTTP entry', t => {
+ const {createWebAuth,hashToken}=require('../src/security/web-auth');
+ const {createWebSessionStore}=require('../src/services/web-security');
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'stmem-cookie-entry-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+ let now=Date.now();const config={web:{publicUrl:'https://stone.example:8446/',auth:{tokenVerifier:hashToken('test-token')}}};
+ const make=()=>createWebAuth({host:'0.0.0.0',configProvider:()=>config,sessionStore:createWebSessionStore({file:path.join(home,'.stone_memory','sessions.json'),trustedRoot:home,now:()=>now})});
+ const request=headers=>({method:'POST',headers,socket:{remoteAddress:'192.168.1.2',encrypted:false}});
+ let auth=make();const cookie=auth.unlock('test-token',request({host:'0.0.0.0:4187',origin:'http://0.0.0.0:4187'}));
+ assert.doesNotMatch(cookie,/; Secure/);assert.match(cookie,/Max-Age=2592000/);
+ auth=make();now+=7*3600000;
+ const principal=auth.authenticate(request({host:'0.0.0.0:4187',cookie:cookie.split(';')[0]}));
+ assert.equal(principal.kind,'session');assert.doesNotMatch(principal.refreshCookie,/; Secure/);
+ const changedNetwork=request({host:'0.0.0.0:4187',cookie:cookie.split(';')[0]});
+ changedNetwork.socket.remoteAddress='100.64.8.9';
+ assert.equal(auth.authenticate(changedNetwork).kind,'session');
+ const httpsCookie=auth.unlock('test-token',request({host:'stone.example:8446',origin:'https://stone.example:8446'}));
+ assert.match(httpsCookie,/; Secure/);
+ now+=7*3600000;
+ assert.match(auth.authenticate(request({host:'stone.example:8446',cookie:httpsCookie.split(';')[0]})).refreshCookie,/; Secure/);
+ // The master token is reusable and does not expire when a device is created.
+ assert.doesNotThrow(()=>auth.unlock('test-token',request({host:'0.0.0.0:4187',origin:'http://0.0.0.0:4187'})));
+});
